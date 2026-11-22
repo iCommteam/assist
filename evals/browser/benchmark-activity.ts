@@ -11,7 +11,6 @@ const toolActivity = new Map<string, string>([
   ["browser_find", "Finding page controls"],
   ["browser_snapshot", "Inspecting the page"],
   ["browser_text", "Reading the page"],
-  ["capture_browser_image", "Capturing browser evidence"],
   ["computer_action", "Using visual browser controls"],
   ["fill_from_vault", "Securely filling saved user information"],
   ["list_vault", "Checking saved user information"],

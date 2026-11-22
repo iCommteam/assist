@@ -3,6 +3,7 @@ import type {
   AgentResponse,
   AgentSendOptions,
   AgentSession,
+  ToolContext,
   WorkflowServeCall,
   WorkflowServeContext,
 } from "eve/tools";
@@ -11,6 +12,7 @@ import runBrowser from "@agent/tools/run_browser";
 import { toolContextFor } from "@tests/helpers/tool-context";
 
 type WorkerMessage = Parameters<AgentSession["send"]>[0];
+type CallAuth = ToolContext["session"]["auth"];
 
 const completion = {
   status: "success",
@@ -31,13 +33,16 @@ class ReceiveDrained extends Error {}
 
 /**
  * Runs the serve loop over `calls` with a mocked worker session. The loop is
- * open-ended by design, so it ends when `receive()` has no more calls.
+ * open-ended by design, so it ends when `receive()` has no more calls. Like
+ * eve, the context takes each received call's auth, from `auths` by index.
  */
 async function serveCalls(
   calls: readonly WorkflowServeCall<{ message: string }>[],
-  results: readonly (AgentMessageResult | Error)[]
+  results: readonly (AgentMessageResult | Error)[],
+  auths: readonly CallAuth[] = []
 ) {
   const queue = [...calls];
+  const authQueue = [...auths];
   const pending = [...results];
   const send = vi.fn<
     (
@@ -66,15 +71,23 @@ async function serveCalls(
     ...shared
   } = toolContextFor();
   const mocks = { agent, reply, send };
+  let auth = shared.session.auth;
   try {
     await runBrowser.serve(
       async () => {
         const call = queue.shift();
         if (!call) throw new ReceiveDrained();
+        auth = authQueue.shift() ?? auth;
         return call;
       },
       {
         ...shared,
+        session: {
+          ...shared.session,
+          get auth() {
+            return auth;
+          },
+        },
         agent,
         agents: {},
         ask: vi.fn<WorkflowServeContext["ask"]>(),
@@ -97,6 +110,24 @@ function serveCall(
 function completed(data: Partial<typeof completion>): AgentMessageResult {
   return { data, reply: "", sessionEnded: false, status: "completed" };
 }
+
+function callerAuth(authenticator: string): CallAuth {
+  return {
+    current: {
+      attributes: { workspaceId: "personal:workspace" },
+      authenticator,
+      principalId: "user-1",
+      principalType: "user",
+    },
+    initiator: null,
+  };
+}
+
+const reportRefusal = {
+  images: [],
+  message: "Browser work is unavailable while reporting a scheduled result.",
+  status: "failure",
+};
 
 describe("structured browser workflow", () => {
   it("supplies the completion schema on initial and continued calls to one worker", async () => {
@@ -148,6 +179,47 @@ describe("structured browser workflow", () => {
       message: "Browser worker failed: Kernel unavailable",
       status: "failure",
     });
+  });
+
+  it("opens no worker for a scheduled result report", async () => {
+    const { agent, error, reply, send } = await serveCalls(
+      [serveCall("Inspect the heading")],
+      [],
+      [callerAuth("scheduled-result")]
+    );
+
+    expect(error).toBeInstanceOf(ReceiveDrained);
+    expect(agent).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledExactlyOnceWith(reportRefusal);
+  });
+
+  it("refuses a scheduled result report that continues an interactive task", async () => {
+    const { error, reply, send } = await serveCalls(
+      [serveCall("Inspect the heading"), serveCall("Inspect the footer")],
+      [completed(completion)],
+      [callerAuth("eve"), callerAuth("scheduled-result")]
+    );
+
+    expect(error).toBeInstanceOf(ReceiveDrained);
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]).toMatchObject([
+      "Inspect the heading",
+      { outputSchema },
+    ]);
+    expect(reply.mock.calls).toEqual([[completion], [reportRefusal]]);
+  });
+
+  it("serves scheduled workers", async () => {
+    const { error, reply, send } = await serveCalls(
+      [serveCall("Inspect the heading")],
+      [completed(completion)],
+      [callerAuth("scheduled-worker")]
+    );
+
+    expect(error).toBeInstanceOf(ReceiveDrained);
+    expect(send).toHaveBeenCalledOnce();
+    expect(reply).toHaveBeenCalledExactlyOnceWith(completion);
   });
 
   it("keeps the worker available after a cancelled stretch", async () => {

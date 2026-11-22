@@ -1,8 +1,7 @@
 import { defineAgent, defineDynamic } from "eve";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
-import { getGatewayModel } from "@db/services/settings";
-import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { coordinatorModel } from "@agent/lib/models";
 
 export default defineAgent({
   build: {
@@ -24,10 +23,18 @@ export default defineAgent({
     }
     const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
     if (!caller) throw new Error("An authenticated user is required.");
-    return getGatewayModel(scopeFromPrincipal(caller));
+    return coordinatorModel();
   }),
   reasoning: "low",
   compaction: {
     threshold: 0.7,
+  },
+  // Keep run data for the World's default period. Without this, the trace policy
+  // in agent/instrumentation/otel.ts (no inputs or outputs) derives zero
+  // retention and finished transcripts become unreadable.
+  experimental: {
+    workflow: {
+      retention: "default",
+    },
   },
 });

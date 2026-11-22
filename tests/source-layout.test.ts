@@ -38,7 +38,6 @@ describe("source layout", () => {
       "browser",
       "chat",
       "environment",
-      "google-workspace",
       "identity",
       "schedules",
       "user-profile",

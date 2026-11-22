@@ -22,7 +22,6 @@ export default [
           first.requireToolCall("workstreams__save", { status: "completed" })
             .input
         ).id;
-        first.notCalledTool("profile__save_memory");
 
         const correction = await first.session.send(
           `For ${title}, change my seat requirement to aisle. Keep both departure options and the pending decision. This correction applies only to this trip.`

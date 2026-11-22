@@ -11,7 +11,7 @@ export default defineEval({
   async test(t) {
     const session = await t.session();
     const live = await session.start(
-      "Use the browser-agent subagent to visually inspect https://example.com and report the exact primary heading. Do not use web_fetch because this specifically requires browser interaction."
+      "Use the browser-agent subagent to visually inspect https://example.com and report the exact primary heading. This specifically requires browser interaction."
     );
     await live.waitForToolCall("run_browser");
     await live.waitForEvent("task.started", { data: { name: "run_browser" } });

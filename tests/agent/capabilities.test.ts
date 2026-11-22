@@ -16,28 +16,15 @@ vi.mock("eve/tools", async (importOriginal) =>
 
 import personalInfoMemory from "@agent/memory/personal_info";
 import workstreamMemory from "@agent/memory/workstreams";
-import browserAgent from "@agent/subagents/browser-agent/agent";
-import calendar from "@agent/tools/calendar";
-import contacts from "@agent/tools/contacts";
-import gmail from "@agent/tools/gmail";
 import messaging from "@agent/tools/messaging";
 import schedules from "@agent/tools/schedules";
 import vault from "@agent/tools/vault";
 
-const groupedTools = [calendar, contacts, gmail, messaging, schedules, vault];
+const groupedTools = [messaging, schedules, vault];
 
 describe("authored mode capability matrix", () => {
   it("gives interactive turns the authored coordinator capabilities", async () => {
     expect(await authoredCapabilities("linq-message")).toEqual([
-      "browser-agent",
-      "calendar-check-availability",
-      "calendar-create-event",
-      "calendar-list-events",
-      "contacts-search",
-      "gmail-read-thread",
-      "gmail-search",
-      "gmail-send",
-      "gmail-update",
       "personal_info__update",
       "react_to_message",
       "request_vault_import",
@@ -55,15 +42,8 @@ describe("authored mode capability matrix", () => {
     ]);
   });
 
-  it("gives scheduled workers only authored read and execution capabilities", async () => {
-    expect(await authoredCapabilities("scheduled-worker")).toEqual([
-      "browser-agent",
-      "calendar-check-availability",
-      "calendar-list-events",
-      "contacts-search",
-      "gmail-read-thread",
-      "gmail-search",
-    ]);
+  it("gives scheduled workers no authored grouped or memory capabilities", async () => {
+    expect(await authoredCapabilities("scheduled-worker")).toEqual([]);
   });
 
   it("limits authored scheduled reporting tools to delivery or resuming its own run", async () => {
@@ -123,10 +103,6 @@ async function authoredCapabilities(authenticator: string) {
     capabilities.push(
       ...Object.keys(workstreamTools).map((name) => `workstreams__${name}`)
     );
-
-  if (await evaluateDynamic(browserAgent, context)) {
-    capabilities.push("browser-agent");
-  }
 
   return capabilities.toSorted();
 }

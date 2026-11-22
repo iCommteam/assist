@@ -21,7 +21,6 @@ const toolActivityKind = new Map<string, BrowserActivityKind>([
   ["browser_snapshot", "semantic"],
   ["browser_text", "semantic"],
   ["browser_wait_for", "semantic"],
-  ["capture_browser_image", "visual"],
   ["computer_action", "visual"],
   ["fill_from_vault", "vault"],
   ["list_vault", "vault"],

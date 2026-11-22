@@ -3,14 +3,14 @@ import { z } from "zod";
 import { isE164PhoneNumber } from "@shared/identity/phone-number";
 import { databaseUrlSchema } from "@shared/environment/database-url";
 
-export const betterAuthSecretSchema = z
+const betterAuthSecretSchema = z
   .string()
   .refine(
     (value) => value.trim().length >= 32,
     "BETTER_AUTH_SECRET must contain at least 32 characters."
   );
 
-export const secretEncryptionKeySchema = z
+const secretEncryptionKeySchema = z
   .string()
   .refine(
     (value) => Buffer.from(value, "base64").length === 32,
@@ -65,8 +65,7 @@ export const env = createEnv({
     DATABASE_URL: databaseUrlSchema,
     KERNEL_API_KEY: requiredValue,
 
-    // Optional overrides with local defaults. Vercel deployments provision
-    // installation secrets in their connected private Blob store.
+    // Optional overrides with local defaults. Production must set both secrets.
     BETTER_AUTH_SECRET: installationSecretWithLocalDefault(
       betterAuthSecretSchema,
       "openinstinct-local-auth-development-secret"
@@ -83,7 +82,6 @@ export const env = createEnv({
     // Optional
     BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
     BLOB_STORE_ID: requiredValue.optional(),
-    GOOGLE_CONNECTOR_UID: requiredValue.default("google/open-instinct"),
     LINQ_CONNECTOR: requiredValue.optional(),
     LINK_CLIENT_ID: requiredValue.optional(),
     LINK_CLIENT_SECRET: requiredValue.optional(),

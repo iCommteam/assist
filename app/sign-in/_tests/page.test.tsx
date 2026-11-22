@@ -22,26 +22,26 @@ vi.mock("@app/sign-in/_components/local-form", () => ({
 }));
 
 describe("phone sign-in reauthentication", () => {
-  it("allows an already signed-in user to verify again and return to Link", async () => {
+  it("allows an already signed-in user to verify again and return to the vault", async () => {
     const html = renderToStaticMarkup(
       await SignInPage({
         params: Promise.resolve({}),
         searchParams: Promise.resolve({
           reauthenticate: "true",
-          callbackUrl: "/link",
+          callbackUrl: "/vault",
         }),
       })
     );
 
     expect(html).toContain("Sign in again");
-    expect(html).toContain('action="/link"');
+    expect(html).toContain('action="/vault"');
   });
 
   it("still redirects signed-in users outside the reauthentication flow", async () => {
     await expect(
       SignInPage({
         params: Promise.resolve({}),
-        searchParams: Promise.resolve({ callbackUrl: "/link" }),
+        searchParams: Promise.resolve({ callbackUrl: "/vault" }),
       })
     ).rejects.toThrow("Redirect: /");
   });

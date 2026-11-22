@@ -55,7 +55,7 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain("approval");
   });
 
-  it("avoids tool approval loops and keeps Link purchases unavailable", async () => {
+  it("avoids tool approval loops and offers no Link purchases", async () => {
     const selected = await evaluateDynamic(
       executionSafety,
       dynamicContext("linq-message")
@@ -63,10 +63,7 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain(
       "Tools run without a separate Eve approval step"
     );
-    expect(selected?.content).toContain(
-      "Link purchases are temporarily unavailable"
-    );
-    expect(selected?.content).not.toContain("approval in Link");
+    expect(selected?.content).not.toContain("Link");
     expect(selected?.content).not.toContain("native approval card");
   });
 
@@ -120,17 +117,14 @@ describe("agent instructions", () => {
     ).toBeNull();
   });
 
-  it("reports Link purchases as temporarily unavailable while Link is disabled", async () => {
+  it("tells the coordinator the worker returns no images and no Link checkout", async () => {
     const selected = await evaluateDynamic(
       workerCoordination,
       dynamicContext("linq")
     );
-    expect(selected?.content).toContain(
-      "Link purchases are temporarily unavailable"
-    );
-    expect(selected?.content).toContain(
-      "do not tell the browser worker to use Link or `fill_from_link`"
-    );
+    expect(selected?.content).toContain("The worker returns text only.");
+    expect(selected?.content).not.toContain("/artifacts/");
+    expect(selected?.content).not.toContain("fill_from_link");
     expect(selected?.content).not.toContain("link__create_spend_request");
     expect(selected?.content).not.toContain("merchant_url");
     expect(selected?.content).toContain(

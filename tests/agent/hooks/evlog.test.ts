@@ -33,7 +33,7 @@ beforeEach(() => {
 });
 
 describe("evlog hook", () => {
-  it("emits full messages per turn and isolates later turns", async () => {
+  it("emits one event per turn without message text and isolates later turns", async () => {
     const turnFacts = [
       ...turnLines("turn-1", null, {
         received: "email mason@example.com card 4111111111111111",
@@ -56,21 +56,23 @@ describe("evlog hook", () => {
     expect(capturedEvents[0]).toMatchObject({
       agent: { name: "root" },
       channel: { kind: "linq" },
-      message: {
-        received: "email mason@example.com card 4111111111111111",
-        response: "full response mason@example.com",
-      },
       requestId: "session-1:turn-1",
       session: { id: "session-1" },
       tools: [{ name: "web_search", outcome: "completed" }],
       turn: { id: "turn-1", outcome: "completed" },
     });
     expect(capturedEvents[1]).toMatchObject({
-      message: { received: "next turn", response: "next response" },
       requestId: "session-1:turn-2",
       tools: [],
       turn: { id: "turn-2", outcome: "completed" },
     });
+    for (const captured of capturedEvents) {
+      expect(captured).not.toHaveProperty("message");
+      const serialized = JSON.stringify(captured);
+      expect(serialized).not.toContain("mason@example.com");
+      expect(serialized).not.toContain("4111111111111111");
+      expect(serialized).not.toContain("next response");
+    }
   });
 
   it("emits one session event when the session ends", async () => {

@@ -99,7 +99,6 @@ export default [
       );
       turn.expectOk();
       turn.succeeded();
-      turn.notCalledTool("profile__save_memory");
       turn.notCalledTool("personal_info__update");
       const text = await requireDeliveredText(t, turn);
       assertPlainTextDelivery(t, text);

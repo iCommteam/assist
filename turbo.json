@@ -8,24 +8,6 @@
         "BLOB_*",
         "DATABASE_URL",
         "EVE_NEXT_*",
-        "*_CONNECTOR_UID",
-        "KERNEL_*",
-        "LINQ_*",
-        "LINK_*",
-        "STRIPE_PUBLISHABLE_KEY",
-        "NODE_ENV",
-        "SECRET_ENCRYPTION_KEY",
-        "VERCEL_*"
-      ],
-      "outputs": [".next/**", "!.next/cache/**", "next-env.d.ts"]
-    },
-    "build:vercel": {
-      "dependsOn": ["db:migrate"],
-      "env": [
-        "BETTER_AUTH_*",
-        "BLOB_*",
-        "DATABASE_URL",
-        "*_CONNECTOR_UID",
         "KERNEL_*",
         "LINQ_*",
         "LINK_*",
@@ -47,7 +29,6 @@
         "BETTER_AUTH_*",
         "BLOB_*",
         "DATABASE_URL",
-        "*_CONNECTOR_UID",
         "KERNEL_*",
         "LINQ_*",
         "LINK_*",
@@ -57,9 +38,6 @@
         "VERCEL_*"
       ],
       "persistent": true
-    },
-    "deploy:app": {
-      "cache": false
     },
     "format:check": {
       "outputs": []
@@ -76,7 +54,6 @@
         "BETTER_AUTH_*",
         "BLOB_*",
         "DATABASE_URL",
-        "*_CONNECTOR_UID",
         "KERNEL_*",
         "LINQ_*",
         "LINK_*",

@@ -43,7 +43,6 @@ describe("database services", () => {
       chats,
       secrets,
       sessions,
-      settings,
       scope,
       vault,
     ] = await Promise.all([
@@ -53,7 +52,6 @@ describe("database services", () => {
       import("@db/services/chats"),
       import("@db/services/secrets"),
       import("@db/services/sessions"),
-      import("@db/services/settings"),
       import("@db/services/scope"),
       import("@db/services/vault"),
     ]);
@@ -63,59 +61,26 @@ describe("database services", () => {
     await scope.ensureScope(alice);
     await scope.ensureScope(bob);
 
-    const imageInput = {
-      browserSessionId: "browser-alice",
-      idempotencyKey: "worker-session:call-image",
-      label: "Product image",
-      rootSessionId: "session-alice",
-      sourceKind: "viewport",
-      workerSessionId: "worker-alice",
-    };
-    const firstReservation = await browserImages.reserveBrowserImageArtifact(
-      alice,
-      imageInput
-    );
-    const retryReservation = await browserImages.reserveBrowserImageArtifact(
-      alice,
-      imageInput
-    );
-    expect(firstReservation.status).toBe("pending");
-    expect(retryReservation).toEqual(firstReservation);
-    if (firstReservation.status !== "pending") {
-      throw new Error("Expected a pending browser image reservation.");
-    }
-    const finalized = await browserImages.finalizeBrowserImageArtifact(
-      alice,
-      firstReservation.reservation,
-      {
+    const [image] = await pgliteDatabase
+      .insert(schema.browserImageArtifacts)
+      .values({
+        browserSessionId: "browser-alice",
         byteSize: 8,
         contentHash: "content-hash",
+        createdByUserId: alice.userId,
         filename: "product.png",
+        idempotencyKey: "worker-session:call-image",
+        label: "Product image",
         mediaType: "image/png",
+        rootSessionId: "session-alice",
         sourceKind: "viewport",
-        storagePathname: `${firstReservation.reservation.storagePathname}/content-hash`,
-      }
-    );
-    const image = finalized.image;
-    expect(image).toMatchObject({
-      byteSize: 8,
-      label: "Product image",
-      mediaType: "image/png",
-    });
-    await expect(
-      browserImages.finalizeBrowserImageArtifact(
-        alice,
-        firstReservation.reservation,
-        {
-          byteSize: 9,
-          contentHash: "losing-content-hash",
-          filename: "losing.png",
-          mediaType: "image/png",
-          sourceKind: "viewport",
-          storagePathname: `${firstReservation.reservation.storagePathname}/losing-content-hash`,
-        }
-      )
-    ).resolves.toEqual(finalized);
+        status: "ready",
+        storagePathname: "browser-images/alice/product/content-hash",
+        workerSessionId: "worker-alice",
+        workspaceId: alice.workspaceId,
+      })
+      .returning();
+    if (!image) throw new Error("Expected a stored browser image.");
     const storedImage = await browserImages.readReadyBrowserImageArtifact(
       alice,
       image.id,
@@ -125,17 +90,13 @@ describe("database services", () => {
       /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u
     );
     expect(
-      await browserImages.readReadyBrowserImageArtifact(bob, image.id)
+      await browserImages.readReadyBrowserImageArtifact(alice, image.id, {
+        rootSessionId: "session-other",
+      })
     ).toBeUndefined();
     expect(
-      await browserImages.reserveBrowserImageArtifact(alice, imageInput)
-    ).toEqual({ image, status: "ready" });
-    await expect(
-      browserImages.reserveBrowserImageArtifact(alice, {
-        ...imageInput,
-        workerSessionId: "different-worker",
-      })
-    ).rejects.toThrow("idempotency key is already in use");
+      await browserImages.readReadyBrowserImageArtifact(bob, image.id)
+    ).toBeUndefined();
 
     await sessions.claimSession(alice, "session-alice");
 
@@ -336,10 +297,6 @@ describe("database services", () => {
     expect(await secrets.readEncryptedSecret(bob, sharedSecretId)).toBe(
       "ciphertext-bob"
     );
-
-    await settings.selectGatewayModel(alice, "openai/test");
-    expect(await settings.getGatewayModel(alice)).toBe("openai/test");
-    expect(await settings.getGatewayModel(bob)).toBe("openai/gpt-6.1-sol-fast");
   }, 15_000);
 });
 

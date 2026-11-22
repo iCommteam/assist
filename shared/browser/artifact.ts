@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const maximumBrowserImageBytes = 8 * 1024 * 1024;
 
-export const browserImageMediaTypeSchema = z.enum([
+const browserImageMediaTypeSchema = z.enum([
   "image/gif",
   "image/jpeg",
   "image/png",
@@ -15,8 +15,6 @@ export const browserImageSourceKinds = [
   "image_resource",
   "viewport",
 ] as const;
-
-export const browserImageSourceKindSchema = z.enum(browserImageSourceKinds);
 
 export const browserImageArtifactReferenceSchema = z
   .object({
@@ -31,10 +29,6 @@ export const browserImageArtifactReferenceSchema = z
     message: "Artifact URL must match its id.",
     path: ["url"],
   });
-
-export type BrowserImageArtifactReference = z.infer<
-  typeof browserImageArtifactReferenceSchema
->;
 
 export function browserImageArtifactUrl(id: string) {
   return `/artifacts/${encodeURIComponent(z.uuid().parse(id))}`;

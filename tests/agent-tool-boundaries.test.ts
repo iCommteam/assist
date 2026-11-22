@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import rootAgent from "@agent/agent";
 
 const rootTools = "agent/tools";
-const rootMemory = "agent/memory/profile.ts";
 const workerRoot = "agent/subagents/browser-agent";
 const workerTools = `${workerRoot}/tools`;
 
@@ -22,16 +21,14 @@ describe("root and worker capability boundaries", () => {
     expect(rootAgent.defaultTools).toBe(false);
     expect(toolFiles(rootTools)).toEqual([
       "ask_question.ts",
-      "calendar.ts",
-      "contacts.ts",
-      "gmail.ts",
       "messaging.ts",
       "run_browser.ts",
       "schedules.ts",
       "vault.ts",
-      "web_fetch.ts",
       "web_search.ts",
     ]);
+    // With defaultTools off, eve's web_fetch exists only if a file adds it back.
+    expect(existsSync(`${rootTools}/web_fetch.ts`)).toBe(false);
     expect(existsSync(`${rootTools}/sendMessage.ts`)).toBe(false);
     // Eve's built-in `eve__task_cancel` replaces the authored cancel tool.
     expect(existsSync(`${rootTools}/task_cancel.ts`)).toBe(false);
@@ -47,24 +44,20 @@ describe("root and worker capability boundaries", () => {
     expect(rootInstructions).toContain(
       "Perform public research, source discovery, comparisons, and current-information lookups directly with `web_search`"
     );
-    expect(rootInstructions).toContain(
-      "try `web_fetch` before browser automation"
-    );
+    expect(rootInstructions).not.toContain("web_fetch");
   });
 
-  it("keeps durable memory scoped to the authenticated root user", () => {
-    const memory = readFileSync(rootMemory, "utf8");
-
-    expect(memory).toContain("defineMemory(");
-    expect(memory).toContain("scope: resolveProfileMemoryScope");
+  it("keeps no file memory, which needs Vercel Blob", () => {
+    expect(readdirSync("agent/memory").toSorted()).toEqual([
+      "personal_info.ts",
+      "workstreams.ts",
+    ]);
   });
 
   it("gives worker the browser and opaque-vault tools without messaging", () => {
     expect(toolFiles(workerTools)).toEqual([
       "bash.ts",
-      "capture_browser_image.ts",
       "computer_action.ts",
-      "fill_from_link.ts",
       "fill_from_vault.ts",
       "list_vault.ts",
       "manage_browsers.ts",
@@ -102,11 +95,7 @@ describe("root and worker capability boundaries", () => {
     expect(readFileSync("package.json", "utf8")).not.toContain(
       "@onkernel/eve-extension"
     );
-    for (const tool of [
-      "capture_browser_image",
-      "computer_action",
-      "manage_browsers",
-    ]) {
+    for (const tool of ["computer_action", "manage_browsers"]) {
       const source = readFileSync(`${workerTools}/${tool}.ts`, "utf8");
       expect(source).toContain("defineTool(");
       expect(source).not.toContain("defineDynamic(");
@@ -155,11 +144,7 @@ describe("root and worker capability boundaries", () => {
     expect(readFileSync(`${workerRoot}/lib/kernel.ts`, "utf8")).toContain(
       "new Kernel("
     );
-    for (const tool of [
-      "capture_browser_image",
-      "computer_action",
-      "manage_browsers",
-    ]) {
+    for (const tool of ["computer_action", "manage_browsers"]) {
       const source = readFileSync(`${workerTools}/${tool}.ts`, "utf8");
       expect(source).toContain(
         'from "@agent/subagents/browser-agent/lib/kernel"'

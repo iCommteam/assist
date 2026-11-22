@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
-import { link } from "@stripe/link-integrations-better-auth";
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { and, eq } from "drizzle-orm";
 import { phoneNumber } from "better-auth/plugins/phone-number";
 import { account, db, session, user, verification } from "@db";
 import { betterAuthBaseURL } from "@shared/environment/origin";
@@ -30,7 +28,6 @@ async function initializeAuthWithRetry() {
 
 async function initializeAuth() {
   const { betterAuthSecret } = await getInstallationSecrets();
-  const { LINK_CLIENT_ID, LINK_CLIENT_SECRET, STRIPE_PUBLISHABLE_KEY } = env;
   return betterAuth({
     appName: "Local Vault Assistant",
     baseURL: betterAuthBaseURL(),
@@ -48,7 +45,7 @@ async function initializeAuth() {
       "/sign-in/social",
       "/sign-up/email",
       "/verify-email",
-      // Wallet disconnection must revoke the Link grant through its plugin.
+      // No OAuth provider is configured, so there is no account to unlink.
       "/unlink-account",
     ],
     account: {
@@ -61,47 +58,17 @@ async function initializeAuth() {
           defaultValue: "better-auth",
         },
       },
-      accountLinking: {
-        trustedProviders: ["link"],
-        allowDifferentEmails: true,
-        // Phone verification signs users in independently of OAuth accounts.
-        allowUnlinkingAll: true,
-      },
     },
     databaseHooks: {
       account: {
         create: {
-          before: async (value) => {
-            if (value.providerId === "link") {
-              const [existing] = await db
-                .select({ id: account.id })
-                .from(account)
-                .where(
-                  and(
-                    eq(account.userId, value.userId),
-                    eq(account.providerId, "link")
-                  )
-                )
-                .limit(1);
-              // Reauthorization updates the same account. Replacing it requires
-              // disconnecting first so the previous grant is revoked.
-              if (existing) return false;
-            }
-            return { data: { ...value, issuer: value.providerId } };
-          },
+          before: async (value) => ({
+            data: { ...value, issuer: value.providerId },
+          }),
         },
       },
     },
     plugins: [
-      ...(LINK_CLIENT_ID && LINK_CLIENT_SECRET && STRIPE_PUBLISHABLE_KEY
-        ? [
-            link({
-              clientId: LINK_CLIENT_ID,
-              clientSecret: LINK_CLIENT_SECRET,
-              publishableKey: STRIPE_PUBLISHABLE_KEY,
-            }),
-          ]
-        : []),
       phoneNumber({
         allowedAttempts: 3,
         expiresIn: 300,

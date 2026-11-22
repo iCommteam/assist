@@ -1,64 +1,23 @@
-import {
-  BotIcon,
-  CloudIcon,
-  ImageIcon,
-  MailIcon,
-  MessageSquareIcon,
-  WalletIcon,
-} from "lucide-react";
+import { CloudIcon, MailIcon, MessageSquareIcon } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import {
-  getTokenResponse,
-  NoValidTokenError,
-  UserAuthorizationRequiredError,
-} from "@vercel/connect";
-import { z } from "zod";
-import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
-import { getGatewayModel } from "@db/services/settings";
-import { linkConfigured } from "@db/services/auth/link";
 import { env } from "@shared/environment";
-import { googleWorkspaceTokenParams } from "@shared/google-workspace/connection";
 import { requireRequestScope } from "@web/auth/request-scope";
-import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
-import { ModelSelector } from "./_components/model-selector";
 
-export default async function Page({ searchParams }: PageProps<"/">) {
-  const google = (await searchParams).google;
-  const scope = await requireRequestScope();
-  const [googleWorkspace, gatewayModel] = await Promise.all([
-    readGoogleWorkspaceConnection(scope.userId),
-    getGatewayModel(scope),
-  ]);
+export default async function Page() {
+  await requireRequestScope();
   const browserReady = true;
-  const imageStorageReady = Boolean(
-    env.BLOB_STORE_ID ?? env.BLOB_READ_WRITE_TOKEN
-  );
 
   return (
     <div className="mx-auto flex w-full max-w-4xl min-w-0 flex-col gap-8 px-4 py-6 sm:px-6 sm:py-8">
       <h1 className="sr-only">Workspace</h1>
 
-      {google === "unavailable" ? (
-        <Alert>
-          <MailIcon />
-          <AlertTitle>Google Workspace unavailable</AlertTitle>
-          <AlertDescription>
-            This deployment does not have a working Google OAuth connector yet.
-          </AlertDescription>
-        </Alert>
-      ) : null}
-
       <ChannelsSection
         browserReady={browserReady}
         linqConfigured={env.LINQ_CONNECTOR !== undefined}
         linqPhoneNumber={env.LINQ_PHONE_NUMBER}
-      />
-      <ConnectionsSection
-        connection={googleWorkspace}
-        linkEnabled={linkConfigured()}
       />
 
       <WorkspaceSection headingId="connectors-heading" title="Infrastructure">
@@ -69,113 +28,10 @@ export default async function Page({ searchParams }: PageProps<"/">) {
             icon={<CloudIcon />}
             label="Kernel browser"
           />
-          <ConnectorRow
-            action={
-              <Badge variant={imageStorageReady ? "success" : "secondary"}>
-                {imageStorageReady ? "Connected" : "Setup required"}
-              </Badge>
-            }
-            description={
-              imageStorageReady
-                ? "Store browser images in a private Vercel Blob store."
-                : "Connect a private Vercel Blob store to share browser images."
-            }
-            icon={<ImageIcon />}
-            label="Vercel Blob"
-          />
-          <ConnectorRow
-            action={<ModelSelector modelId={gatewayModel} />}
-            description={gatewayModel}
-            icon={<BotIcon />}
-            label="AI Gateway model"
-          />
         </div>
       </WorkspaceSection>
     </div>
   );
-}
-
-function ConnectionsSection({
-  connection,
-  linkEnabled,
-}: {
-  readonly connection?: GoogleWorkspaceConnection;
-  readonly linkEnabled: boolean;
-}) {
-  const state = connection?.state;
-  const description =
-    state === "connected"
-      ? (connection?.accountLabel ?? "Gmail, Calendar, and Contacts connected.")
-      : state === "unavailable"
-        ? "Attach a Vercel Connect Google OAuth connector to enable this."
-        : "Gmail, Calendar, and Contacts through your Google account.";
-
-  return (
-    <WorkspaceSection headingId="connections-heading" title="Connections">
-      <div className="divide-y divide-border/50 border-y border-border/50">
-        <ConnectorRow
-          action={<GoogleWorkspaceAction state={state} />}
-          description={description}
-          icon={<MailIcon />}
-          label="Google Workspace"
-        />
-        <ConnectorRow
-          action={
-            <Button
-              nativeButton={false}
-              render={<Link href="/link" />}
-              variant="outline"
-              aria-label={
-                linkEnabled ? "Open Link wallet" : "Set up Link wallet"
-              }
-            >
-              {linkEnabled ? "Open" : "Set up"}
-            </Button>
-          }
-          description={
-            linkEnabled
-              ? "Connect or manage your wallet for purchases approved in Link."
-              : "Set up Link to enable wallet connections."
-          }
-          icon={<WalletIcon />}
-          label="Link wallet"
-        />
-      </div>
-    </WorkspaceSection>
-  );
-}
-
-interface GoogleWorkspaceConnection {
-  readonly accountLabel: string | null;
-  readonly state: "connected" | "disconnected" | "unavailable";
-}
-
-async function readGoogleWorkspaceConnection(
-  userId: string
-): Promise<GoogleWorkspaceConnection> {
-  try {
-    const response = await getTokenResponse(
-      env.GOOGLE_CONNECTOR_UID,
-      googleWorkspaceTokenParams(userId),
-      { forceRefresh: true }
-    );
-    const claims = z
-      .object({ email: z.string().optional() })
-      .safeParse(response.claims);
-    return {
-      accountLabel:
-        response.name ?? (claims.success ? (claims.data.email ?? null) : null),
-      state: "connected",
-    };
-  } catch (error) {
-    if (
-      error instanceof UserAuthorizationRequiredError ||
-      error instanceof NoValidTokenError
-    ) {
-      return { accountLabel: null, state: "disconnected" };
-    }
-    return { accountLabel: null, state: "unavailable" };
-  }
 }
 
 export function ChannelsSection({

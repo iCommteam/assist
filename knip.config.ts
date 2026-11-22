@@ -28,8 +28,6 @@ export default {
     "eslint-plugin-react-hooks",
     "eslint-plugin-turbo",
     "oxlint-tailwindcss",
-    // Invoked as a CLI.
-    "vercel",
   ],
   ignoreIssues: {
     // Eve AI Elements and shadcn registry primitives intentionally expose
