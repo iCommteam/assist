@@ -112,6 +112,30 @@ describe("Eve channel authentication", () => {
     }
   );
 
+  it("refuses a caller without a sign-in even in eve development mode", async () => {
+    vi.stubEnv("EVE_DEV", "1");
+    getAuthSessionMock.mockResolvedValue(null);
+    const route = findRoute("POST", "/eve/v1/session");
+
+    try {
+      const response = await route.handler(
+        new Request("http://127.0.0.1:4274/eve/v1/session", {
+          body: JSON.stringify({ message: "Hello" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+        unexpectedRouteContext()
+      );
+
+      expect(response.status).toBe(401);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "authentication_required",
+      });
+    } finally {
+      vi.stubEnv("EVE_DEV", "");
+    }
+  });
+
   it("fails closed on routes whose subject cannot be resolved", async () => {
     const route = findRoute("POST", "/eve/v1/callback/:token");
 

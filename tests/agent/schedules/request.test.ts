@@ -1,32 +1,25 @@
 import type { readFile } from "node:fs/promises";
-import type { getVercelOidcToken } from "@vercel/oidc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 interface TestEnvironment {
+  EVE_NEXT_PRODUCTION_PORT: number | undefined;
   NODE_ENV: "development" | "production" | "test";
-  VERCEL_ENV: "development" | "preview" | "production" | undefined;
-  VERCEL_URL: string | undefined;
+  SCHEDULED_RUN_SECRET: string | undefined;
 }
+
+const secret = "scheduled-run-secret-0123456789abcdefghij";
 
 const mocks = vi.hoisted(() => {
   const env: TestEnvironment = {
-    NODE_ENV: "development",
-    VERCEL_ENV: undefined,
-    VERCEL_URL: undefined,
+    EVE_NEXT_PRODUCTION_PORT: undefined,
+    NODE_ENV: "production",
+    SCHEDULED_RUN_SECRET: undefined,
   };
-  return {
-    env,
-    getToken: vi.fn<typeof getVercelOidcToken>(),
-    readFile: vi.fn<typeof readFile>(),
-  };
+  return { env, readFile: vi.fn<typeof readFile>() };
 });
 
 vi.mock("node:fs/promises", () => ({ readFile: mocks.readFile }));
-vi.mock("@vercel/oidc", () => ({ getVercelOidcToken: mocks.getToken }));
 vi.mock("@shared/environment", () => ({ env: mocks.env }));
-vi.mock("@shared/environment/origin", () => ({
-  applicationOrigin: () => "https://example.com",
-}));
 
 import {
   postScheduledReport,
@@ -37,10 +30,9 @@ describe("scheduled run requests", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null)));
-    mocks.env.NODE_ENV = "development";
-    mocks.env.VERCEL_ENV = undefined;
-    mocks.env.VERCEL_URL = undefined;
-    mocks.getToken.mockResolvedValue("vercel-oidc-token");
+    mocks.env.EVE_NEXT_PRODUCTION_PORT = undefined;
+    mocks.env.NODE_ENV = "production";
+    mocks.env.SCHEDULED_RUN_SECRET = secret;
     mocks.readFile.mockResolvedValue(
       JSON.stringify({
         appRoot: process.cwd(),
@@ -70,64 +62,70 @@ describe("scheduled run requests", () => {
     );
   });
 
-  it("authenticates Vercel callbacks with the deployment OIDC token", async () => {
-    mocks.env.VERCEL_ENV = "preview";
-    mocks.env.VERCEL_URL = "openinstinct-preview.vercel.app";
-
+  it("posts to the co-located eve server over loopback with the shared secret", async () => {
     await postScheduledRunRoute("/internal/scheduled-run/report", {
       runId: "run-1",
     });
 
-    expect(mocks.getToken).toHaveBeenCalledOnce();
-    expect(fetch).toHaveBeenCalledWith(
-      new URL(
-        "https://openinstinct-preview.vercel.app/internal/scheduled-run/report"
-      ),
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      new URL("http://127.0.0.1:4274/internal/scheduled-run/report"),
       expect.objectContaining({
         body: JSON.stringify({ runId: "run-1" }),
         method: "POST",
         redirect: "error",
       })
     );
-    expect(sentHeaders().get("authorization")).toBe("Bearer vercel-oidc-token");
+    expect(sentHeaders().get("authorization")).toBe(`Bearer ${secret}`);
     expect(sentHeaders().get("content-type")).toBe("application/json");
-    expect(sentHeaders().get("x-vercel-trusted-oidc-idp-token")).toBe(
-      "vercel-oidc-token"
-    );
   });
 
-  it("leaves local callbacks to Eve local development authentication", async () => {
+  it("follows a configured eve port", async () => {
+    mocks.env.EVE_NEXT_PRODUCTION_PORT = 5100;
+
     await postScheduledRunRoute("/internal/scheduled-run/respond", {
       answer: "Logan",
       leaseToken: "lease-1",
       runId: "run-1",
     });
 
-    expect(mocks.getToken).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://127.0.0.1:5100/internal/scheduled-run/respond"),
+      expect.objectContaining({ method: "POST", redirect: "error" })
+    );
+  });
+
+  it("sends nothing while the secret is unset", async () => {
+    mocks.env.SCHEDULED_RUN_SECRET = undefined;
+
+    await expect(
+      postScheduledRunRoute("/internal/scheduled-run/report", {
+        runId: "run-1",
+      })
+    ).rejects.toThrow(
+      "Scheduled-run callbacks are disabled. Set SCHEDULED_RUN_SECRET."
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reaches the eve development server that Next recorded", async () => {
+    mocks.env.NODE_ENV = "development";
+
+    await postScheduledRunRoute("/internal/scheduled-run/respond", {
+      answer: "Logan",
+      leaseToken: "lease-1",
+      runId: "run-1",
+    });
+
     expect(fetch).toHaveBeenCalledWith(
       new URL("http://127.0.0.1:51829/internal/scheduled-run/respond"),
       expect.objectContaining({ method: "POST", redirect: "error" })
     );
-    expect(sentHeaders().get("authorization")).toBeNull();
-    expect(sentHeaders().get("content-type")).toBe("application/json");
-    expect(sentHeaders().get("x-vercel-trusted-oidc-idp-token")).toBeNull();
-  });
-
-  it("falls back to the application origin outside Next development", async () => {
-    mocks.env.NODE_ENV = "test";
-
-    await postScheduledRunRoute("/internal/scheduled-run/report", {
-      runId: "run-1",
-    });
-
-    expect(mocks.readFile).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledWith(
-      new URL("https://example.com/internal/scheduled-run/report"),
-      expect.objectContaining({ method: "POST", redirect: "error" })
-    );
+    expect(sentHeaders().get("authorization")).toBe(`Bearer ${secret}`);
   });
 
   it("ignores a development registry owned by another checkout", async () => {
+    mocks.env.NODE_ENV = "development";
     mocks.readFile.mockResolvedValue(
       JSON.stringify({
         appRoot: "/tmp/another-checkout",
@@ -140,7 +138,7 @@ describe("scheduled run requests", () => {
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      new URL("https://example.com/internal/scheduled-run/report"),
+      new URL("http://127.0.0.1:4274/internal/scheduled-run/report"),
       expect.objectContaining({ method: "POST", redirect: "error" })
     );
   });

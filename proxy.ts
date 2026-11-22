@@ -8,7 +8,6 @@ const publicPaths = new Set([
   "/sign-up",
   "/two-factor",
   "/eve/v1/health",
-  "/eve/v1/dev/schedules/dynamic",
 ]);
 
 // The site API authenticates each call by bearer token and never reads
@@ -20,8 +19,7 @@ export async function proxy(request: NextRequest) {
   if (
     publicPaths.has(pathname) ||
     siteApiPath.test(pathname) ||
-    pathname.startsWith("/api/auth/") ||
-    pathname.startsWith("/internal/scheduled-run/")
+    pathname.startsWith("/api/auth/")
   ) {
     return NextResponse.next();
   }

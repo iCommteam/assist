@@ -23,18 +23,69 @@ passwords out of the model's context. You can read the code to see how it works.
 
 ## Deployment on Railway
 
-One Railway service builds the repository's Dockerfile and runs a single
-replica, with a volume mounted at `/app/.eve/.workflow-data` for durable
-sessions and Postgres on Railway's private network. The service's pre-deploy
-command, `pnpm db:migrate`, applies the committed migrations before each
-release. Set `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `KERNEL_API_KEY`,
-`ANTHROPIC_API_KEY`, `BETTER_AUTH_URL` (the public https origin), and both
-installation secrets:
+One Railway service builds the repository's `Dockerfile`. The container runs
+`scripts/start.ts`, which checks the configuration, starts `next start`, and
+lets Next spawn the eve server beside it on `127.0.0.1:4274`, which is never
+exposed. Postgres is a separate Railway service on the private network, with
+its public TCP proxy turned off.
 
-```bash
-BETTER_AUTH_SECRET="$(openssl rand -base64 32)"
-SECRET_ENCRYPTION_KEY="$(openssl rand -base64 32)"
-```
+### Service settings
+
+| Setting           | Value                                                     |
+| ----------------- | --------------------------------------------------------- |
+| Builder           | Dockerfile, at the repository root                        |
+| Start command     | none: the image's own command runs `scripts/start.ts`     |
+| Pre-deploy        | `pnpm db:migrate`, which applies the committed migrations |
+| Health check path | `/eve/v1/health`, with a timeout of 300 seconds           |
+| Volume            | mounted at exactly `/app/.eve/.workflow-data`             |
+| Replicas          | 1                                                         |
+| Restart policy    | on failure                                                |
+| Public domain     | `https://assist.icommteam.com` only                       |
+
+The volume holds eve's sessions and runs. Mounting it at `/app/.eve` instead
+would hide the build output. Keep exactly one replica: the session store
+accepts a single process, and a deploy must stop the old container before the
+new one starts. The health check passes only once both Next and the eve
+server answer. Delete the generated `*.up.railway.app` domain once the custom
+domain works, because sign-in trusts one origin. Teemiq, in the same project,
+can call the site API over the private network instead; give `PORT` a fixed
+value such as `3000` so that address stays stable.
+
+`scripts/start.ts` refuses to start when the configuration is unsafe, and the
+log names every problem without printing any value. It exits when the eve
+server stops answering, because nothing else restarts it, and Railway's
+restart policy then starts a fresh container. The container starts as root
+only to hand the root-owned volume to the `node` user; both servers run as
+`node`.
+
+### Environment variables
+
+| Variable                                | Secret | Value                                                    |
+| --------------------------------------- | ------ | -------------------------------------------------------- |
+| `DATABASE_URL`, `DATABASE_URL_UNPOOLED` | yes    | references to the Postgres service's private URL         |
+| `BETTER_AUTH_URL`                       | no     | `https://assist.icommteam.com`; also read at build time  |
+| `BETTER_AUTH_SECRET`                    | yes    | `openssl rand -base64 32`, at least 32 characters        |
+| `SECRET_ENCRYPTION_KEY`                 | yes    | `openssl rand -base64 32`, exactly 32 bytes once decoded |
+| `SCHEDULED_RUN_SECRET`                  | yes    | `openssl rand -base64 32`, at least 32 characters        |
+| `ANTHROPIC_API_KEY`                     | yes    | the team's Anthropic key; both agents use it             |
+| `KERNEL_API_KEY`                        | yes    | the team's Kernel project key                            |
+| `ASSIST_ALLOWED_EMAILS`                 | no     | the team's emails; see [Team sign-in](#team-sign-in)     |
+| `ASSIST_ADMIN_EMAILS`                   | no     | the administrators among them; optional                  |
+| `ASSIST_SIGNUP_CODE`                    | yes    | at least 16 characters                                   |
+| `ASSIST_SITE_TOKEN_<SITE>`              | yes    | one per site; see [Connected sites](#connected-sites)    |
+| `ASSIST_SITE_OWNER_<SITE>`              | no     | one per site                                             |
+| `PORT`                                  | no     | provided by Railway; Next listens on it                  |
+
+Generate each secret locally and paste it straight into Railway as a sealed
+variable. `SCHEDULED_RUN_SECRET` authenticates the scheduled-run callbacks that
+the eve server makes to itself over loopback; nothing outside the container
+uses it. The image sets `NODE_ENV=production`. These must stay unset, and the
+start check refuses them: `VERCEL` and every `VERCEL_*`, `EVE_DEV`,
+`EVE_NEXT_PRODUCTION_ORIGIN`, `EVE_NEXT_PRODUCTION_PORT`,
+`EVE_SCHEDULES_DISABLED`, `WORKFLOW_LOCAL_BASE_URL`, `WORKFLOW_POSTGRES_URL`,
+`BLOB_READ_WRITE_TOKEN`, `BLOB_STORE_ID`, `AI_GATEWAY_API_KEY`,
+`BETTER_AUTH_TRUSTED_ORIGINS`, `BETTER_AUTH_SECRETS`, `KERNEL_BASE_URL`,
+`STRIPE_PUBLISHABLE_KEY`, and every `LINK_*`, `LINQ_*` and `OTEL_EXPORTER_*`.
 
 The vault key encrypts saved secrets: losing it loses them, and rotating it
 requires re-encrypting existing vault values. Application migrations live in

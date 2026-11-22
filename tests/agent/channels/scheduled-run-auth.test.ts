@@ -4,43 +4,102 @@ import type {
   RouteHandlerArgs,
 } from "eve/channels";
 import type { Delivery } from "eve/sessions";
-import { describe, expect, it, vi } from "vitest";
-import scheduledRunChannel from "@agent/channels/scheduled-run";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { dispatchScheduledReport } from "@agent/lib/schedules/report";
 
+const mocks = vi.hoisted(() => ({
+  dispatchScheduledReport: vi.fn<typeof dispatchScheduledReport>(),
+}));
+
+vi.mock("@agent/lib/schedules/report", () => ({
+  dispatchScheduledReport: mocks.dispatchScheduledReport,
+}));
+
+const secret = "scheduled-run-secret-0123456789abcdefghij";
+const runId = "00000000-0000-4000-8000-000000000001";
 const scheduledRunPaths = [
   "/internal/scheduled-run/report",
   "/internal/scheduled-run/respond",
 ] as const;
 
+afterEach(() => {
+  vi.stubEnv("EVE_DEV", "");
+  vi.clearAllMocks();
+});
+
 describe("scheduled run channel authentication", () => {
-  for (const path of scheduledRunPaths) {
-    it(`rejects an unauthenticated request to ${path}`, async () => {
-      const route = scheduledRunChannel.routes.find(
-        (candidate) =>
-          candidate.transport !== "websocket" &&
-          candidate.method === "POST" &&
-          candidate.path === path
-      );
-      if (!route || route.transport === "websocket") {
-        throw new Error(`The scheduled run route ${path} is unavailable.`);
-      }
+  it.each(
+    scheduledRunPaths.flatMap(
+      (path): [string, string, string | undefined][] => [
+        [path, "no credential", undefined],
+        [
+          path,
+          "a wrong secret",
+          "Bearer scheduled-run-secret-0123456789abcdefghiX",
+        ],
+        [path, "the secret without the Bearer scheme", secret],
+      ]
+    )
+  )("rejects %s with %s", async (path, _case, authorization) => {
+    vi.stubEnv("EVE_DEV", "1");
+    const route = await scheduledRunRoute(path, secret);
 
-      const response = await route.handler(
-        new Request(`https://assistant.example${path}`, {
-          body: "not valid JSON",
-          method: "POST",
-        }),
-        unexpectedRouteContext()
-      );
+    const response = await route.handler(
+      scheduledRunRequest(path, "not valid JSON", authorization),
+      unexpectedRouteContext()
+    );
 
-      expect(response.status).toBe(401);
-      expect(response.headers.get("www-authenticate")).toBe("Bearer");
-    });
-  }
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toBe("Bearer");
+  });
+
+  it("refuses every caller while SCHEDULED_RUN_SECRET is unset", async () => {
+    const route = await scheduledRunRoute(
+      "/internal/scheduled-run/report",
+      undefined
+    );
+
+    const response = await route.handler(
+      scheduledRunRequest(
+        "/internal/scheduled-run/report",
+        JSON.stringify({ runId }),
+        `Bearer ${secret}`
+      ),
+      unexpectedRouteContext()
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("dispatches a report for the configured secret", async () => {
+    const route = await scheduledRunRoute(
+      "/internal/scheduled-run/report",
+      secret
+    );
+    const waitUntil = vi.fn<RouteHandlerArgs["waitUntil"]>();
+    const attachSession = vi.fn<RouteHandlerArgs["attachSession"]>();
+
+    const response = await route.handler(
+      scheduledRunRequest(
+        "/internal/scheduled-run/report",
+        JSON.stringify({ runId }),
+        `Bearer ${secret}`
+      ),
+      { ...unexpectedRouteContext(), attachSession, waitUntil }
+    );
+
+    expect(response.status).toBe(202);
+    expect(mocks.dispatchScheduledReport).toHaveBeenCalledExactlyOnceWith(
+      attachSession,
+      runId
+    );
+    expect(waitUntil).toHaveBeenCalledOnce();
+  });
 });
 
 describe("scheduled run channel handoff", () => {
   it("starts a scheduled worker from the channel's native receive hook", async () => {
+    const scheduledRunChannel = await loadScheduledRunChannel(secret);
     const send = vi
       .fn<ChannelSource["send"]>()
       .mockResolvedValue(workerDelivery());
@@ -97,6 +156,40 @@ describe("scheduled run channel handoff", () => {
     expect(result.sessionId).toBe("worker-session");
   });
 });
+
+async function loadScheduledRunChannel(configured: string | undefined) {
+  vi.resetModules();
+  vi.stubEnv("SCHEDULED_RUN_SECRET", configured ?? "");
+  return (await import("@agent/channels/scheduled-run")).default;
+}
+
+async function scheduledRunRoute(path: string, configured: string | undefined) {
+  const channel = await loadScheduledRunChannel(configured);
+  const route = channel.routes.find(
+    (candidate) =>
+      candidate.transport !== "websocket" &&
+      candidate.method === "POST" &&
+      candidate.path === path
+  );
+  if (!route || route.transport === "websocket") {
+    throw new Error(`The scheduled run route ${path} is unavailable.`);
+  }
+  return route;
+}
+
+function scheduledRunRequest(
+  path: string,
+  body: string,
+  authorization: string | undefined
+) {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (authorization !== undefined) headers.set("authorization", authorization);
+  return new Request(`http://127.0.0.1:4274${path}`, {
+    body,
+    headers,
+    method: "POST",
+  });
+}
 
 function unexpectedRouteContext() {
   return {

@@ -1,6 +1,7 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
 import { databaseUrlSchema } from "@shared/environment/database-url";
+import { productionEnvironmentProblems } from "@shared/environment/production";
 
 const betterAuthSecretSchema = z
   .string()
@@ -65,6 +66,11 @@ const signupCodeSchema = requiredValue.refine(
   "ASSIST_SIGNUP_CODE must contain at least 16 characters."
 );
 
+const scheduledRunSecretSchema = requiredValue.refine(
+  (value) => value.trim().length >= 32,
+  "SCHEDULED_RUN_SECRET must contain at least 32 characters."
+);
+
 function optionalValueWithLocalDefault<T extends z.ZodType<string, string>>(
   schema: T,
   localDefault: z.util.NoUndefined<z.output<T>>
@@ -105,6 +111,10 @@ export const env = createEnv({
     ASSIST_ALLOWED_EMAILS: emailListSchema.optional(),
     ASSIST_SIGNUP_CODE: signupCodeSchema.optional(),
 
+    // The bearer secret of the loopback scheduled-run callbacks. Unset means
+    // every callback is refused.
+    SCHEDULED_RUN_SECRET: scheduledRunSecretSchema.optional(),
+
     // Optional
     // The co-located eve server's port in production, as `withEve` reads it.
     EVE_NEXT_PRODUCTION_PORT: z.coerce
@@ -130,6 +140,17 @@ export const env = createEnv({
   experimental__runtimeEnv: {},
   emptyStringAsUndefined: true,
 });
+
+// In a production process, throws unless the configuration passes the boot
+// guard in ./production.ts; the message lists every problem by variable name.
+// It reads NODE_ENV as set, not env.NODE_ENV, which defaults to production.
+export function assertProductionEnvironment() {
+  if (process.env.NODE_ENV !== "production") return;
+  const problems = productionEnvironmentProblems(process.env);
+  if (problems.length > 0) {
+    throw new Error(`Refusing to run in production: ${problems.join(" ")}`);
+  }
+}
 
 // Connected sites are configured by name rather than listed above:
 // ASSIST_SITE_TOKEN_<SITE> holds a site's bearer token and

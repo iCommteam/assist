@@ -61,21 +61,17 @@ describe("auth proxy matcher", () => {
     ).toBe(true);
   });
 
-  it("leaves scheduled-run authorization to the Eve channel", async () => {
-    const response = await proxy(
-      new NextRequest("https://example.com/internal/scheduled-run/start")
+  it.each([
+    "https://example.com/internal/scheduled-run/report",
+    "https://example.com/internal/scheduled-run/respond",
+    "https://example.com/eve/v1/dev/schedules/dynamic",
+  ])("sends %s through the sign-in check", async (url) => {
+    const response = await proxy(new NextRequest(url, { method: "POST" }));
+
+    expect(response.headers.get("x-middleware-next")).toBeNull();
+    expect(new URL(response.headers.get("location") ?? "").pathname).toBe(
+      "/sign-in"
     );
-
-    expect(response.headers.get("x-middleware-next")).toBe("1");
-    expect(getAuthSession).not.toHaveBeenCalled();
-  });
-
-  it("allows the schedule dispatcher without a browser session in development", async () => {
-    const response = await proxy(
-      new NextRequest("http://localhost:3000/eve/v1/dev/schedules/dynamic")
-    );
-
-    expect(response.headers.get("x-middleware-next")).toBe("1");
-    expect(getAuthSession).not.toHaveBeenCalled();
+    expect(getAuthSession).toHaveBeenCalledOnce();
   });
 });

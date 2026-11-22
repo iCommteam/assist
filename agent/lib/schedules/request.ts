@@ -1,8 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { getVercelOidcToken } from "@vercel/oidc";
 import { z } from "zod";
 import { env } from "@shared/environment";
-import { applicationOrigin } from "@shared/environment/origin";
 
 const eveDevServerSchema = z.object({
   appRoot: z.string(),
@@ -18,28 +16,33 @@ interface ScheduledRunRequestBodies {
   };
 }
 
+// Both callers run inside the eve server, so a callback goes straight back to
+// it over loopback and never leaves the machine or passes through Next. The
+// scheduled-run channel accepts only SCHEDULED_RUN_SECRET as the bearer.
 export async function postScheduledRunRoute<
   Route extends keyof ScheduledRunRequestBodies,
 >(route: Route, body: ScheduledRunRequestBodies[Route]) {
-  const token = env.VERCEL_ENV ? await getVercelOidcToken() : undefined;
-  const headers = new Headers({ "content-type": "application/json" });
-  if (token) {
-    headers.set("authorization", `Bearer ${token}`);
-    headers.set("x-vercel-trusted-oidc-idp-token", token);
+  const secret = env.SCHEDULED_RUN_SECRET;
+  if (!secret) {
+    throw new Error(
+      "Scheduled-run callbacks are disabled. Set SCHEDULED_RUN_SECRET."
+    );
   }
   const origin = await scheduledRunOrigin();
   return fetch(new URL(route, origin), {
     body: JSON.stringify(body),
-    headers,
+    headers: {
+      authorization: `Bearer ${secret}`,
+      "content-type": "application/json",
+    },
     method: "POST",
     redirect: "error",
   });
 }
 
+// `eve dev` listens on a port it picks itself and records it for Next; every
+// other process is the eve server that `withEve` starts beside `next start`.
 async function scheduledRunOrigin() {
-  if (env.VERCEL_ENV && env.VERCEL_URL) {
-    return `https://${env.VERCEL_URL}`;
-  }
   if (env.NODE_ENV === "development") {
     try {
       const registry = eveDevServerSchema.parse(
@@ -52,7 +55,7 @@ async function scheduledRunOrigin() {
       // Standalone development does not create the Next.js server registry.
     }
   }
-  return applicationOrigin();
+  return `http://127.0.0.1:${String(env.EVE_NEXT_PRODUCTION_PORT ?? 4274)}`;
 }
 
 export async function postScheduledReport(runId: string) {

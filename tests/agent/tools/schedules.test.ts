@@ -90,7 +90,7 @@ describe("schedule tools", () => {
     );
 
     expect(fetch).toHaveBeenCalledWith(
-      new URL("https://example.com/internal/scheduled-run/respond"),
+      new URL("http://127.0.0.1:4274/internal/scheduled-run/respond"),
       expect.objectContaining({ method: "POST" })
     );
 

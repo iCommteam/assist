@@ -6,6 +6,7 @@ const testEnvironment = {
   BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
   DATABASE_URL: "postgresql://user:password@example.com/database",
   KERNEL_API_KEY: "test-kernel-key",
+  SCHEDULED_RUN_SECRET: "test-scheduled-run-secret-0123456789abcdef",
   SECRET_ENCRYPTION_KEY: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
 };
 

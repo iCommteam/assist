@@ -16,6 +16,8 @@ export default {
     "db/schema/index.ts",
     "evals/**/*.eval.ts",
     "evals/evals.config.ts",
+    // The production entrypoint; the Dockerfile runs it.
+    "scripts/start.ts",
     "taze.config.ts",
     "tests/runtime/fixture/agent/**/*.ts",
     "tests/runtime/fixture/evals/**/*.ts",

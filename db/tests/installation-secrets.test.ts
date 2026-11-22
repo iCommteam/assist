@@ -1,26 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { get, put } from "@vercel/blob";
 
-const mocks = vi.hoisted(() => ({
-  get: vi.fn<typeof get>(),
-  put: vi.fn<typeof put>(),
-}));
-
-vi.mock("@vercel/blob", () => ({
-  get: mocks.get,
-  put: mocks.put,
-}));
+const productionEnvironment = {
+  ANTHROPIC_API_KEY: "test-anthropic-key",
+  ASSIST_ALLOWED_EMAILS: "member@example.test",
+  ASSIST_SIGNUP_CODE: "test-signup-code-0123456789",
+  BETTER_AUTH_SECRET: Buffer.alloc(32, 4).toString("base64"),
+  BETTER_AUTH_URL: "https://assist.example.test",
+  BLOB_READ_WRITE_TOKEN: "",
+  DATABASE_URL: "postgresql://user:password@example.com/database",
+  KERNEL_API_KEY: "test-kernel-key",
+  NODE_ENV: "production",
+  SCHEDULED_RUN_SECRET: "test-scheduled-run-secret-0123456789abcdef",
+  SECRET_ENCRYPTION_KEY: Buffer.alloc(32, 5).toString("base64"),
+};
 
 beforeEach(() => {
   vi.resetModules();
-  vi.clearAllMocks();
-  vi.stubEnv("BETTER_AUTH_SECRET", "");
-  vi.stubEnv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_test");
-  vi.stubEnv("BLOB_STORE_ID", "store_openinstinct");
-  vi.stubEnv("DATABASE_URL", "postgresql://user:password@example.com/database");
-  vi.stubEnv("KERNEL_API_KEY", "test-kernel-key");
-  vi.stubEnv("NODE_ENV", "production");
-  vi.stubEnv("SECRET_ENCRYPTION_KEY", "");
+  for (const [name, value] of Object.entries(productionEnvironment)) {
+    vi.stubEnv(name, value);
+  }
 });
 
 afterEach(() => {
@@ -28,40 +26,37 @@ afterEach(() => {
 });
 
 describe("installation secrets", () => {
-  it("returns the configured pair", async () => {
-    const configured = {
-      betterAuthSecret: Buffer.alloc(32, 4).toString("base64"),
-      secretEncryptionKey: Buffer.alloc(32, 5).toString("base64"),
-    };
-    vi.stubEnv("BETTER_AUTH_SECRET", configured.betterAuthSecret);
-    vi.stubEnv("SECRET_ENCRYPTION_KEY", configured.secretEncryptionKey);
-
+  it("returns the configured pair in a complete production environment", async () => {
     const getInstallationSecrets = await loadInstallationSecrets();
 
-    await expect(getInstallationSecrets()).resolves.toEqual(configured);
-    expect(mocks.get).not.toHaveBeenCalled();
-    expect(mocks.put).not.toHaveBeenCalled();
+    await expect(getInstallationSecrets()).resolves.toEqual({
+      betterAuthSecret: productionEnvironment.BETTER_AUTH_SECRET,
+      secretEncryptionKey: productionEnvironment.SECRET_ENCRYPTION_KEY,
+    });
   });
 
-  it("never provisions secrets in Blob, even when a Blob store is configured", async () => {
+  it("refuses every secret while the production guard fails", async () => {
+    vi.stubEnv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_test");
+    vi.stubEnv("EVE_DEV", "1");
+
+    const getInstallationSecrets = await loadInstallationSecrets();
+    const failure = getInstallationSecrets();
+
+    await expect(failure).rejects.toThrow(
+      "Refusing to run in production: BLOB_READ_WRITE_TOKEN must be unset in production. EVE_DEV must be unset in production."
+    );
+    await expect(failure).rejects.not.toThrow("vercel_blob_rw_test");
+  });
+
+  it("rejects a partial pair outside production", async () => {
+    vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("SECRET_ENCRYPTION_KEY", "");
+
     const getInstallationSecrets = await loadInstallationSecrets();
 
     await expect(getInstallationSecrets()).rejects.toThrow(
       "Installation secrets are unavailable. Set both BETTER_AUTH_SECRET and SECRET_ENCRYPTION_KEY."
     );
-    expect(mocks.get).not.toHaveBeenCalled();
-    expect(mocks.put).not.toHaveBeenCalled();
-  });
-
-  it("rejects a partial pair", async () => {
-    vi.stubEnv("BETTER_AUTH_SECRET", Buffer.alloc(32, 6).toString("base64"));
-
-    const getInstallationSecrets = await loadInstallationSecrets();
-
-    await expect(getInstallationSecrets()).rejects.toThrow(
-      "Set both BETTER_AUTH_SECRET and SECRET_ENCRYPTION_KEY"
-    );
-    expect(mocks.put).not.toHaveBeenCalled();
   });
 });
 

@@ -1,8 +1,10 @@
-import { env } from "@shared/environment";
+import { assertProductionEnvironment, env } from "@shared/environment";
 
 // The configured pair is the only source: there is no Blob store to provision
-// secrets in, and local development gets fixed defaults from env.ts.
+// secrets in, and local development gets fixed defaults from env.ts. Every
+// production process passes the boot guard before it gets a secret.
 export async function getInstallationSecrets() {
+  assertProductionEnvironment();
   const betterAuthSecret = env.BETTER_AUTH_SECRET;
   const secretEncryptionKey = env.SECRET_ENCRYPTION_KEY;
   if (!betterAuthSecret || !secretEncryptionKey) {

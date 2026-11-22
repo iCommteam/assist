@@ -2,7 +2,6 @@ import { eveChannel } from "eve/channels/eve";
 import {
   extractBearerToken,
   ForbiddenError,
-  localDev,
   routeAuth,
   UnauthenticatedError,
 } from "eve/channels/auth";
@@ -28,8 +27,6 @@ import {
   scheduledReportFromSession,
 } from "@agent/lib/schedules/report-lifecycle";
 
-const authenticateLocalDev = localDev();
-
 const authenticate: Parameters<typeof routeAuth>[1] = [
   // The site API's internal credential. A request that presents one is decided
   // here: an invalid one is refused, never passed on to the other strategies.
@@ -54,25 +51,6 @@ const authenticate: Parameters<typeof routeAuth>[1] = [
       authenticator: "authjs",
       principalId: scope.userId,
       principalType: "user",
-    };
-  },
-  async (request) => {
-    const local = await authenticateLocalDev(request);
-    if (!local) return null;
-
-    const scope = accessScopeForUser("better-auth:browser-benchmark");
-    await requireOwnedRouteSubject(scope, request);
-
-    return {
-      ...local,
-      attributes: {
-        ...local.attributes,
-        conversationChannel: "eve",
-        email: "browser-benchmark@localhost.invalid",
-        workspaceId: scope.workspaceId,
-      },
-      principalId: scope.userId,
-      principalType: "user" as const,
     };
   },
   () => {
