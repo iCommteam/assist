@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import * as Database from "@db";
 import type { getAuth } from "@db/services/auth";
+import type * as AllowlistReaders from "@db/services/auth/allowlist";
 import type * as SessionReaders from "@db/services/auth/session";
 import * as schema from "../../../schema";
 
@@ -35,6 +36,7 @@ const password = "correct horse battery staple";
 let database: PGlite;
 let auth: Awaited<ReturnType<typeof getAuth>>;
 let session: typeof SessionReaders;
+let allowedUserIds: typeof AllowlistReaders.allowedUserIds;
 
 beforeAll(async () => {
   database = new PGlite();
@@ -63,12 +65,14 @@ beforeAll(async () => {
   // SAFETY: PGlite implements the query-builder surface Better Auth's Drizzle adapter uses, with the shared schema.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The focused test swaps only the database driver.
   vi.spyOn(Database, "db", "get").mockReturnValue(pgliteDatabase as never);
-  const [authModule, sessionModule] = await Promise.all([
+  const [authModule, sessionModule, allowlistModule] = await Promise.all([
     import("@db/services/auth"),
     import("@db/services/auth/session"),
+    import("@db/services/auth/allowlist"),
   ]);
   auth = await authModule.getAuth();
   session = sessionModule;
+  allowedUserIds = allowlistModule.allowedUserIds;
 }, 30_000);
 
 afterAll(async () => {
@@ -279,7 +283,36 @@ describe("team sign-in", () => {
       "/two-factor/verify-totp": { max: 5, window: 60 },
     });
     // Disabling IP tracking would turn rate limiting off entirely.
-    expect(auth.options).not.toHaveProperty("advanced");
+    expect(
+      z
+        .looseObject({
+          advanced: z.looseObject({
+            ipAddress: z.looseObject({ disableIpTracking: z.literal(true) }),
+          }),
+        })
+        .safeParse(auth.options).success
+    ).toBe(false);
+  });
+
+  // Runs last: it reads the members the earlier cases created.
+  it("hands the schedule dispatcher only members still on the team list", async () => {
+    const rows = await database.query<{ email: string; id: string }>(
+      'SELECT id, email FROM "user"'
+    );
+    const idFor = (email: string) =>
+      rows.rows.find((row) => row.email === email)?.id;
+    const listed = [
+      "alice@example.test",
+      "dave@example.test",
+      "erin@example.test",
+      "frank@example.test",
+    ].map((email) => z.string().parse(idFor(email)));
+
+    const allowed = await allowedUserIds();
+
+    expect(new Set(allowed)).toEqual(new Set(listed));
+    expect(allowed).toHaveLength(listed.length);
+    expect(allowed).not.toContain(idFor("removed@example.test"));
   });
 });
 

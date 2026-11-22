@@ -56,9 +56,15 @@ Leaving a variable unset closes sign-in. A new member creates an account at
 `/sign-up`, then scans a QR code at `/two-factor` and saves ten one-time backup
 codes. Every session lasts up to 24 hours of inactivity, and each sign-in needs
 a fresh authenticator or backup code. There is no email delivery, so there is
-no self-serve password reset. A member who forgets the password, or loses both
-the authenticator and the backup codes, needs an operator to delete their
-account from the database before signing up again.
+no self-serve recovery:
+
+- A member who loses both the authenticator and the backup codes keeps their
+  data. An operator deletes that user's `twoFactor` row and `session` rows and
+  sets `twoFactorEnabled` to false; the next password sign-in then lands on
+  `/two-factor` to enrol again.
+- A forgotten password has no reset. An operator can delete the `user` row so
+  the member signs up again, but the new account gets a new, empty workspace:
+  the old vault items, schedules and history stay behind, unreachable.
 
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to
