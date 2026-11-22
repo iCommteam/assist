@@ -31,6 +31,12 @@ COPY --chown=node:node . .
 # the service variable of the same name. Secrets are never build arguments.
 ARG BETTER_AUTH_URL=https://assist.icommteam.com
 ENV NODE_ENV=production
+# pnpm 11 checks node_modules before every `pnpm exec` and `pnpm run` and
+# reinstalls when it judges them stale. Here the image's install is final:
+# a reinstall cannot prompt without a TTY, so it failed a Railway build that
+# reused the install layer, and it would fail the pre-deploy migration the
+# same way. "false" makes the check take no action.
+ENV pnpm_config_verify_deps_before_run=false
 # DATABASE_URL and KERNEL_API_KEY are format-checked placeholders for the
 # build only; the service provides the real values at runtime.
 RUN export DATABASE_URL=postgres://build:build@127.0.0.1:5432/build \

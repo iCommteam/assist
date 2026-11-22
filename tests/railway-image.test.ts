@@ -33,6 +33,23 @@ describe("Railway image", () => {
     expect(dockerfile).toContain("\nEXPOSE 8080\n");
   });
 
+  it("never lets pnpm reinstall inside the image", async () => {
+    const { dockerfile } = await startSteps();
+    const lines = dockerfile.split("\n");
+    const setting = lines.indexOf(
+      "ENV pnpm_config_verify_deps_before_run=false"
+    );
+
+    // Set after the install, so the install layer stays cached, and before
+    // the build's `pnpm exec`; ENV also reaches the pre-deploy `pnpm run`.
+    expect(setting).toBeGreaterThan(
+      lines.findIndex((line) => line.startsWith("RUN pnpm install "))
+    );
+    expect(setting).toBeLessThan(
+      lines.findIndex((line) => line.includes("pnpm exec eve build"))
+    );
+  });
+
   it("keeps each session's sandbox files on the volume, across restarts", async () => {
     const readme = await repositoryFile("README.md");
     const { dockerfile, steps } = await startSteps();
