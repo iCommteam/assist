@@ -40,7 +40,11 @@ RUN export DATABASE_URL=postgres://build:build@127.0.0.1:5432/build \
 
 # The container starts as root only to hand the volume, which Railway mounts
 # owned by root, to the unprivileged node user. Everything else, including
-# scripts/start.ts and both servers, runs as node.
+# scripts/start.ts and both servers, runs as node. Each session's sandbox
+# files (uploads, screenshots) live on the volume too: the just-bash sessions
+# directory becomes a link into it, while the templates the build prepared stay
+# in the image. The service sets PORT=8080, the port of Teemiq's private
+# address; EXPOSE only documents it.
 USER root
-EXPOSE 3000
-CMD ["sh", "-c", "mkdir -p .eve/.workflow-data && find .eve/.workflow-data ! -user node -exec chown node:node {} + && exec setpriv --reuid=node --regid=node --init-groups env HOME=/home/node node --experimental-strip-types scripts/start.ts"]
+EXPOSE 8080
+CMD ["sh", "-c", "mkdir -p .eve/.workflow-data/sandbox-sessions .eve/sandbox-cache/just-bash && find .eve/.workflow-data ! -user node -exec chown node:node {} + && rm -rf .eve/sandbox-cache/just-bash/sessions && ln -sfn ../../.workflow-data/sandbox-sessions .eve/sandbox-cache/just-bash/sessions && exec setpriv --reuid=node --regid=node --init-groups env HOME=/home/node node --experimental-strip-types scripts/start.ts"]

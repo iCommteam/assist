@@ -35,11 +35,22 @@ describe("sign-in callback", () => {
   it.each([
     ["/vault?tab=logins", "/vault?tab=logins"],
     [["/chat", "/vault"], "/chat"],
+    ["/a/../vault#logins", "/vault#logins"],
     ["//evil.example", "/"],
     ["/\\evil.example", "/"],
     ["https://evil.example", "/"],
+    // The browser drops tabs and newlines before it parses a link.
+    ["/\t/evil.example", "/"],
+    ["/\n/evil.example", "/"],
+    ["/\r\n/evil.example", "/"],
+    ["/\t\\evil.example", "/"],
+    // Dot segments that leave a protocol-relative path behind.
+    ["/.//evil.example", "/"],
+    ["/..//evil.example", "/"],
+    ["/%2e//evil.example", "/"],
+    ["/./\\evil.example", "/"],
     [undefined, "/"],
-  ])("keeps only same-site paths from %s", (value, expected) => {
+  ])("keeps only same-site paths from %j", (value, expected) => {
     expect(callbackUrlFrom(value)).toBe(expected);
   });
 });

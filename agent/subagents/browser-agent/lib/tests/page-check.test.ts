@@ -220,6 +220,82 @@ describe("browser page check", () => {
     warn.mockRestore();
   });
 
+  describe("with a tab that could not be read", () => {
+    // What the inspection records when a tab's evaluate threw or timed out,
+    // as on a challenge page that reloads itself.
+    const unread = (overrides: Partial<BrowserPageState> = {}) =>
+      page({
+        status: null,
+        text: "",
+        timeOrigin: null,
+        title: "",
+        ...overrides,
+      });
+
+    it("withholds the result instead of passing the tab as clear", async () => {
+      const warn = vi
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      browserShows(page(), unread());
+
+      await expect(checkBrowserPages("browser-1")).rejects.toThrow(
+        /page check after this browser action could not run/u
+      );
+      expect(warn).toHaveBeenCalledExactlyOnceWith(
+        "[browser-policy] page check failed",
+        { reason: "tab not inspectable" }
+      );
+      expect(() => {
+        assertWorkerNotBlocked();
+      }).not.toThrow();
+      warn.mockRestore();
+    });
+
+    it("withholds the result for an unread tab that is not on http(s)", async () => {
+      const warn = vi
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      // During a navigation the tab can still report its previous URL.
+      browserShows(unread({ url: "about:blank" }));
+
+      await expect(checkBrowserPages("browser-1")).rejects.toThrow(
+        /could not run/u
+      );
+      warn.mockRestore();
+    });
+
+    it("still stops at a URL marker on that tab", async () => {
+      browserShows(
+        unread({ url: "https://www.google.com/sorry/index?continue=x" })
+      );
+
+      const check = await checkBrowserPages("browser-1");
+
+      expect(check.status).toBe("blocked");
+      expect(check.status === "blocked" ? check.message : "").toContain(
+        '("google.com/sorry/")'
+      );
+      expect(() => {
+        assertWorkerNotBlocked();
+      }).toThrow(/already stopped at a block/u);
+    });
+
+    it("still resets and refuses an Amazon tab beside it", async () => {
+      browserShows(
+        unread(),
+        page({ title: "Amazon.com", url: "https://www.amazon.com/dp/B000" })
+      );
+
+      const check = await checkBrowserPages("browser-1");
+
+      expect(check.status).toBe("refused");
+      expect(mocks.execute).toHaveBeenCalledTimes(2);
+      expect(mocks.execute.mock.calls[1]?.[1].code).toContain(
+        '["https://www.amazon.com/dp/B000"]'
+      );
+    });
+  });
+
   it("reads every tab of every context from the browser", async () => {
     browserShows(page());
     await checkBrowserPages("browser-1", new AbortController().signal);
@@ -229,5 +305,7 @@ describe("browser page check", () => {
     expect(body?.code).toContain("browser.contexts()");
     expect(body?.code).toContain("responseStatus");
     expect(body?.code).toContain("performance.timeOrigin");
+    // A tab caught mid-navigation is read once more after it has loaded.
+    expect(body?.code).toContain('waitForLoadState("domcontentloaded"');
   });
 });

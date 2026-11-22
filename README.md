@@ -42,14 +42,17 @@ its public TCP proxy turned off.
 | Restart policy    | on failure                                                |
 | Public domain     | `https://assist.icommteam.com` only                       |
 
-The volume holds eve's sessions and runs. Mounting it at `/app/.eve` instead
+The volume holds eve's sessions and runs. It also holds each chat's sandbox
+files (its uploads and screenshots), which stay until eve ends that session,
+so the volume grows with the open sessions. Mounting it at `/app/.eve` instead
 would hide the build output. Keep exactly one replica: the session store
 accepts a single process, and a deploy must stop the old container before the
 new one starts. The health check passes only once both Next and the eve
 server answer. Delete the generated `*.up.railway.app` domain once the custom
 domain works, because sign-in trusts one origin. Teemiq, in the same project,
-can call the site API over the private network instead; give `PORT` a fixed
-value such as `3000` so that address stays stable.
+calls the site API over the private network at
+`http://assist.railway.internal:8080`; set `PORT=8080` as a service variable so
+that address stays stable.
 
 `scripts/start.ts` refuses to start when the configuration is unsafe, and the
 log names every problem without printing any value. It exits when the eve
@@ -74,7 +77,7 @@ only to hand the root-owned volume to the `node` user; both servers run as
 | `ASSIST_SIGNUP_CODE`                    | yes    | at least 16 characters                                   |
 | `ASSIST_SITE_TOKEN_<SITE>`              | yes    | one per site; see [Connected sites](#connected-sites)    |
 | `ASSIST_SITE_OWNER_<SITE>`              | no     | one per site                                             |
-| `PORT`                                  | no     | provided by Railway; Next listens on it                  |
+| `PORT`                                  | no     | `8080`, set explicitly; Teemiq's private address uses it |
 
 Generate each secret locally and paste it straight into Railway as a sealed
 variable. `SCHEDULED_RUN_SECRET` authenticates the scheduled-run callbacks that

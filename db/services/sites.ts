@@ -45,15 +45,16 @@ export async function recordSiteTask(
   return task.id;
 }
 
-// The session of a task this site created in this workspace, or undefined for
-// an unknown task, another site's task, or one from a previous owner.
+// The session and creation time of a task this site created in this
+// workspace, or undefined for an unknown task, another site's task, or one
+// from a previous owner.
 export async function findSiteTaskSession(
   site: string,
   scope: AccessScope,
   taskId: string
 ) {
   const [task] = await db
-    .select({ sessionId: siteTasks.sessionId })
+    .select({ createdAt: siteTasks.createdAt, sessionId: siteTasks.sessionId })
     .from(siteTasks)
     .where(
       and(
@@ -63,7 +64,7 @@ export async function findSiteTaskSession(
       )
     )
     .limit(1);
-  return task?.sessionId;
+  return task;
 }
 
 export async function isSiteTaskSession(

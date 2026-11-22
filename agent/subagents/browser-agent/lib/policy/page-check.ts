@@ -27,22 +27,31 @@ export type BrowserPageState = z.infer<typeof pageStateSchema>;
 const pageStatesSchema = z.array(pageStateSchema);
 
 // Runs in Kernel's Playwright context, where `page` and `context` are already
-// declared. The per-tab timeout keeps one hung tab from hiding the others.
+// declared. The per-tab timeout keeps one hung tab from hiding the others. A
+// tab caught mid-navigation gets one more read once its next document has
+// loaded; retries start only in the first 5 s, to stay inside the 10 s execute
+// limit. A tab that still cannot be read is recorded with a null timeOrigin.
 const inspectionCode = `
-const settle = (promise) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), 3000))]);
+const settle = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
+const read = (tab, ms) => settle(tab.evaluate(() => {
+  const navigation = performance.getEntriesByType("navigation")[0];
+  return {
+    status: navigation && typeof navigation.responseStatus === "number" ? navigation.responseStatus : null,
+    text: document.body ? document.body.innerText.slice(0, 4000) : "",
+    timeOrigin: performance.timeOrigin,
+    title: document.title.slice(0, 300),
+  };
+}).catch(() => null), ms);
+const retryUntil = Date.now() + 5000;
 const states = [];
 for (const browserContext of browser.contexts()) {
   for (const tab of browserContext.pages()) {
+    let state = await read(tab, 3000);
+    if (state === null && Date.now() < retryUntil) {
+      await tab.waitForLoadState("domcontentloaded", { timeout: 2000 }).catch(() => undefined);
+      state = await read(tab, 2000);
+    }
     const frames = tab.frames().slice(1, 41).map((frame) => frame.url());
-    const state = await settle(tab.evaluate(() => {
-      const navigation = performance.getEntriesByType("navigation")[0];
-      return {
-        status: navigation && typeof navigation.responseStatus === "number" ? navigation.responseStatus : null,
-        text: document.body ? document.body.innerText.slice(0, 4000) : "",
-        timeOrigin: performance.timeOrigin,
-        title: document.title.slice(0, 300),
-      };
-    }).catch(() => null));
     states.push({ ...(state ?? { status: null, text: "", timeOrigin: null, title: "" }), frames, url: tab.url() });
   }
 }
@@ -142,9 +151,12 @@ export async function inspectBrowserPages(
   throw new Error(
     gone
       ? "This browser no longer exists, so the result of this action was withheld. Do not retry it; create a new browser only if the assignment still needs one."
-      : "The page check after this browser action could not run, so its result was withheld. Take a fresh browser_snapshot to continue."
+      : uncheckedMessage
   );
 }
+
+const uncheckedMessage =
+  "The page check after this browser action could not run, so its result was withheld. Take a fresh browser_snapshot to continue.";
 
 export type BrowserPageCheck =
   | { readonly status: "clear"; readonly pages: readonly BrowserPageState[] }
@@ -184,6 +196,15 @@ export async function checkBrowserPages(
       message: `REFUSED BY POLICY: the tab was reset and its content withheld. ${amazonPolicyRefusal(amazonHost)}`,
       status: "refused",
     };
+  }
+  // A tab that could not be read (its evaluate threw or hung) may be a
+  // challenge page that reloads itself, so it never counts as clear. URL and
+  // frame markers on any tab, and the Amazon reset, have already run.
+  if (pages.some((page) => page.timeOrigin === null)) {
+    console.warn("[browser-policy] page check failed", {
+      reason: "tab not inspectable",
+    });
+    throw new Error(uncheckedMessage);
   }
   return { pages, status: "clear" };
 }

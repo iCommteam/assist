@@ -12,6 +12,9 @@ import { siteTaskStatus } from "@app/api/site/tasks/[taskId]/_lib/status";
 
 // A session that eve has accepted but not started yet reads as one of these.
 const notReadyStatuses = new Set([404, 409, 425]);
+// eve also answers 404 when the run itself is gone (a lost volume, or a crash
+// before the run was stored). Past this age a 404 no longer means "starting".
+const missingRunGraceMs = 120_000;
 
 export async function GET(
   request: Request,
@@ -21,10 +24,11 @@ export async function GET(
   if (!caller.ok) return caller.response;
   const { taskId } = await context.params;
   const { owner, site } = caller;
-  const sessionId = z.uuid().safeParse(taskId).success
+  const task = z.uuid().safeParse(taskId).success
     ? await findSiteTaskSession(site, owner.scope, taskId)
     : undefined;
-  if (!sessionId) return siteError(404, "not_found");
+  if (!task) return siteError(404, "not_found");
+  const { sessionId } = task;
 
   try {
     const events: ReceivedEvent[] = [];
@@ -41,6 +45,19 @@ export async function GET(
     if (ClientError.is(error) && error.code === "session_expired") {
       return siteJson({
         error: "The task record has expired.",
+        reply: null,
+        status: "failed",
+        taskId,
+      });
+    }
+    if (
+      ClientError.is(error) &&
+      error.status === 404 &&
+      Date.now() - task.createdAt.getTime() > missingRunGraceMs
+    ) {
+      console.warn("[site] task run is missing", { site });
+      return siteJson({
+        error: "The task record is no longer available.",
         reply: null,
         status: "failed",
         taskId,

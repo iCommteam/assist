@@ -28,6 +28,16 @@ function openDocuments(...origins: number[]): BrowserPageState[] {
   }));
 }
 
+// A tab whose evaluate threw or timed out during the page check.
+const unreadTab: BrowserPageState = {
+  frames: [],
+  status: null,
+  text: "",
+  timeOrigin: null,
+  title: "",
+  url: "https://login.example.com/",
+};
+
 beforeEach(() => {
   resetEveState();
   forgetInjectedValues("worker-1");
@@ -75,6 +85,42 @@ describe("vault value redaction", () => {
     forgetFilledBrowser("browser-1");
     expect(redactBrowserOutput("worker-1", "browser-1", snapshot)).toContain(
       "hunter2"
+    );
+  });
+
+  it("never counts a tab that could not be read as replaced", () => {
+    rememberInjectedValues("worker-1", "browser-1", [password]);
+    recordFilledDocuments("browser-1", openDocuments(1_000));
+
+    // The filled document's tab is mid-navigation or hung: no timeOrigin.
+    releaseNavigatedDocuments("browser-1", [
+      ...openDocuments(2_000),
+      unreadTab,
+    ]);
+    expect(
+      redactBrowserOutput("worker-1", "browser-1", snapshot)
+    ).not.toContain("mugs");
+
+    releaseNavigatedDocuments("browser-1", openDocuments(2_000));
+    expect(redactBrowserOutput("worker-1", "browser-1", snapshot)).toContain(
+      'value="mugs"'
+    );
+  });
+
+  it("strips until the browser is deleted when a tab was unreadable at fill time", () => {
+    rememberInjectedValues("worker-1", "browser-1", [password]);
+    recordFilledDocuments("browser-1", [...openDocuments(1_000), unreadTab]);
+
+    // Every recorded document is gone, but the unread tab may have held the
+    // fill, so stripping continues.
+    releaseNavigatedDocuments("browser-1", openDocuments(2_000));
+    expect(
+      redactBrowserOutput("worker-1", "browser-1", snapshot)
+    ).not.toContain("mugs");
+
+    forgetFilledBrowser("browser-1");
+    expect(redactBrowserOutput("worker-1", "browser-1", snapshot)).toContain(
+      'value="mugs"'
     );
   });
 

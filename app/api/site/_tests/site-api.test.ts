@@ -84,7 +84,10 @@ beforeEach(() => {
     scope: owner,
   });
   services.recordSiteTask.mockResolvedValue(taskId);
-  services.findSiteTaskSession.mockResolvedValue("wrun_1");
+  services.findSiteTaskSession.mockResolvedValue({
+    createdAt: new Date(),
+    sessionId: "wrun_1",
+  });
   eve.create.mockResolvedValue({ session: { id: "wrun_1" } });
   eve.read.mockResolvedValue([]);
 });
@@ -311,6 +314,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
   });
 
   it.each([
+    // A task created just now whose run eve has not stored yet.
     [404, "{}", { error: null, reply: null, status: "running" }],
     [
       409,
@@ -332,6 +336,46 @@ describe("GET /api/site/tasks/{taskId}", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ...expected, taskId });
+  });
+
+  it("reads a task whose run is gone as failed once it is past starting", async () => {
+    eve.read.mockRejectedValue(new ClientError(404, "{}"));
+    // Just inside the start window, eve's 404 still means the run is starting.
+    services.findSiteTaskSession.mockResolvedValueOnce({
+      createdAt: new Date(Date.now() - 90_000),
+      sessionId: "wrun_1",
+    });
+    const starting = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+    await expect(starting.json()).resolves.toEqual({
+      error: null,
+      reply: null,
+      status: "running",
+      taskId,
+    });
+
+    // Ten minutes later the run is missing, not starting: a poller must stop.
+    services.findSiteTaskSession.mockResolvedValueOnce({
+      createdAt: new Date(Date.now() - 10 * 60_000),
+      sessionId: "wrun_1",
+    });
+    const missing = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    expect(missing.status).toBe(200);
+    await expect(missing.json()).resolves.toEqual({
+      error: "The task record is no longer available.",
+      reply: null,
+      status: "failed",
+      taskId,
+    });
+    expect(console.warn).toHaveBeenCalledWith("[site] task run is missing", {
+      site: "teemiq",
+    });
   });
 
   it("answers 503 when eve cannot be read", async () => {

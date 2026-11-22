@@ -101,12 +101,16 @@ describe("site tasks", () => {
   it("lets a site read only the tasks it created in its owner's workspace", async () => {
     await ensureScope(owner);
     await ensureScope(other);
+    const before = Date.now();
     const taskId = await recordSiteTask("teemiq", owner, "wrun_teemiq");
 
     expect(taskId).toMatch(/^[0-9a-f-]{36}$/u);
-    await expect(findSiteTaskSession("teemiq", owner, taskId)).resolves.toBe(
-      "wrun_teemiq"
-    );
+    const task = await findSiteTaskSession("teemiq", owner, taskId);
+    expect(task?.sessionId).toBe("wrun_teemiq");
+    // The task route times eve's "not found" from this creation time.
+    expect(task?.createdAt).toBeInstanceOf(Date);
+    expect(task?.createdAt.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect(task?.createdAt.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
     await expect(
       findSiteTaskSession("agents", owner, taskId)
     ).resolves.toBeUndefined();

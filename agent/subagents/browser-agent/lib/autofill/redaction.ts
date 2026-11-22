@@ -50,23 +50,28 @@ export function recordFilledDocuments(
   browserSessionId: string,
   pages: readonly BrowserPageState[]
 ) {
-  const origins = pages
-    .map((page) => page.timeOrigin)
-    .filter((origin) => origin !== null);
+  // A tab that could not be read may be the filled document, so one unknown
+  // tab makes every document unknown.
+  const unknown = pages.some((page) => page.timeOrigin === null);
+  const origins = pages.flatMap((page) =>
+    page.timeOrigin === null ? [] : [page.timeOrigin]
+  );
   filledDocuments.update((current) => ({
     ...current,
-    [browserSessionId]: origins.length > 0 ? origins : null,
+    [browserSessionId]: !unknown && origins.length > 0 ? origins : null,
   }));
 }
 
 // Ends value stripping once every document that was open at fill time has
-// been replaced by a navigation.
+// been replaced by a navigation. A tab that could not be read never counts as
+// replaced.
 export function releaseNavigatedDocuments(
   browserSessionId: string,
   pages: readonly BrowserPageState[]
 ) {
   const filled = filledDocuments.get()[browserSessionId];
   if (!filled) return;
+  if (pages.some((page) => page.timeOrigin === null)) return;
   const open = new Set(pages.map((page) => page.timeOrigin));
   if (filled.some((origin) => open.has(origin))) return;
   forgetFilledBrowser(browserSessionId);
