@@ -40,6 +40,37 @@ describe("sign-in proxy", () => {
     );
   });
 
+  it.each([
+    "/api/site/ping",
+    "/api/site/tasks",
+    "/api/site/tasks/00000000-0000-4000-8000-000000000001",
+  ])(
+    "lets the site API at %s authenticate its own bearer token",
+    async (path) => {
+      const response = await proxy(
+        new NextRequest(`https://example.com${path}`, {
+          headers: { authorization: "Bearer token" },
+          method: path === "/api/site/tasks" ? "POST" : "GET",
+        })
+      );
+      expect(response.headers.get("x-middleware-next")).toBe("1");
+      expect(auth.getSession).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    "/api/site",
+    "/api/site/",
+    "/api/site/other",
+    "/api/site/tasks/",
+    "/api/site/tasks/one/two",
+    "/api/site/pingx",
+    "/api/trpc/vault.list",
+  ])("keeps the sign-in redirect for %s", async (path) => {
+    const response = await proxy(new NextRequest(`https://example.com${path}`));
+    expect(response.status).toBe(307);
+  });
+
   it("serves application routes to a completed sign-in", async () => {
     auth.getSession.mockResolvedValue(
       authSessionFor({ id: "user-1", twoFactorEnabled: true })

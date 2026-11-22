@@ -11,10 +11,15 @@ const publicPaths = new Set([
   "/eve/v1/dev/schedules/dynamic",
 ]);
 
+// The site API authenticates each call by bearer token and never reads
+// cookies, so it skips the sign-in redirect. Only its exact routes match.
+const siteApiPath = /^\/api\/site\/(?:ping|tasks|tasks\/[^/]+)$/u;
+
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   if (
     publicPaths.has(pathname) ||
+    siteApiPath.test(pathname) ||
     pathname.startsWith("/api/auth/") ||
     pathname.startsWith("/internal/scheduled-run/")
   ) {

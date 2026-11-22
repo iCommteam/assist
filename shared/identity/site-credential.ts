@@ -1,0 +1,80 @@
+import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
+
+// The site API (Next) calls the co-located eve server with this credential
+// instead of the site's own token. It is signed with a key derived from the
+// server-only BETTER_AUTH_SECRET, so neither a browser nor a site can mint one,
+// and it is bound to one site, one operation and, for a read, one session.
+const credentialPrefix = "assist-site.v1.";
+const credentialLifetimeMs = 60_000;
+const clockSkewMs = 5_000;
+const keyLabel = "icommassist/site-channel-credential/v1";
+
+const siteGrantSchema = z.discriminatedUnion("op", [
+  z.strictObject({ op: z.literal("create"), site: z.string().min(1) }),
+  z.strictObject({
+    op: z.literal("read"),
+    session: z.string().min(1).max(512),
+    site: z.string().min(1),
+  }),
+]);
+const claimsSchema = z.strictObject({
+  exp: z.number().int().positive(),
+  grant: siteGrantSchema,
+});
+
+export type SiteGrant = z.infer<typeof siteGrantSchema>;
+
+export function isSiteCredential(value: string) {
+  return value.startsWith(credentialPrefix);
+}
+
+export function mintSiteCredential(secret: string, grant: SiteGrant) {
+  const payload = Buffer.from(
+    JSON.stringify({ exp: Date.now() + credentialLifetimeMs, grant }),
+    "utf8"
+  ).toString("base64url");
+  return `${credentialPrefix}${payload}.${sign(secret, payload).toString("base64url")}`;
+}
+
+// Returns the grant of a valid, unexpired credential, or undefined.
+export function verifySiteCredential(secret: string, credential: string) {
+  if (!isSiteCredential(credential)) return undefined;
+  const [payload, signature, ...rest] = credential
+    .slice(credentialPrefix.length)
+    .split(".");
+  if (!payload || !signature || rest.length > 0) return undefined;
+  const expected = sign(secret, payload);
+  const presented = Buffer.from(signature, "base64url");
+  if (
+    presented.length !== expected.length ||
+    !timingSafeEqual(presented, expected)
+  ) {
+    return undefined;
+  }
+  const claims = claimsSchema.safeParse(parseJson(payload));
+  if (!claims.success) return undefined;
+  const now = Date.now();
+  const { exp, grant } = claims.data;
+  if (exp <= now || exp > now + credentialLifetimeMs + clockSkewMs) {
+    return undefined;
+  }
+  return grant;
+}
+
+function sign(secret: string, payload: string) {
+  const key = Buffer.from(hkdfSync("sha256", secret, "", keyLabel, 32));
+  return createHmac("sha256", key)
+    .update(`${credentialPrefix}${payload}`)
+    .digest();
+}
+
+function parseJson(payload: string) {
+  try {
+    return z
+      .json()
+      .parse(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")));
+  } catch {
+    return undefined;
+  }
+}

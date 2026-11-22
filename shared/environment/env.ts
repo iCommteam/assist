@@ -106,6 +106,13 @@ export const env = createEnv({
     ASSIST_SIGNUP_CODE: signupCodeSchema.optional(),
 
     // Optional
+    // The co-located eve server's port in production, as `withEve` reads it.
+    EVE_NEXT_PRODUCTION_PORT: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(65535)
+      .optional(),
     BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
     BLOB_STORE_ID: requiredValue.optional(),
     LINK_CLIENT_ID: requiredValue.optional(),
@@ -123,6 +130,31 @@ export const env = createEnv({
   experimental__runtimeEnv: {},
   emptyStringAsUndefined: true,
 });
+
+// Connected sites are configured by name rather than listed above:
+// ASSIST_SITE_TOKEN_<SITE> holds a site's bearer token and
+// ASSIST_SITE_OWNER_<SITE> the email of the member it acts for. Read on every
+// call; shared/environment/sites.ts validates them.
+const siteTokenVariablePattern =
+  /^ASSIST_SITE_TOKEN_([A-Z0-9]+(?:_[A-Z0-9]+)*)$/u;
+
+export function siteVariables() {
+  return Object.entries(process.env).flatMap(([tokenVariable, value]) => {
+    const suffix = siteTokenVariablePattern.exec(tokenVariable)?.[1];
+    const token = value?.trim();
+    if (!suffix || !token) return [];
+    const ownerVariable = `ASSIST_SITE_OWNER_${suffix}`;
+    return [
+      {
+        name: suffix.toLowerCase(),
+        owner: process.env[ownerVariable]?.trim() ?? "",
+        ownerVariable,
+        token,
+        tokenVariable,
+      },
+    ];
+  });
+}
 
 function hasValue(value: string | undefined) {
   return value !== undefined && value.trim().length > 0;

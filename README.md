@@ -66,6 +66,37 @@ no self-serve recovery:
   the member signs up again, but the new account gets a new, empty workspace:
   the old vault items, schedules and history stay behind, unreachable.
 
+### Connected sites
+
+A server, such as Teemiq or the iCommSync agents app, can hand the agent a task
+over a small JSON API. Each site gets its own pair of variables, named by an
+upper-case suffix that becomes the site's name:
+
+- `ASSIST_SITE_TOKEN_<SITE>`: the site's bearer token, at least 32 characters
+  (`openssl rand -base64 48`). An empty value turns the site off, and two
+  sites sharing a token are both refused.
+- `ASSIST_SITE_OWNER_<SITE>`: the email of the member the site acts for. It
+  must be on `ASSIST_ALLOWED_EMAILS`, have an account and have its
+  authenticator enrolled; otherwise every call from the site answers 403 and
+  the reason goes to the server log.
+
+A site works inside its owner's personal workspace, with the owner's tools,
+memory and vault, and each task appears in the owner's chat history. A site
+can read only the tasks it created. Every call sends
+`Authorization: Bearer <token>`:
+
+| Call                           | Answer                                                                                                 |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `GET /api/site/ping`           | `200 {"ok":true,"site":"teemiq"}`                                                                      |
+| `POST /api/site/tasks`         | body `{"message": "..."}`, 1 to 8000 characters; `202 {"taskId": "..."}`                               |
+| `GET /api/site/tasks/{taskId}` | `200 {"taskId","status","reply","error"}`, status `running`, `completed`, `failed` or `awaiting-input` |
+
+A missing or wrong token answers `401 {"error":"unauthorized"}`, an invalid
+body `400 {"error":"invalid_request"}`, and a task that is not the site's
+`404 {"error":"not_found"}`. The reply is the agent's final message; a failed
+task carries a short error without internal details. Poll a running task
+every few seconds.
+
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to
 the authenticated workspace. Each scope holds up to 100 records, with the eight

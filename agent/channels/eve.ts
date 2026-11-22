@@ -1,5 +1,6 @@
 import { eveChannel } from "eve/channels/eve";
 import {
+  extractBearerToken,
   ForbiddenError,
   localDev,
   routeAuth,
@@ -10,9 +11,17 @@ import {
   accessScopeForUser,
   type AccessScope,
 } from "@shared/identity/access-scope";
+import {
+  isSiteCredential,
+  verifySiteCredential,
+  type SiteGrant,
+} from "@shared/identity/site-credential";
 import { getAuthSession } from "@db/services/auth/session";
+import { getInstallationSecrets } from "@db/services/installation-secrets";
+import { isSiteTaskSession, resolveSiteOwner } from "@db/services/sites";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { settledToolResult } from "@agent/lib/settled-tool-result";
+import { siteAuthenticator } from "@agent/lib/site-principal";
 import {
   finalizeScheduledReportDelivery,
   releaseScheduledReportDelivery,
@@ -22,6 +31,13 @@ import {
 const authenticateLocalDev = localDev();
 
 const authenticate: Parameters<typeof routeAuth>[1] = [
+  // The site API's internal credential. A request that presents one is decided
+  // here: an invalid one is refused, never passed on to the other strategies.
+  async (request) => {
+    const credential = extractBearerToken(request.headers.get("authorization"));
+    if (!credential || !isSiteCredential(credential)) return null;
+    return authenticateSite(request, credential);
+  },
   async (request) => {
     const identity = await requestIdentityFromRequest(request);
     if (!identity) return null;
@@ -186,6 +202,71 @@ function decodePathSegment(segment: string) {
   } catch {
     return undefined;
   }
+}
+
+// A connected site acts as its owner, with its name recorded on the session.
+// Its credential covers exactly one route: creating a session, or reading the
+// stream of one session the same site created.
+async function authenticateSite(request: Request, credential: string) {
+  const { betterAuthSecret } = await getInstallationSecrets();
+  const grant = verifySiteCredential(betterAuthSecret, credential);
+  if (!grant) {
+    throw new UnauthenticatedError({
+      code: "authentication_required",
+      message: "Sign in to continue.",
+    });
+  }
+  const sessionId = siteRouteSession(request, grant);
+  const owner = await resolveSiteOwner(grant.site);
+  if (!owner.ok) {
+    console.warn("[site] eve call refused", {
+      reason: owner.reason,
+      site: grant.site,
+    });
+    throw new ForbiddenError({ message: "Site access is unavailable." });
+  }
+  if (
+    sessionId !== undefined &&
+    !(await isSiteTaskSession(grant.site, owner.scope, sessionId))
+  ) {
+    throw new ForbiddenError({ message: "Session not found." });
+  }
+  await requireOwnedRouteSubject(owner.scope, request);
+
+  return {
+    attributes: {
+      conversationChannel: "eve",
+      email: owner.email,
+      site: grant.site,
+      workspaceId: owner.scope.workspaceId,
+    },
+    authenticator: siteAuthenticator,
+    principalId: owner.scope.userId,
+    principalType: "user",
+  };
+}
+
+function siteRouteSession(request: Request, grant: SiteGrant) {
+  const { pathname } = new URL(request.url);
+  if (
+    grant.op === "create" &&
+    request.method === "POST" &&
+    pathname === "/eve/v1/session"
+  ) {
+    return undefined;
+  }
+  const streamSession = /^\/eve\/v1\/session\/([^/]+)\/stream$/.exec(
+    pathname
+  )?.[1];
+  if (
+    grant.op === "read" &&
+    request.method === "GET" &&
+    streamSession !== undefined &&
+    decodePathSegment(streamSession) === grant.session
+  ) {
+    return grant.session;
+  }
+  throw new ForbiddenError({ message: "Session not found." });
 }
 
 async function requestIdentityFromRequest(request: Request) {

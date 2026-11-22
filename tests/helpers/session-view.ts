@@ -14,7 +14,15 @@ export function viewOf(
   lines: readonly (readonly Fact[])[],
   at = "2026-01-01T00:00:00.000Z"
 ): SessionView {
-  const events: ReceivedEvent[] = lines.flatMap((facts, line) =>
+  return foldEvents(emptySessionView(), eventsOf(lines, at));
+}
+
+/** The stream events a reader receives for these committed lines. */
+export function eventsOf(
+  lines: readonly (readonly Fact[])[],
+  at = "2026-01-01T00:00:00.000Z"
+): ReceivedEvent[] {
+  return lines.flatMap((facts, line) =>
     facts.map((fact, index) => ({
       ...fact,
       meta: {
@@ -24,5 +32,4 @@ export function viewOf(
       },
     }))
   );
-  return foldEvents(emptySessionView(), events);
 }

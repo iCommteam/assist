@@ -12,6 +12,7 @@ vi.mock("eve/instructions", async (importOriginal) =>
 
 import executionSafety from "@agent/instructions/10-execution-safety";
 import roleInstructions from "@agent/instructions/20-role";
+import siteTask from "@agent/instructions/22-site-task";
 import workerCoordination from "@agent/instructions/25-worker-coordination";
 import messageStyle from "@agent/instructions/30-message-style";
 
@@ -140,6 +141,53 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain("isolated background session");
   });
 });
+
+describe("site task instructions", () => {
+  it("tells the coordinator a site task has no one watching and ends in one reply", async () => {
+    const selected = await evaluateDynamic(siteTask, siteContext());
+    expect(selected?.content).toContain("connected site `teemiq`");
+    expect(selected?.content).toContain("No one is watching while you work");
+    expect(selected?.content).toContain("Do not ask questions you can avoid");
+    expect(selected?.content).toContain("Never call `ask_question`");
+    expect(selected?.content).toContain("Do not use `react_to_message`");
+    expect(selected?.content).toContain(
+      "Finish with exactly one `send_message` call"
+    );
+    expect(selected?.content).toContain(
+      "must delete its browser before it returns"
+    );
+  });
+
+  it("keeps site sessions in interactive mode", async () => {
+    const selected = await evaluateDynamic(roleInstructions, siteContext());
+    expect(selected?.content).toContain("root coordinator");
+  });
+
+  it.each([
+    ["a member session", dynamicContext("authjs", "authjs")],
+    ["a session with no initiator", dynamicContext("authjs")],
+    [
+      "a scheduled worker",
+      dynamicContext("scheduled-worker", "scheduled-worker"),
+    ],
+  ])("adds nothing to %s", async (_case, context) => {
+    expect(await evaluateDynamic(siteTask, context)).toBeNull();
+  });
+});
+
+function siteContext() {
+  const site = {
+    attributes: { site: "teemiq", workspaceId: "personal:owner" },
+    authenticator: "assist-site",
+    principalId: "better-auth:owner-1",
+    principalType: "user",
+  };
+  return dynamicContextFor({
+    auth: { current: site, initiator: site },
+    channel: { kind: "http", metadata: {} },
+    sessionId: "session-site",
+  });
+}
 
 function dynamicContext(
   authenticator: string,
