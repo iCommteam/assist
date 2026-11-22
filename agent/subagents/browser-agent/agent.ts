@@ -7,7 +7,7 @@ import { anthropicModel, MODEL_CONTEXT_WINDOW_TOKENS } from "@agent/lib/models";
 export default defineAgent({
   tool: false,
   description:
-    "Execute one bounded browser assignment for the root coordinator, including secure vault autofill, transaction preparation, human-takeover handoff, cleanup, and a concise verified result.",
+    "Execute one bounded browser assignment for the root coordinator, including secure saved-login autofill, transaction preparation, user handoff, cleanup, and a concise verified result. Stops at any CAPTCHA or block and never opens Amazon sites.",
   model: anthropicModel(),
   modelContextWindowTokens: MODEL_CONTEXT_WINDOW_TOKENS,
   reasoning: "low",

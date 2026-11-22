@@ -131,7 +131,7 @@ describe("browser benchmark live activity", () => {
     ).toEqual({ model: 4_000, playwright: 3_000, semantic: 3_000 });
   });
 
-  it("finds the Kernel live browser stream from session creation", () => {
+  it("finds the browser handoff link from session creation", () => {
     const events = [
       at(
         toolRequested("call_browser", "manage_browsers"),
@@ -145,8 +145,7 @@ describe("browser benchmark live activity", () => {
             outcome: "completed",
             output: {
               browser: {
-                browser_live_view_url:
-                  "https://live.kernel.test/browser/session-1",
+                handoff_url: "https://example.com/browsers/session-1/live",
               },
             },
           },
@@ -159,7 +158,7 @@ describe("browser benchmark live activity", () => {
     ];
 
     expect(browserBenchmarkLiveViewUrl(events)).toBe(
-      "https://live.kernel.test/browser/session-1"
+      "https://example.com/browsers/session-1/live"
     );
   });
 });

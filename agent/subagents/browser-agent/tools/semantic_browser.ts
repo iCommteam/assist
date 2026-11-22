@@ -12,6 +12,15 @@ import {
 } from "eve/tools";
 import { requireWorkerScope } from "@agent/subagents/browser-agent/lib/access";
 import { requireOwnedBrowserSession } from "@agent/subagents/browser-agent/lib/owned-browser";
+import {
+  redactBrowserOutput,
+  releaseNavigatedDocuments,
+} from "@agent/subagents/browser-agent/lib/autofill/redaction";
+import { assertNavigableUrl } from "@agent/subagents/browser-agent/lib/policy/hosts";
+import {
+  assertWorkerNotBlocked,
+  checkBrowserPages,
+} from "@agent/subagents/browser-agent/lib/policy/page-check";
 import { executeBrowserLoopTool, modelText } from "../lib/semantic-loop";
 
 /* oxlint-disable anti-slop/no-known-value-widening, anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- Browser Loop supplies runtime-selected JSON Schemas and JSON inputs, so this adapter must preserve its dynamic vendor boundary. */
@@ -22,8 +31,10 @@ const allSpecs = [
   loop.tools.browser.find(),
   loop.tools.browser.waitFor(),
   loop.tools.browser.act(),
-  loop.tools.playwright(),
+  loop.tools.browser.navigate(),
 ];
+// browser_navigate accepts these history sentinels in place of a URL.
+const historyNavigations = new Set(["back", "forward", "reload"]);
 const specsByName = new Map(allSpecs.map((spec) => [spec.name, spec]));
 const relaxedBrowserActTimeoutMs = 8_000;
 const relaxedBrowserActSnapshotCharacters = 4_000;
@@ -58,12 +69,40 @@ async function executeSemanticTool(
   const scope = await requireWorkerScope(context);
   const { sessionId, toolInput } = splitSessionInput(input);
   await requireOwnedBrowserSession(scope, sessionId);
-  return executeBrowserLoopTool(
-    sessionId,
-    spec,
-    boundedToolInput(spec, toolInput),
-    context.abortSignal
-  );
+  assertWorkerNotBlocked();
+  if (spec.name === "browser_navigate") {
+    const url = typeof toolInput.url === "string" ? toolInput.url : "";
+    if (!historyNavigations.has(url)) assertNavigableUrl(url);
+  }
+
+  let output: LoopToolExecutionResult;
+  try {
+    output = await executeBrowserLoopTool(
+      sessionId,
+      spec,
+      boundedToolInput(spec, toolInput),
+      context.abortSignal
+    );
+  } catch (error) {
+    // oxlint-disable-next-line eslint/preserve-caught-error -- The cause may carry vault values, so only the redacted message is kept.
+    throw new Error(
+      redactBrowserOutput(
+        context.session.id,
+        sessionId,
+        error instanceof Error ? error.message : "The browser action failed."
+      )
+    );
+  }
+
+  const check = await checkBrowserPages(sessionId, context.abortSignal);
+  if (check.status !== "clear") {
+    return {
+      content: [{ text: check.message, type: "text" }],
+      details: { statusText: check.message },
+    } satisfies LoopToolExecutionResult;
+  }
+  releaseNavigatedDocuments(sessionId, check.pages);
+  return redactBrowserOutput(context.session.id, sessionId, output);
 }
 
 function boundedToolInput(spec: LoopToolSpec, input: Record<string, unknown>) {
@@ -74,12 +113,6 @@ function boundedToolInput(spec: LoopToolSpec, input: Record<string, unknown>) {
   }
   if (spec.name === "browser_act") {
     return relaxedBrowserActInput(input);
-  }
-  if (spec.name === "playwright_execute") {
-    return {
-      ...input,
-      timeout_sec: boundedTimeout(input.timeout_sec, 20),
-    };
   }
   return input;
 }
@@ -142,6 +175,9 @@ function withSessionId(spec: LoopToolSpec) {
 }
 
 function toolDescription(spec: LoopToolSpec) {
+  if (spec.name === "browser_navigate") {
+    return 'Navigate the current tab to an http or https URL, or pass "back", "forward", or "reload". Amazon sites are blocked by policy and are refused.';
+  }
   if (spec.name !== "browser_act") return spec.declaration.description;
   return "Run 1–8 short dependent browser actions against current refs without waiting for model-authored postconditions. The result distinguishes dispatch failures and browser boundaries, then returns a compact successor state. Use current refs from browser_snapshot or browser_find; snapshot again after navigation, a stale ref, or an unavailable successor.";
 }

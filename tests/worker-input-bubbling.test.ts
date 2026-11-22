@@ -34,12 +34,14 @@ describe("worker input bubbling", () => {
       "Before surfacing a `Needs user input:` blocker"
     );
     expect(instructions).toContain(
-      "confirm the worker explicitly reported checking compatible vault items"
+      "confirm the worker reported checking its recalled personal information"
     );
     expect(workerInstructions).toContain(
-      "Before returning `Needs user input:` or `Needs vault setup:`"
+      "when neither source has a required value, return `Needs user input:`"
     );
-    expect(workerInstructions).toContain("select the relevant compatible item");
+    expect(workerInstructions).toContain(
+      "Before treating a sign-in form as a blocker, call `list_vault`"
+    );
     expect(workerInstructions).toContain(
       "structured completion tool Eve supplies"
     );

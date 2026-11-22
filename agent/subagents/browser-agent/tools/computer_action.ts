@@ -5,6 +5,14 @@ import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
 import { requireWorkerScope } from "@agent/subagents/browser-agent/lib/access";
 import { requireOwnedBrowserSession } from "@agent/subagents/browser-agent/lib/owned-browser";
 import { withVaultScreenshotMask } from "@agent/subagents/browser-agent/lib/vault-screenshot-mask";
+import {
+  assertWorkerNotBlocked,
+  checkBrowserPages,
+} from "@agent/subagents/browser-agent/lib/policy/page-check";
+import { releaseNavigatedDocuments } from "@agent/subagents/browser-agent/lib/autofill/redaction";
+
+// Input is sent at machine speed: no per-keystroke or drag delays, no smooth
+// (human-like) mouse paths, and no clipboard. A sleep is only a short wait.
 
 const actionSchema = z.object({
   type: z.enum([
@@ -16,8 +24,6 @@ const actionSchema = z.object({
     "drag_mouse",
     "set_cursor",
     "sleep",
-    "write_clipboard",
-    "read_clipboard",
     "screenshot",
     "get_mouse_position",
   ]),
@@ -38,16 +44,10 @@ const actionSchema = z.object({
       hold_keys: z.array(z.string()).optional(),
     })
     .optional(),
-  type_text: z
-    .object({
-      text: z.string(),
-      delay: z.number().int().min(0).max(250).optional(),
-    })
-    .optional(),
+  type_text: z.object({ text: z.string() }).optional(),
   press_key: z
     .object({
       keys: z.array(z.string()),
-      duration: z.number().int().min(0).max(2_000).optional(),
       hold_keys: z.array(z.string()).optional(),
     })
     .optional(),
@@ -64,9 +64,6 @@ const actionSchema = z.object({
     .object({
       path: z.array(z.array(z.number()).length(2)).min(2),
       button: z.enum(["left", "middle", "right"]).optional(),
-      delay: z.number().int().min(0).max(2_000).optional(),
-      steps_per_segment: z.number().int().min(1).optional(),
-      step_delay_ms: z.number().int().min(0).max(250).optional(),
       hold_keys: z.array(z.string()).optional(),
     })
     .optional(),
@@ -74,7 +71,6 @@ const actionSchema = z.object({
   sleep: z
     .object({ duration_ms: z.number().int().min(0).max(2_000) })
     .optional(),
-  write_clipboard: z.object({ text: z.string() }).optional(),
   screenshot: z
     .object({
       region: z
@@ -103,12 +99,13 @@ const outputSchema = z.object({
 
 export default defineTool({
   description:
-    "Execute a bounded batch of computer actions on one browser session. Prefer one batch over repeated calls, keep sleep actions at or below two seconds, and include a screenshot last only when visual inspection is needed; screenshots are delivered directly to the vision model.",
+    "Execute a bounded batch of computer actions on one browser session. Input runs at machine speed; sleep is only a short wait of at most two seconds for the page to update. Prefer one batch over repeated calls, and include a screenshot last only when visual inspection is needed; screenshots are delivered directly to the vision model.",
   inputSchema,
   outputSchema,
   async execute(input, context) {
     const scope = await requireWorkerScope(context);
     await requireOwnedBrowserSession(scope, input.session_id);
+    assertWorkerNotBlocked();
 
     const computer = kernel.browsers.computer;
     const data: unknown[] = [];
@@ -136,20 +133,6 @@ export default defineTool({
 
       await flushPendingActions();
       switch (action.type) {
-        case "write_clipboard":
-          await computer.writeClipboard(
-            input.session_id,
-            requiredAction(action.write_clipboard, action.type),
-            { signal: context.abortSignal }
-          );
-          break;
-        case "read_clipboard":
-          data.push(
-            await computer.readClipboard(input.session_id, {
-              signal: context.abortSignal,
-            })
-          );
-          break;
         case "get_mouse_position":
           data.push(
             await computer.getMousePosition(input.session_id, {
@@ -187,6 +170,15 @@ export default defineTool({
     }
     /* oxlint-enable eslint/no-await-in-loop */
     await flushPendingActions();
+
+    const check = await checkBrowserPages(
+      input.session_id,
+      context.abortSignal
+    );
+    if (check.status !== "clear") {
+      return outputSchema.parse({ message: check.message });
+    }
+    releaseNavigatedDocuments(input.session_id, check.pages);
 
     return outputSchema.parse({
       data: data.length > 0 ? data : undefined,
@@ -229,13 +221,19 @@ function toBatchAction(
       };
     case "move_mouse":
       return {
-        move_mouse: requiredAction(action.move_mouse, action.type),
+        move_mouse: {
+          ...requiredAction(action.move_mouse, action.type),
+          smooth: false,
+        },
         type: action.type,
       };
     case "type_text":
       return {
         type: action.type,
-        type_text: requiredAction(action.type_text, action.type),
+        type_text: {
+          ...requiredAction(action.type_text, action.type),
+          delay: 0,
+        },
       };
     case "press_key":
       return {
@@ -249,7 +247,12 @@ function toBatchAction(
       };
     case "drag_mouse":
       return {
-        drag_mouse: requiredAction(action.drag_mouse, action.type),
+        drag_mouse: {
+          ...requiredAction(action.drag_mouse, action.type),
+          delay: 0,
+          smooth: false,
+          step_delay_ms: 0,
+        },
         type: action.type,
       };
     case "set_cursor":
@@ -263,9 +266,7 @@ function toBatchAction(
         type: action.type,
       };
     case "get_mouse_position":
-    case "read_clipboard":
     case "screenshot":
-    case "write_clipboard":
       return null;
   }
   throw new Error("Unsupported computer action.");

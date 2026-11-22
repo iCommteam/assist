@@ -180,7 +180,8 @@ function encryptVaultSecret(
   const cipher = createCipheriv(
     "aes-256-gcm",
     Buffer.from(secretEncryptionKey, "base64"),
-    iv
+    iv,
+    { authTagLength: vaultAuthTagLength }
   );
   cipher.setAAD(vaultSecretAad(scope, id));
   const ciphertext = Buffer.concat([
@@ -206,10 +207,13 @@ function decryptVaultSecret(
     throw new Error("The stored secret uses an unsupported format.");
   }
 
+  // A pinned tag length makes Node reject a truncated tag instead of
+  // verifying fewer bytes.
   const decipher = createDecipheriv(
     "aes-256-gcm",
     Buffer.from(secretEncryptionKey, "base64"),
-    Buffer.from(encodedIv, "base64url")
+    Buffer.from(encodedIv, "base64url"),
+    { authTagLength: vaultAuthTagLength }
   );
   decipher.setAAD(vaultSecretAad(scope, id));
   decipher.setAuthTag(Buffer.from(encodedTag, "base64url"));
@@ -218,6 +222,8 @@ function decryptVaultSecret(
     decipher.final(),
   ]).toString("utf8");
 }
+
+const vaultAuthTagLength = 16;
 
 function vaultSecretAad(scope: AccessScope, id: string) {
   return Buffer.from(`${scope.workspaceId}\u0000vault\u0000${id}`);

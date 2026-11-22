@@ -22,7 +22,7 @@ function schemaObjects(
 }
 
 // The Anthropic API wants every tool input schema to be one object, with no
-// oneOf / anyOf / allOf at the top level; send_message and request_vault_setup take
+// oneOf / anyOf / allOf at the top level; send_message, for one, takes
 // a union (the AI Gateway accepted that). The union becomes one object holding every
 // variant's fields, required only where every variant requires them, and a field
 // that differs between variants becomes an anyOf one level down. eve still

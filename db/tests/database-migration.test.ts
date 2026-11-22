@@ -84,7 +84,9 @@ describe("database migrations", () => {
     ).resolves.toMatchObject({
       rows: [{ id: "contact-1" }],
     });
-  }, 15_000);
+    // Every migration runs in PGlite: about 8 seconds alone, and past 15
+    // beside the full suite on a loaded runner.
+  }, 30_000);
 
   it("leaves sessions from before two-factor sign-in unverified", async () => {
     const database = createDatabase();

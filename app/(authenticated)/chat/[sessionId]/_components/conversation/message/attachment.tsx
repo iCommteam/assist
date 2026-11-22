@@ -2,6 +2,7 @@ import type { EveMessagePart } from "eve/react";
 import { ExternalLinkIcon, FileIcon, ImageIcon } from "lucide-react";
 import { Button } from "@web/components/ui/button";
 import { Card, CardContent } from "@web/components/ui/card";
+import { isBrowserImageArtifactUrl } from "@shared/browser/artifact";
 
 type EveFilePart = Extract<EveMessagePart, { type: "file" }>;
 
@@ -10,17 +11,25 @@ export function AttachmentPart({ part }: { readonly part: EveFilePart }) {
   const detail = [part.mediaType, formatBytes(part.size)]
     .filter(Boolean)
     .join(" · ");
-  const isImage = part.mediaType.startsWith("image/") && part.url !== undefined;
+  const isImage = part.mediaType.startsWith("image/");
+  // Only the app's own artifact URLs load inline: an attachment URL comes from
+  // the model or a remote page, and fetching it would tell that host who is
+  // reading the chat.
+  const previewUrl =
+    isImage && part.url !== undefined && isBrowserImageArtifactUrl(part.url)
+      ? part.url
+      : undefined;
   const Icon = isImage ? ImageIcon : FileIcon;
   const content = (
     <>
-      {isImage ? (
+      {previewUrl ? (
         // Browser artifacts use runtime URLs that cannot be declared in Next Image configuration.
         // oxlint-disable-next-line nextjs/no-img-element -- runtime browser artifact URL
         <img
           alt={label}
           className="size-12 shrink-0 rounded-sm object-cover"
-          src={part.url}
+          referrerPolicy="no-referrer"
+          src={previewUrl}
         />
       ) : (
         <span className="flex size-10 shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground">

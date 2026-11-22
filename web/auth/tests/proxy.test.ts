@@ -66,12 +66,28 @@ describe("auth proxy matcher", () => {
     "https://example.com/internal/scheduled-run/respond",
     "https://example.com/eve/v1/dev/schedules/dynamic",
   ])("sends %s through the sign-in check", async (url) => {
-    const response = await proxy(new NextRequest(url, { method: "POST" }));
+    const response = await proxy(
+      new NextRequest(url, {
+        headers: { origin: "https://example.com" },
+        method: "POST",
+      })
+    );
 
     expect(response.headers.get("x-middleware-next")).toBeNull();
     expect(new URL(response.headers.get("location") ?? "").pathname).toBe(
       "/sign-in"
     );
     expect(getAuthSession).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a cookie POST to an internal route without the app Origin", async () => {
+    const response = await proxy(
+      new NextRequest("https://example.com/internal/scheduled-run/respond", {
+        method: "POST",
+      })
+    );
+
+    expect(response.status).toBe(403);
+    expect(getAuthSession).not.toHaveBeenCalled();
   });
 });

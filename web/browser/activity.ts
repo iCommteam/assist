@@ -18,6 +18,7 @@ export type BrowserActivityDurations = Partial<
 const toolActivityKind = new Map<string, BrowserActivityKind>([
   ["browser_act", "semantic"],
   ["browser_find", "semantic"],
+  ["browser_navigate", "semantic"],
   ["browser_snapshot", "semantic"],
   ["browser_text", "semantic"],
   ["browser_wait_for", "semantic"],
@@ -26,6 +27,7 @@ const toolActivityKind = new Map<string, BrowserActivityKind>([
   ["list_vault", "vault"],
   ["load_skill", "setup"],
   ["manage_browsers", "setup"],
+  // No longer offered; kept so earlier traces still classify.
   ["playwright_execute", "playwright"],
   ["web_fetch", "web"],
   ["web_search", "web"],

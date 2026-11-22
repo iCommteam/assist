@@ -1,23 +1,38 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import * as WorkerAccess from "@agent/subagents/browser-agent/lib/access";
 import * as OwnedBrowser from "@agent/subagents/browser-agent/lib/owned-browser";
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
+import { resetEveState } from "@tests/helpers/eve-state";
 import { toolContextFor } from "@tests/helpers/tool-context";
 import computerAction from "@agent/subagents/browser-agent/tools/computer_action";
 
+vi.mock("eve/context", () => import("@tests/helpers/eve-state"));
+
+const clearPage = {
+  frames: [],
+  status: 200,
+  text: "Example Domain",
+  timeOrigin: 1_000,
+  title: "Example Domain",
+  url: "https://example.com/",
+};
+
 const mocks = {
   batch: vi.spyOn(kernel.browsers.computer, "batch"),
-  readClipboard: vi.spyOn(kernel.browsers.computer, "readClipboard"),
+  captureScreenshot: vi.spyOn(kernel.browsers.computer, "captureScreenshot"),
+  getMousePosition: vi.spyOn(kernel.browsers.computer, "getMousePosition"),
+  playwright: vi.spyOn(kernel.browsers.playwright, "execute"),
   requireOwnedBrowserSession: vi.spyOn(
     OwnedBrowser,
     "requireOwnedBrowserSession"
   ),
   requireWorkerScope: vi.spyOn(WorkerAccess, "requireWorkerScope"),
-  writeClipboard: vi.spyOn(kernel.browsers.computer, "writeClipboard"),
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetEveState();
   mocks.requireWorkerScope.mockResolvedValue({
     userId: "user-1",
     workspaceId: "workspace-1",
@@ -28,22 +43,31 @@ beforeEach(() => {
     workerSessionId: "worker-session-1",
   });
   mocks.batch.mockResolvedValue();
-  mocks.readClipboard.mockResolvedValue({ text: "clipboard value" });
-  mocks.writeClipboard.mockResolvedValue();
+  mocks.getMousePosition.mockResolvedValue({ x: 10, y: 20 });
+  mocks.captureScreenshot.mockResolvedValue(new Response("png-bytes"));
+  mocks.playwright.mockResolvedValue({ result: [clearPage], success: true });
 });
 
 describe("worker browser tools", () => {
-  it("sends contiguous computer actions through Kernel batch while preserving read order", async () => {
-    const execute = computerAction.execute;
+  it("sends contiguous computer actions through Kernel batch at machine speed", async () => {
     const context = toolContextFor();
-    const result = await execute(
+    const result = await computerAction.execute(
       {
         actions: [
           { click_mouse: { x: 10, y: 20 }, type: "click_mouse" },
+          { move_mouse: { x: 30, y: 40 }, type: "move_mouse" },
           { type: "type_text", type_text: { text: "hello" } },
           { sleep: { duration_ms: 100 }, type: "sleep" },
-          { type: "read_clipboard" },
-          { scroll: { x: 10, y: 20, delta_y: 4 }, type: "scroll" },
+          { type: "get_mouse_position" },
+          {
+            drag_mouse: {
+              path: [
+                [1, 2],
+                [3, 4],
+              ],
+            },
+            type: "drag_mouse",
+          },
         ],
         session_id: "browser-1",
       },
@@ -57,18 +81,109 @@ describe("worker browser tools", () => {
       {
         actions: [
           { click_mouse: { x: 10, y: 20 }, type: "click_mouse" },
-          { type: "type_text", type_text: { text: "hello" } },
+          { move_mouse: { smooth: false, x: 30, y: 40 }, type: "move_mouse" },
+          { type: "type_text", type_text: { delay: 0, text: "hello" } },
           { sleep: { duration_ms: 100 }, type: "sleep" },
         ],
       },
       { signal: context.abortSignal }
     );
+    expect(mocks.batch).toHaveBeenNthCalledWith(
+      2,
+      "browser-1",
+      {
+        actions: [
+          {
+            drag_mouse: {
+              delay: 0,
+              path: [
+                [1, 2],
+                [3, 4],
+              ],
+              smooth: false,
+              step_delay_ms: 0,
+            },
+            type: "drag_mouse",
+          },
+        ],
+      },
+      { signal: context.abortSignal }
+    );
     expect(mocks.batch.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.readClipboard.mock.invocationCallOrder[0] ?? Infinity
+      mocks.getMousePosition.mock.invocationCallOrder[0] ?? Infinity
     );
-    expect(mocks.readClipboard.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.batch.mock.invocationCallOrder[1] ?? Infinity
+    expect(result).toMatchObject({ data: [{ x: 10, y: 20 }] });
+  });
+
+  it("offers no clipboard, keystroke delay, drag timing or long sleep", () => {
+    const schema = computerAction.inputSchema;
+    if (!(schema instanceof z.ZodType)) {
+      throw new Error("computer_action must use a Zod input schema.");
+    }
+    for (const action of [
+      { type: "read_clipboard" },
+      { type: "write_clipboard", write_clipboard: { text: "x" } },
+      { sleep: { duration_ms: 2_001 }, type: "sleep" },
+    ]) {
+      expect(
+        schema.safeParse({ actions: [action], session_id: "browser-1" }).success
+      ).toBe(false);
+    }
+    // Unknown timing fields are stripped, never forwarded.
+    const parsed = schema.parse({
+      actions: [
+        { type: "type_text", type_text: { delay: 250, text: "slow" } },
+        {
+          drag_mouse: {
+            delay: 500,
+            path: [
+              [0, 0],
+              [5, 5],
+            ],
+            step_delay_ms: 100,
+            steps_per_segment: 30,
+          },
+          type: "drag_mouse",
+        },
+      ],
+      session_id: "browser-1",
+    });
+    expect(JSON.stringify(parsed)).not.toMatch(
+      /"delay":(?:250|500)|step_delay_ms|steps_per_segment/u
     );
-    expect(result).toMatchObject({ data: [{ text: "clipboard value" }] });
+  });
+
+  it("drops the screenshot and stops the worker when the page is a CAPTCHA", async () => {
+    mocks.playwright.mockResolvedValue({
+      result: [
+        {
+          ...clearPage,
+          text: "Please verify you are human to continue.",
+        },
+      ],
+      success: true,
+    });
+
+    const result = await computerAction.execute(
+      {
+        actions: [
+          { click_mouse: { x: 1, y: 1 }, type: "click_mouse" },
+          { type: "screenshot" },
+        ],
+        session_id: "browser-1",
+      },
+      toolContextFor()
+    );
+
+    // Only the message: no screenshot and no data.
+    const output = z.strictObject({ message: z.string() }).parse(result);
+    expect(output.message).toContain("BLOCKED: example.com");
+    await expect(
+      computerAction.execute(
+        { actions: [{ type: "screenshot" }], session_id: "browser-1" },
+        toolContextFor()
+      )
+    ).rejects.toThrow(/already stopped at a block/u);
+    expect(mocks.captureScreenshot).toHaveBeenCalledOnce();
   });
 });

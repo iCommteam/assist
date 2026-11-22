@@ -22,8 +22,17 @@ import {
   domainFromUrl,
   harvestBrowserTraceDomains,
 } from "@agent/subagents/browser-agent/lib/trace/domains";
+import {
+  amazonUrlBlocklist,
+  assertNavigableUrl,
+} from "@agent/subagents/browser-agent/lib/policy/hosts";
+import { assertWorkerNotBlocked } from "@agent/subagents/browser-agent/lib/policy/page-check";
+import { forgetFilledBrowser } from "@agent/subagents/browser-agent/lib/autofill/redaction";
+import { applicationOrigin } from "@shared/environment/origin";
 
 const browserTimeoutFloorSeconds = 15 * 60;
+// Idle timeout ceiling: a forgotten browser holding a login dies within an hour.
+const browserTimeoutCeilingSeconds = 60 * 60;
 
 const inputSchema = z.object({
   action: z.enum(["create", "update", "list", "get", "delete"]),
@@ -34,7 +43,7 @@ const inputSchema = z.object({
     .number()
     .int()
     .min(browserTimeoutFloorSeconds)
-    .max(259_200)
+    .max(browserTimeoutCeilingSeconds)
     .optional(),
   viewport_width: z.number().int().min(1).optional(),
   viewport_height: z.number().int().min(1).optional(),
@@ -53,6 +62,8 @@ const manageBrowsers = defineTool({
 
     switch (input.action) {
       case "create": {
+        assertWorkerNotBlocked();
+        if (input.start_url) assertNavigableUrl(input.start_url);
         const create = async () => {
           const profile = await ensureWorkspaceProfile(
             scope.workspaceId,
@@ -69,14 +80,20 @@ const manageBrowsers = defineTool({
               );
             }
           }
+          // Stealth stays off: it is the only switch for Kernel's CAPTCHA
+          // solver, and without it egress is direct (no stealth proxy). No
+          // retries: a create that is retried after a lost response orphans a
+          // browser, possibly a logged-in one.
           const browser = await kernel.browsers.create(
             {
+              chrome_policy: { URLBlocklist: amazonUrlBlocklist },
+              kiosk_mode: true,
               profile: {
                 id: profile.id,
                 save_changes: input.save_changes ?? false,
               },
               start_url: input.start_url,
-              stealth: true,
+              stealth: false,
               telemetry: {
                 browser: { page: { enabled: true } },
                 enabled: true,
@@ -85,7 +102,7 @@ const manageBrowsers = defineTool({
                 input.timeout_seconds ?? browserTimeoutFloorSeconds,
               viewport: browserViewport(input),
             },
-            { maxRetries: 8, signal }
+            { maxRetries: 0, signal }
           );
           try {
             await createBrowserSession(scope, {
@@ -182,6 +199,7 @@ const manageBrowsers = defineTool({
             if (!isNotFoundError(cause)) throw cause;
           });
         await deleteBrowserSession(scope, sessionId);
+        forgetFilledBrowser(sessionId);
         return "Browser session deleted successfully";
       }
     }
@@ -233,9 +251,18 @@ type KernelBrowser =
   | BrowserRetrieveResponse
   | BrowserUpdateResponse;
 
+// Kernel's live-view URL controls the browser, so it never reaches a model or
+// the chat. The handoff link opens it only for the signed-in owner.
+function browserHandoffUrl(sessionId: string) {
+  return new URL(
+    `/browsers/${encodeURIComponent(sessionId)}/live`,
+    applicationOrigin()
+  ).toString();
+}
+
 function browserDescriptor(browser: KernelBrowser) {
   return {
-    browser_live_view_url: browser.browser_live_view_url,
+    handoff_url: browserHandoffUrl(browser.session_id),
     session_id: browser.session_id,
     status: browser.deleted_at ? "deleted" : "active",
     viewport: browser.viewport ?? undefined,
@@ -247,9 +274,8 @@ function lifecycleResult(browser: KernelBrowser) {
   return {
     browser: value,
     next_actions: [
-      `Use playwright_execute with session_id "${value.session_id}" as the primary surface for deterministic inspection and interaction, including related safe actions, extraction, JavaScript, loops, and pagination.`,
-      `If Playwright is unreliable or semantic interaction is more suitable, call browser_snapshot with session_id "${value.session_id}" to mint current refs; use browser_find or browser_text to narrow large pages.`,
-      `Then use browser_act with session_id "${value.session_id}" as a relaxed fallback for short ref-based click, fill, and submit plans; inspect its successor state instead of waiting on per-action postconditions.`,
+      `Call browser_snapshot with session_id "${value.session_id}" to mint current refs; use browser_find or browser_text to narrow large pages.`,
+      `Then use browser_act with session_id "${value.session_id}" for short ref-based click, fill, and submit plans; inspect its successor state instead of waiting on per-action postconditions. Use browser_navigate to open another URL in the same browser.`,
       `Use computer_action with session_id "${value.session_id}" only when visual reasoning or coordinate control is necessary.`,
       `Use manage_browsers with action "delete" and session_id "${value.session_id}" when finished.`,
     ],

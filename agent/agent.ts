@@ -2,6 +2,7 @@ import { defineAgent, defineDynamic } from "eve";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import { coordinatorModel } from "@agent/lib/models";
+import { sessionUsageExceeded } from "@agent/lib/usage-limit";
 
 export default defineAgent({
   build: {
@@ -28,6 +29,10 @@ export default defineAgent({
   reasoning: "low",
   compaction: {
     threshold: 0.7,
+  },
+  // The browser-agent subagent authors no limit of its own, so it uses this one.
+  limits: {
+    sessionUsage: sessionUsageExceeded,
   },
   // Keep run data for the World's default period. Without this, the trace policy
   // in agent/instrumentation/otel.ts (no inputs or outputs) derives zero

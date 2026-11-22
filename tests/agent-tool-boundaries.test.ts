@@ -129,14 +129,27 @@ describe("root and worker capability boundaries", () => {
     );
     expect(workerInstructions).toContain("such as Google Flights");
     expect(workerInstructions).toContain(
-      "Use `playwright_execute` as the primary browser execution surface"
-    );
-    expect(workerInstructions).toContain(
-      "Prefer one bounded program per page state"
-    );
-    expect(workerInstructions).toContain(
       "`browser_act` dispatches actions and returns the successor state"
     );
+    // No model-written Playwright, no solver, no live-view URL in chat.
+    expect(workerInstructions).not.toMatch(/playwright|stealth|live.view/iu);
+    expect(semanticBrowser).not.toContain("loop.tools.playwright");
+    expect(workerInstructions).toContain(
+      "answer truthfully that you are an automated AI agent (iCommAssist)"
+    );
+    expect(workerInstructions).toContain(
+      "Never claim or imply that you are a human"
+    );
+    expect(workerInstructions).toContain(
+      "Never imitate human typing, mouse movement, or navigation speed"
+    );
+    expect(workerInstructions).toContain(
+      "Amazon sites are blocked by policy for now"
+    );
+    expect(workerInstructions).toContain(
+      "Never wait for it to clear or for a solver"
+    );
+    expect(workerInstructions).toContain("The vault fills saved logins only.");
     expect(existsSync(`${workerRoot}/lib/browser-contract.ts`)).toBe(false);
     expect(existsSync(`${workerRoot}/lib/browser-runtime.ts`)).toBe(false);
     expect(existsSync(`${workerRoot}/lib/owned-browser.ts`)).toBe(true);

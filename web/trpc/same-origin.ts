@@ -1,43 +1,11 @@
+import { applicationOrigin } from "@shared/environment/origin";
+
+// A cookie-authenticated write must come from a page of this app, so its
+// Origin header has to equal the configured application origin exactly.
+// Browsers always send Origin on such requests. Host and X-Forwarded-* headers
+// are not trusted: behind the edge proxy the request host is not the public
+// origin, and a forwarded header is whatever the caller wrote.
 export function isSameOrigin(request: Request) {
   const origin = request.headers.get("origin");
-  if (!origin) return true;
-
-  let parsedOrigin: URL;
-  try {
-    parsedOrigin = new URL(origin);
-  } catch {
-    return false;
-  }
-
-  const requestUrl = new URL(request.url);
-  const allowedOrigins = new Set([requestUrl.origin]);
-  const protocol =
-    firstForwardedValue(request.headers.get("x-forwarded-proto")) ??
-    requestUrl.protocol;
-
-  for (const value of [
-    request.headers.get("x-forwarded-host"),
-    request.headers.get("host"),
-  ]) {
-    const host = firstForwardedValue(value);
-    if (!host) continue;
-    try {
-      allowedOrigins.add(
-        new URL(`${normalizeProtocol(protocol)}//${host}`).origin
-      );
-    } catch {
-      continue;
-    }
-  }
-
-  return allowedOrigins.has(parsedOrigin.origin);
-}
-
-function firstForwardedValue(value: string | null) {
-  const first = value?.split(",", 1)[0]?.trim();
-  return first?.length ? first : undefined;
-}
-
-function normalizeProtocol(protocol: string) {
-  return protocol.endsWith(":") ? protocol : `${protocol}:`;
+  return origin !== null && origin === applicationOrigin();
 }

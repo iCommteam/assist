@@ -20,6 +20,11 @@ import traceTelemetry from "@agent/subagents/browser-agent/hooks/trace-telemetry
 import { hookContextFor } from "@tests/helpers/hook-context";
 import { viewOf } from "@tests/helpers/session-view";
 import { accessScopeForUser } from "@shared/identity/access-scope";
+import { resetEveState } from "@tests/helpers/eve-state";
+import {
+  forgetInjectedValues,
+  rememberInjectedValues,
+} from "@agent/subagents/browser-agent/lib/autofill/redaction";
 
 const mocks = vi.hoisted(() => ({
   beginBrowserTrace: vi.fn<typeof beginBrowserTrace>(),
@@ -34,6 +39,7 @@ vi.mock("@db/services/browser-traces", () => ({
   completeBrowserTrace: mocks.completeBrowserTrace,
   recordBrowserTraceEvents: mocks.recordBrowserTraceEvents,
 }));
+vi.mock("eve/context", () => import("@tests/helpers/eve-state"));
 vi.mock("@db/services/browsers", () => ({
   listWorkerBrowserSessions: mocks.listWorkerBrowserSessions,
 }));
@@ -129,6 +135,8 @@ function requested(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetEveState();
+  forgetInjectedValues("worker-session-1");
   mocks.beginBrowserTrace.mockResolvedValue();
   mocks.completeBrowserTrace.mockResolvedValue();
   mocks.harvestBrowserTraceDomains.mockResolvedValue();
@@ -276,7 +284,46 @@ describe("browser trace telemetry hook", () => {
     ).resolves.toBeUndefined();
 
     expect(warn).toHaveBeenCalled();
+    // Only the error's name is logged, never its message or the row.
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("database offline");
     warn.mockRestore();
+  });
+
+  it("keeps vault values out of stored rows, tasks and results", async () => {
+    rememberInjectedValues("worker-session-1", "browser-1", [
+      "correct-horse-battery",
+    ]);
+
+    await fire(
+      "*",
+      requested("call-1", "browser_snapshot", {
+        note: 'value="correct-horse-battery" value="mugs"',
+      }),
+      contextAt("2026-08-31T00:00:02.000Z")
+    );
+    await fire(
+      "delivery.consumed",
+      delivered("Resume; the page showed correct-horse-battery"),
+      contextAt("2026-08-31T00:00:03.000Z")
+    );
+    await fire(
+      "content.completed",
+      resultContent({
+        images: [],
+        message: "Signed in with correct-horse-battery",
+        status: "success",
+      }),
+      contextAt("2026-08-31T00:05:00.000Z")
+    );
+
+    const stored = JSON.stringify([
+      mocks.recordBrowserTraceEvents.mock.calls,
+      mocks.beginBrowserTrace.mock.calls,
+      mocks.completeBrowserTrace.mock.calls,
+    ]);
+    expect(stored).not.toContain("correct-horse-battery");
+    // A filled document may still be open, so every rendered value is stripped.
+    expect(stored).not.toContain("mugs");
   });
 });
 

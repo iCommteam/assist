@@ -1,0 +1,143 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resetEveState } from "@tests/helpers/eve-state";
+import type { BrowserPageState } from "@agent/subagents/browser-agent/lib/policy/page-check";
+import {
+  forgetFilledBrowser,
+  forgetInjectedValues,
+  recordFilledDocuments,
+  redactBrowserOutput,
+  redactWorkerOutput,
+  releaseNavigatedDocuments,
+  rememberInjectedValues,
+} from "../redaction";
+
+vi.mock("eve/context", () => import("@tests/helpers/eve-state"));
+
+const password = 'hunter2-"quoted"-pass';
+const snapshot =
+  '- textbox "Email" [ref=e1] value="alice@example.com"\n- textbox "Password" [ref=e2] value="hunter2-\\"quoted\\"-pass"\n- textbox "Search" [ref=e3] value="mugs"';
+
+function openDocuments(...origins: number[]): BrowserPageState[] {
+  return origins.map((timeOrigin) => ({
+    frames: [],
+    status: 200,
+    text: "",
+    timeOrigin,
+    title: "",
+    url: "https://login.example.com/",
+  }));
+}
+
+beforeEach(() => {
+  resetEveState();
+  forgetInjectedValues("worker-1");
+  forgetInjectedValues("worker-2");
+});
+
+describe("vault value redaction", () => {
+  it("strips every rendered value until the filled document navigates away", () => {
+    rememberInjectedValues("worker-1", "browser-1", [
+      "alice@example.com",
+      password,
+    ]);
+    recordFilledDocuments("browser-1", openDocuments(1_000));
+
+    const filled = redactBrowserOutput("worker-1", "browser-1", snapshot);
+    expect(filled).not.toContain("alice@example.com");
+    expect(filled).not.toContain("hunter2");
+    expect(filled).not.toContain("mugs");
+    expect(filled).toContain('value="[hidden]"');
+
+    releaseNavigatedDocuments("browser-1", openDocuments(1_000, 2_000));
+    expect(
+      redactBrowserOutput("worker-1", "browser-1", snapshot)
+    ).not.toContain("mugs");
+
+    releaseNavigatedDocuments("browser-1", openDocuments(2_000));
+    const navigated = redactBrowserOutput("worker-1", "browser-1", snapshot);
+    // Known values stay hidden after navigation; other values show again.
+    expect(navigated).toContain('value="mugs"');
+    expect(navigated).not.toContain("alice@example.com");
+    expect(navigated).not.toContain("hunter2");
+    expect(navigated).toContain("[vault value hidden]");
+  });
+
+  it("fails closed when the filled documents are unknown, as after a restart", () => {
+    rememberInjectedValues("worker-1", "browser-1", [password]);
+    // The values are lost (a new process); the durable fill flag remains.
+    forgetInjectedValues("worker-1");
+
+    releaseNavigatedDocuments("browser-1", openDocuments(9_000));
+    expect(
+      redactBrowserOutput("worker-1", "browser-1", snapshot)
+    ).not.toContain("hunter2");
+
+    forgetFilledBrowser("browser-1");
+    expect(redactBrowserOutput("worker-1", "browser-1", snapshot)).toContain(
+      "hunter2"
+    );
+  });
+
+  it("matches values case-insensitively and in JSON-escaped form across a nested result", () => {
+    rememberInjectedValues("worker-1", "browser-1", [
+      "Alice@Example.com",
+      password,
+    ]);
+    forgetFilledBrowser("browser-1");
+
+    const output = redactBrowserOutput("worker-1", "browser-1", {
+      content: [
+        { text: "Signed in as ALICE@example.com", type: "text" },
+        { data: "aGVsbG8=", mimeType: "image/png", type: "image" },
+      ],
+      details: {
+        readResults: [
+          {
+            result: { successor: { text: snapshot } },
+            type: "browser_act",
+          },
+        ],
+        statusText: "ok",
+      },
+    });
+
+    const serialized = JSON.stringify(output);
+    expect(serialized).not.toMatch(/alice@example\.com/iu);
+    expect(serialized).not.toContain("hunter2");
+    expect(output.content[1]).toEqual({
+      data: "aGVsbG8=",
+      mimeType: "image/png",
+      type: "image",
+    });
+  });
+
+  it("keeps each worker's values to its own output and skips very short values", () => {
+    rememberInjectedValues("worker-1", "browser-1", ["abc", password]);
+    forgetFilledBrowser("browser-1");
+
+    expect(redactWorkerOutput("worker-2", `typed ${password}`)).toContain(
+      "hunter2"
+    );
+    expect(redactWorkerOutput("worker-1", `typed ${password} abc`)).toBe(
+      "typed [vault value hidden] abc"
+    );
+  });
+
+  it("strips rendered values from trace text while any browser may show a fill", () => {
+    rememberInjectedValues("worker-1", "browser-1", [password]);
+    expect(redactWorkerOutput("worker-1", 'value="mugs"')).toBe(
+      'value="[hidden]"'
+    );
+    // Trace rows carry the text JSON-escaped once more.
+    const escaped = JSON.stringify({
+      text: 'textbox [ref=e1] value="say \\"hi\\" \\ ok" next value="x"',
+    });
+    const redacted = redactWorkerOutput("worker-1", escaped);
+    expect(redacted).not.toContain("say");
+    expect(JSON.parse(redacted)).toEqual({
+      text: 'textbox [ref=e1] value="[hidden]" next value="[hidden]"',
+    });
+    forgetFilledBrowser("browser-1");
+    expect(redactWorkerOutput("worker-1", 'value="mugs"')).toBe('value="mugs"');
+  });
+});

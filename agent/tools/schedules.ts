@@ -1,6 +1,8 @@
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
+import type { ApprovalContext, ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
+import { siteOfSession } from "@agent/lib/site-principal";
 import { scheduledReportIdentity } from "@agent/lib/schedules/identity";
 import { postScheduledRunRoute } from "@agent/lib/schedules/request";
 import {
@@ -18,14 +20,43 @@ import {
   updateScheduledAgentJob,
 } from "@db/services/scheduled-agent-jobs";
 
+// A schedule spends model and browser time on every run with no one watching,
+// so the member approves each new or changed schedule. Pausing or deleting one
+// needs no approval. A connected site cannot answer an approval, so its tasks
+// may not create or change schedules at all.
+const siteScheduleDenial = {
+  reason:
+    "A connected-site task cannot create or change schedules, because no one can approve them. Say in your reply that the schedule was not created.",
+  type: "denied",
+} as const;
+
+function scheduleApproval(
+  { session }: Pick<ApprovalContext, "session">,
+  needsApproval: boolean
+): ApprovalStatus {
+  if (siteOfSession(session.auth.initiator)) return siteScheduleDenial;
+  return needsApproval ? "user-approval" : "not-applicable";
+}
+
+function approvalExcerpt(prompt: string) {
+  return prompt.length > 300 ? `${prompt.slice(0, 300)}…` : prompt;
+}
+
+const createScheduleInputSchema = z.object({
+  missedRunPolicy: z.enum(["run_latest", "catch_up"]).default("run_latest"),
+  prompt: z.string().trim().min(1).max(8_000),
+  timing: scheduleTimingSchema,
+});
+
 export const createSchedule = defineTool({
   description:
-    "Create a one-time, fixed-interval, or timezone-aware calendar job for this conversation. Use calendar timing for human wall-clock recurrence so it remains stable across daylight saving time. Summarize the exact requested work in prompt.",
-  inputSchema: z.object({
-    missedRunPolicy: z.enum(["run_latest", "catch_up"]).default("run_latest"),
-    prompt: z.string().trim().min(1).max(8_000),
-    timing: scheduleTimingSchema,
-  }),
+    "Create a one-time, fixed-interval, or timezone-aware calendar job for this conversation. Use calendar timing for human wall-clock recurrence so it remains stable across daylight saving time. Summarize the exact requested work in prompt. The user approves each new schedule before it is created.",
+  inputSchema: createScheduleInputSchema,
+  approval: {
+    prompt: ({ input }) =>
+      `Create this scheduled job (${input.timing.kind})? "${approvalExcerpt(input.prompt)}"`,
+    request: (context) => scheduleApproval(context, true),
+  },
   async execute(input, context) {
     const owner = scheduleOwner(context);
     return scheduleSummary(
@@ -67,8 +98,24 @@ const updateScheduleInputSchema = z
 
 export const updateSchedule = defineTool({
   description:
-    "Update, pause, resume, or delete one of the authenticated user's scheduled jobs. Set status paused or active to pause or resume it. List schedules first when the target is ambiguous.",
+    "Update, pause, resume, or delete one of the authenticated user's scheduled jobs. Set status paused or active to pause or resume it. List schedules first when the target is ambiguous. The user approves a changed prompt or timing and a resume; pausing or deleting runs at once.",
   inputSchema: updateScheduleInputSchema,
+  approval: {
+    prompt: ({ input }) =>
+      input.status === "active" &&
+      input.prompt === undefined &&
+      input.timing === undefined
+        ? "Resume this scheduled job?"
+        : `Change this scheduled job${input.prompt === undefined ? "" : ` to "${approvalExcerpt(input.prompt)}"`}?`,
+    request: (context) =>
+      scheduleApproval(
+        context,
+        context.toolInput === undefined ||
+          context.toolInput.prompt !== undefined ||
+          context.toolInput.timing !== undefined ||
+          context.toolInput.status === "active"
+      ),
+  },
   async execute({ id, ...patch }, context) {
     const owner = scheduleOwner(context);
     const job = await updateScheduledAgentJob(

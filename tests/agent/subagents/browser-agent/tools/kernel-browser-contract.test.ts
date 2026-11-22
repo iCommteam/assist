@@ -14,9 +14,12 @@ import type * as TraceDomainsModule from "@agent/subagents/browser-agent/lib/tra
 import type { harvestBrowserTraceDomains } from "@agent/subagents/browser-agent/lib/trace/domains";
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
 import { toolContextFor } from "@tests/helpers/tool-context";
+import { resetEveState } from "@tests/helpers/eve-state";
 import manageBrowsers, {
   kernelProfileNameForWorkspace,
 } from "@agent/subagents/browser-agent/tools/manage_browsers";
+import { amazonUrlBlocklist } from "@agent/subagents/browser-agent/lib/policy/hosts";
+import { checkBrowserPages } from "@agent/subagents/browser-agent/lib/policy/page-check";
 
 const serviceMocks = vi.hoisted(() => ({
   createBrowserSession: vi.fn<typeof createBrowserSession>(),
@@ -52,17 +55,7 @@ vi.mock(
   })
 );
 
-vi.mock("eve/context", () => ({
-  defineState: <T>(_name: string, initial: () => T) => {
-    let value = initial();
-    return {
-      get: () => value,
-      update: (update: (current: T) => T) => {
-        value = update(value);
-      },
-    };
-  },
-}));
+vi.mock("eve/context", () => import("@tests/helpers/eve-state"));
 
 const mocks = {
   createBrowser: vi.spyOn(kernel.browsers, "create"),
@@ -72,6 +65,7 @@ const mocks = {
   harvestBrowserTraceDomains: serviceMocks.harvestBrowserTraceDomains,
   listBrowserSessions: serviceMocks.listBrowserSessions,
   listKernelBrowsers: vi.spyOn(kernel.browsers, "list"),
+  playwright: vi.spyOn(kernel.browsers.playwright, "execute"),
   readBrowserSession: serviceMocks.requireOwnedBrowserSession,
   recordBrowserTraceDomains: serviceMocks.recordBrowserTraceDomains,
   retrieveBrowser: vi.spyOn(kernel.browsers, "retrieve"),
@@ -82,6 +76,7 @@ const mocks = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetEveState();
   mocks.requireWorkerScope.mockResolvedValue({
     userId: "user-1",
     workspaceId: "workspace-1",
@@ -105,7 +100,7 @@ beforeEach(() => {
     profile_save_changes: false,
     region: "us-east",
     session_id: "browser-1",
-    stealth: true,
+    stealth: false,
     timeout_seconds: 900,
     webdriver_ws_url: "wss://kernel.test/webdriver",
   });
@@ -128,7 +123,7 @@ beforeEach(() => {
 const workerContext = toolContextFor({ sessionId: "worker-session-1" });
 
 describe("Kernel browser contract", () => {
-  it("keeps agent-created browsers alive for at least 15 minutes", () => {
+  it("keeps agent-created browsers alive between 15 minutes and an hour", () => {
     const inputSchema = manageBrowsers.inputSchema;
     if (!(inputSchema instanceof z.ZodType)) {
       throw new Error("manage_browsers must use a Zod input schema.");
@@ -146,6 +141,14 @@ describe("Kernel browser contract", () => {
         timeout_seconds: 900,
       }).success
     ).toBe(true);
+    expect(
+      inputSchema.safeParse({ action: "create", timeout_seconds: 3_600 })
+        .success
+    ).toBe(true);
+    expect(
+      inputSchema.safeParse({ action: "create", timeout_seconds: 3_601 })
+        .success
+    ).toBe(false);
   });
 
   it("starts a read-only persistent-profile browser at the target URL", async () => {
@@ -156,28 +159,35 @@ describe("Kernel browser contract", () => {
 
     expect(result).toMatchObject({
       browser: {
-        browser_live_view_url: "https://live.kernel.test/browser-1",
+        handoff_url: "https://example.com/browsers/browser-1/live",
+        session_id: "browser-1",
       },
     });
+    // Kernel's live-view URL controls the browser; it never reaches the model.
+    expect(JSON.stringify(result)).not.toContain("live.kernel.test");
+    expect(JSON.stringify(result)).not.toContain("browser_live_view_url");
     const lifecycle = z
       .object({ next_actions: z.array(z.string()) })
       .parse(result);
     expect(lifecycle.next_actions.join(" ")).toContain("browser_snapshot");
     expect(lifecycle.next_actions.join(" ")).toContain("browser_act");
-    expect(lifecycle.next_actions.join(" ")).toContain("playwright_execute");
-    expect(lifecycle.next_actions.join(" ")).toContain("relaxed fallback");
-    expect(JSON.stringify(result)).not.toContain("execute_playwright_code");
+    expect(lifecycle.next_actions.join(" ")).toContain("browser_navigate");
+    expect(JSON.stringify(result)).not.toMatch(/playwright/iu);
     expect(mocks.createBrowser).toHaveBeenCalledExactlyOnceWith(
       {
+        chrome_policy: { URLBlocklist: amazonUrlBlocklist },
+        kiosk_mode: true,
         profile: { id: "profile-1", save_changes: false },
         start_url: "https://example.com/checkout",
-        stealth: true,
+        stealth: false,
         telemetry: { browser: { page: { enabled: true } }, enabled: true },
         timeout_seconds: 900,
         viewport: undefined,
       },
-      { maxRetries: 8, signal: workerContext.abortSignal }
+      { maxRetries: 0, signal: workerContext.abortSignal }
     );
+    // No proxy: without stealth, egress is direct and no solver runs.
+    expect(mocks.createBrowser.mock.calls[0]?.[0]).not.toHaveProperty("proxy");
     expect(mocks.createBrowserSession).toHaveBeenCalledExactlyOnceWith(
       { userId: "user-1", workspaceId: "workspace-1" },
       {
@@ -192,6 +202,52 @@ describe("Kernel browser contract", () => {
       ["example.com"]
     );
     expect(mocks.withBrowserProfileWriteLock).not.toHaveBeenCalled();
+  });
+
+  it("refuses an Amazon start URL before creating any browser", async () => {
+    await expect(
+      manageBrowsers.execute(
+        { action: "create", start_url: "https://sellercentral.amazon.com/" },
+        workerContext
+      )
+    ).rejects.toThrow(/blocked by policy for now/u);
+    await expect(
+      manageBrowsers.execute(
+        { action: "create", start_url: "https://www.amazon.co.uk/" },
+        workerContext
+      )
+    ).rejects.toThrow(/blocked by policy/u);
+    expect(mocks.retrieveProfile).not.toHaveBeenCalled();
+    expect(mocks.createBrowser).not.toHaveBeenCalled();
+  });
+
+  it("creates no browser after a block but still deletes one", async () => {
+    mocks.playwright.mockResolvedValueOnce({
+      result: [
+        {
+          frames: [],
+          status: 429,
+          text: "",
+          timeOrigin: 1,
+          title: "Too many requests",
+          url: "https://shop.example.com/",
+        },
+      ],
+      success: true,
+    });
+    expect((await checkBrowserPages("browser-1")).status).toBe("blocked");
+
+    await expect(
+      manageBrowsers.execute({ action: "create" }, workerContext)
+    ).rejects.toThrow(/already stopped at a block/u);
+    expect(mocks.createBrowser).not.toHaveBeenCalled();
+    await expect(
+      manageBrowsers.execute(
+        { action: "delete", session_id: "browser-1" },
+        workerContext
+      )
+    ).resolves.toBe("Browser session deleted successfully");
+    expect(mocks.deleteBrowser).toHaveBeenCalledOnce();
   });
 
   it("harvests visited domains from Kernel telemetry before deleting a browser", async () => {

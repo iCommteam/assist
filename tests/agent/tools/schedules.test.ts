@@ -308,6 +308,122 @@ describe("schedule tools", () => {
   });
 });
 
+const dailyTiming = {
+  frequency: "daily",
+  kind: "calendar",
+  localTime: "09:00",
+  timezone: "America/New_York",
+} as const;
+
+function createApproval() {
+  const approval = createSchedule.approval;
+  if (!approval || approval instanceof Function || !approval.prompt) {
+    throw new Error("Expected an approval with a request policy and prompt.");
+  }
+  return { prompt: approval.prompt, request: approval.request };
+}
+
+function updateApproval() {
+  const approval = updateSchedule.approval;
+  if (!approval || approval instanceof Function || !approval.prompt) {
+    throw new Error("Expected an approval with a request policy and prompt.");
+  }
+  return { prompt: approval.prompt, request: approval.request };
+}
+
+function siteToolContext(toolName: string): ToolContext {
+  const context = toolContext(toolName);
+  return {
+    ...context,
+    session: {
+      ...context.session,
+      auth: {
+        current: context.session.auth.current,
+        initiator: {
+          attributes: { site: "teemiq" },
+          authenticator: "assist-site",
+          principalId: member.userId,
+          principalType: "user",
+        },
+      },
+    },
+  };
+}
+
+describe("schedule approvals", () => {
+  it("asks the member before creating any schedule", async () => {
+    const { prompt, request } = createApproval();
+    const input = {
+      missedRunPolicy: "run_latest",
+      prompt: "Check prices.",
+      timing: dailyTiming,
+    } as const;
+
+    expect(
+      await request({ ...toolContext("schedules-create"), toolInput: input })
+    ).toBe("user-approval");
+    expect(
+      prompt({ callId: "call-1", input, toolName: "schedules-create" })
+    ).toBe('Create this scheduled job (calendar)? "Check prices."');
+  });
+
+  it("asks before a changed prompt, timing or resume, but not before a pause or delete", async () => {
+    const { prompt, request } = updateApproval();
+    const id = "00000000-0000-4000-8000-000000000001";
+    const context = toolContext("schedules-update");
+
+    const statuses = await Promise.all(
+      [
+        { id, prompt: "Check prices hourly." },
+        { id, timing: dailyTiming },
+        { id, status: "active" as const },
+        undefined,
+        { id, status: "paused" as const },
+        { id, status: "deleted" as const },
+      ].map(async (toolInput) => request({ ...context, toolInput }))
+    );
+    expect(statuses).toEqual([
+      "user-approval",
+      "user-approval",
+      "user-approval",
+      "user-approval",
+      "not-applicable",
+      "not-applicable",
+    ]);
+    expect(
+      prompt({
+        callId: "call-1",
+        input: { id, status: "active" },
+        toolName: "schedules-update",
+      })
+    ).toBe("Resume this scheduled job?");
+  });
+
+  it("denies schedule changes to a connected-site task, which no one can approve", async () => {
+    const statuses = [
+      await createApproval().request({
+        ...siteToolContext("schedules-create"),
+        toolInput: {
+          missedRunPolicy: "run_latest",
+          prompt: "Check prices.",
+          timing: dailyTiming,
+        },
+      }),
+      await updateApproval().request({
+        ...siteToolContext("schedules-update"),
+        toolInput: {
+          id: "00000000-0000-4000-8000-000000000001",
+          status: "paused",
+        },
+      }),
+    ];
+    for (const status of statuses) {
+      expect(status).toMatchObject({ type: "denied" });
+      expect(JSON.stringify(status)).toContain("connected-site task");
+    }
+  });
+});
+
 function dynamicContext(
   authenticator: string,
   kind: DynamicContext["channel"]["kind"] = "channel:scheduled-run"

@@ -221,7 +221,7 @@ function VaultItemRow({ item }: { readonly item: VaultItem }) {
 
   return (
     <div className="flex min-w-0 items-center gap-3 py-3">
-      <VaultItemIcon item={item} />
+      <VaultItemIcon />
       <div className="min-w-0 flex-1">
         <p className="truncate type-label">{item.label}</p>
         {item.account ? (
@@ -246,37 +246,12 @@ function VaultItemRow({ item }: { readonly item: VaultItem }) {
   );
 }
 
-function VaultItemIcon({ item }: { readonly item: VaultItem }) {
-  const faviconUrl = loginFaviconUrl(item);
+// No remote favicons: fetching one would tell each saved site's host that
+// this vault holds a login for it.
+function VaultItemIcon() {
   return (
     <span className="relative flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted text-muted-foreground">
       <Globe2Icon className="size-4" />
-      {faviconUrl ? (
-        // Imported domains cannot be declared in Next Image configuration.
-        // oxlint-disable-next-line nextjs/no-img-element -- user-imported favicon URL
-        <img
-          alt=""
-          className="absolute inset-0 size-full bg-background object-contain p-1"
-          onError={(event) => {
-            event.currentTarget.remove();
-          }}
-          referrerPolicy="no-referrer"
-          src={faviconUrl}
-        />
-      ) : null}
     </span>
   );
-}
-
-function loginFaviconUrl(item: VaultItem): string | undefined {
-  if (item.kind !== "login") return undefined;
-  const hostname = item.account.split(" · ", 1)[0]?.trim();
-  if (!hostname || !hostname.includes(".") || hostname.includes(" ")) {
-    return undefined;
-  }
-  try {
-    return new URL("/favicon.ico", `https://${hostname}`).toString();
-  } catch {
-    return undefined;
-  }
 }

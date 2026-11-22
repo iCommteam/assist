@@ -14,14 +14,14 @@ const toolActivity = new Map<string, string>([
   ["computer_action", "Using visual browser controls"],
   ["fill_from_vault", "Securely filling saved user information"],
   ["list_vault", "Checking saved user information"],
+  ["browser_navigate", "Opening a page"],
   ["manage_browsers", "Starting the browser"],
-  ["playwright_execute", "Interacting with the page"],
   ["web_fetch", "Reading a public source"],
   ["web_search", "Searching for live options"],
 ]);
 
 const managedBrowserOutputSchema = z.object({
-  browser: z.object({ browser_live_view_url: z.url() }),
+  browser: z.object({ handoff_url: z.url() }),
 });
 
 type CallRequestedEvent = Extract<
@@ -116,7 +116,7 @@ export function browserBenchmarkLiveViewUrl(
     const parsed = managedBrowserOutputSchema.safeParse(event.data.output);
     if (!parsed.success) continue;
     try {
-      const url = new URL(parsed.data.browser.browser_live_view_url);
+      const url = new URL(parsed.data.browser.handoff_url);
       if (url.protocol === "https:" || url.protocol === "http:") {
         return url.toString();
       }
