@@ -6,8 +6,6 @@ const replyReferenceSchema = z.discriminatedUnion("kind", [
   z.strictObject({ id: z.uuid(), kind: z.literal("automation") }),
 ]);
 
-export type ReplyReference = z.infer<typeof replyReferenceSchema>;
-
 const attachmentSchema = z.object({
   kind: z.enum(["image", "video", "audio", "file"]),
   mimeType: z.string().min(1).max(200).optional(),
@@ -66,5 +64,5 @@ export const sendMessageOutputSchema = z.discriminatedUnion("kind", [
 export const sendMessageToolResultSchema = z.object({
   kind: z.literal("tool-result"),
   output: sendMessageOutputSchema,
-  toolName: z.enum(["send_message", "share_contact"]),
+  toolName: z.literal("send_message"),
 });

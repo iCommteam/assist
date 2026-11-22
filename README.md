@@ -40,6 +40,26 @@ The vault key encrypts saved secrets: losing it loses them, and rotating it
 requires re-encrypting existing vault values. Application migrations live in
 `db/`; see [`db/README.md`](db/README.md) for existing-database adoption.
 
+### Team sign-in
+
+Sign-in is an email, a password of at least 12 characters, and a required
+authenticator-app code. Only the team may sign up or stay signed in:
+
+- `ASSIST_ALLOWED_EMAILS`: the team's emails, comma-separated and
+  case-insensitive. An email removed from the list loses its session on the
+  next request, and its schedules stop dispatching.
+- `ASSIST_ADMIN_EMAILS`: the administrators among them.
+- `ASSIST_SIGNUP_CODE`: a shared code of at least 16 characters that every new
+  account must enter, so nobody can register a team email first.
+
+Leaving a variable unset closes sign-in. A new member creates an account at
+`/sign-up`, then scans a QR code at `/two-factor` and saves ten one-time backup
+codes. Every session lasts up to 24 hours of inactivity, and each sign-in needs
+a fresh authenticator or backup code. There is no email delivery, so there is
+no self-serve password reset. A member who forgets the password, or loses both
+the authenticator and the backup codes, needs an operator to delete their
+account from the database before signing up again.
+
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to
 the authenticated workspace. Each scope holds up to 100 records, with the eight
@@ -86,7 +106,8 @@ Copy the environment template and add your Kernel and Anthropic keys:
 ```bash
 cp .env.example .env.local
 
-# Set KERNEL_API_KEY and ANTHROPIC_API_KEY in .env.local.
+# Set KERNEL_API_KEY and ANTHROPIC_API_KEY in .env.local, plus your own email
+# in ASSIST_ALLOWED_EMAILS and a local ASSIST_SIGNUP_CODE to create an account.
 ```
 
 Then start OpenInstinct:

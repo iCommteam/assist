@@ -3,11 +3,11 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 const applicationEnvironment = [
+  "ASSIST_*",
   "BETTER_AUTH_*",
   "BLOB_*",
   "DATABASE_URL",
   "KERNEL_*",
-  "LINQ_*",
   "LINK_*",
   "STRIPE_PUBLISHABLE_KEY",
   "NODE_ENV",

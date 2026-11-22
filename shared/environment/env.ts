@@ -1,6 +1,5 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
-import { isE164PhoneNumber } from "@shared/identity/phone-number";
 import { databaseUrlSchema } from "@shared/environment/database-url";
 
 const betterAuthSecretSchema = z
@@ -44,6 +43,28 @@ const betterAuthUrlSchema = requiredValue.refine(
   "BETTER_AUTH_URL must be an absolute URL"
 );
 
+// A comma-separated list, normalized to trimmed lower-case addresses so every
+// comparison is case-insensitive. The error never echoes the configured values.
+const emailListSchema = z.string().transform((value, context) => {
+  const emails = value
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry.length > 0);
+  if (emails.some((email) => !z.email().safeParse(email).success)) {
+    context.addIssue({
+      code: "custom",
+      message: "Use valid email addresses separated by commas.",
+    });
+    return z.NEVER;
+  }
+  return emails;
+});
+
+const signupCodeSchema = requiredValue.refine(
+  (value) => value.trim().length >= 16,
+  "ASSIST_SIGNUP_CODE must contain at least 16 characters."
+);
+
 function optionalValueWithLocalDefault<T extends z.ZodType<string, string>>(
   schema: T,
   localDefault: z.util.NoUndefined<z.output<T>>
@@ -79,19 +100,17 @@ export const env = createEnv({
       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     ),
 
+    // Team sign-in. Unset means closed: nobody can sign up or hold a session.
+    ASSIST_ADMIN_EMAILS: emailListSchema.optional(),
+    ASSIST_ALLOWED_EMAILS: emailListSchema.optional(),
+    ASSIST_SIGNUP_CODE: signupCodeSchema.optional(),
+
     // Optional
     BLOB_READ_WRITE_TOKEN: requiredValue.optional(),
     BLOB_STORE_ID: requiredValue.optional(),
-    LINQ_CONNECTOR: requiredValue.optional(),
     LINK_CLIENT_ID: requiredValue.optional(),
     LINK_CLIENT_SECRET: requiredValue.optional(),
     STRIPE_PUBLISHABLE_KEY: requiredValue.optional(),
-    LINQ_PHONE_NUMBER: requiredValue
-      .refine(
-        (value) => isE164PhoneNumber(value),
-        "LINQ_PHONE_NUMBER must use E.164 format"
-      )
-      .optional(),
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("production"),
@@ -104,17 +123,6 @@ export const env = createEnv({
   experimental__runtimeEnv: {},
   emptyStringAsUndefined: true,
 });
-
-const authHostname = env.BETTER_AUTH_URL
-  ? new URL(env.BETTER_AUTH_URL).hostname
-  : undefined;
-
-export const localPhoneAuthBypassEnabled =
-  localDevelopment &&
-  (authHostname === "localhost" ||
-    authHostname?.endsWith(".localhost") === true ||
-    authHostname === "127.0.0.1" ||
-    authHostname === "[::1]");
 
 function hasValue(value: string | undefined) {
   return value !== undefined && value.trim().length > 0;

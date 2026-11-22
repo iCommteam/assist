@@ -58,8 +58,13 @@ it.each(["result", "nothing_to_report"] as const)(
       },
       new Date(now.getTime() - 60_000)
     );
-    await jobs.materializeDueScheduledAgentRuns({ limit: 1, now });
+    await jobs.materializeDueScheduledAgentRuns({
+      creatorIds: [alice.userId],
+      limit: 1,
+      now,
+    });
     const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      creatorIds: [alice.userId],
       limit: 1,
       leaseForMs: 300_000,
       now,

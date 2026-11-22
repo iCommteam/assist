@@ -5,7 +5,6 @@ import {
   routeAuth,
   UnauthenticatedError,
 } from "eve/channels/auth";
-import { z } from "zod";
 import { isSessionOwned } from "@db/services/sessions";
 import {
   accessScopeForUser,
@@ -26,14 +25,14 @@ const authenticate: Parameters<typeof routeAuth>[1] = [
   async (request) => {
     const identity = await requestIdentityFromRequest(request);
     if (!identity) return null;
-    const { phoneNumber, scope } = identity;
+    const { email, scope } = identity;
 
     await requireOwnedRouteSubject(scope, request);
 
     return {
       attributes: {
         conversationChannel: "eve",
-        phoneNumber,
+        email,
         workspaceId: scope.workspaceId,
       },
       authenticator: "authjs",
@@ -53,7 +52,7 @@ const authenticate: Parameters<typeof routeAuth>[1] = [
       attributes: {
         ...local.attributes,
         conversationChannel: "eve",
-        phoneNumber: "+15555550100",
+        email: "browser-benchmark@localhost.invalid",
         workspaceId: scope.workspaceId,
       },
       principalId: scope.userId,
@@ -192,11 +191,9 @@ function decodePathSegment(segment: string) {
 async function requestIdentityFromRequest(request: Request) {
   const session = await getAuthSession(request.headers);
   if (!session) return undefined;
-  const phoneNumber = z.string().safeParse(session.user.phoneNumber);
-  if (!phoneNumber.success) return undefined;
 
   return {
-    phoneNumber: phoneNumber.data,
+    email: session.user.email,
     scope: accessScopeForUser(`better-auth:${session.user.id}`),
   };
 }

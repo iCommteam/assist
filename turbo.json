@@ -4,12 +4,12 @@
     "build:app": {
       "dependsOn": ["^build:app"],
       "env": [
+        "ASSIST_*",
         "BETTER_AUTH_*",
         "BLOB_*",
         "DATABASE_URL",
         "EVE_NEXT_*",
         "KERNEL_*",
-        "LINQ_*",
         "LINK_*",
         "STRIPE_PUBLISHABLE_KEY",
         "NODE_ENV",
@@ -26,11 +26,11 @@
     "dev:app": {
       "cache": false,
       "passThroughEnv": [
+        "ASSIST_*",
         "BETTER_AUTH_*",
         "BLOB_*",
         "DATABASE_URL",
         "KERNEL_*",
-        "LINQ_*",
         "LINK_*",
         "STRIPE_PUBLISHABLE_KEY",
         "NODE_ENV",
@@ -51,11 +51,11 @@
     "start:app": {
       "cache": false,
       "passThroughEnv": [
+        "ASSIST_*",
         "BETTER_AUTH_*",
         "BLOB_*",
         "DATABASE_URL",
         "KERNEL_*",
-        "LINQ_*",
         "LINK_*",
         "STRIPE_PUBLISHABLE_KEY",
         "NODE_ENV",

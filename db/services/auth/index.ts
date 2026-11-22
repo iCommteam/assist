@@ -1,14 +1,40 @@
-import { createHash } from "node:crypto";
 import { betterAuth } from "better-auth";
-import { APIError } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { phoneNumber } from "better-auth/plugins/phone-number";
-import { account, db, session, user, verification } from "@db";
+import { twoFactor as twoFactorPlugin } from "better-auth/plugins/two-factor";
+import { z } from "zod";
+import { account, db, session, twoFactor, user, verification } from "@db";
 import { betterAuthBaseURL } from "@shared/environment/origin";
-import { env, localPhoneAuthBypassEnabled } from "@shared/environment";
 import { getInstallationSecrets } from "@db/services/installation-secrets";
-import { LinqDeliveryError, linqOtpFailure, sendLinqText } from "./linq";
-import { isE164PhoneNumber } from "@shared/identity/phone-number";
+import { isAllowedEmail, signupCodeMatches } from "./allowlist";
+
+// One answer for an unlisted email and a wrong or missing code, so a caller
+// without the code learns nothing about the team list.
+const signUpRejected = {
+  code: "SIGN_UP_REJECTED",
+  message: "This email and signup code cannot create an account.",
+};
+// Better Auth's own wrong-password error, so a refused session is
+// indistinguishable from bad credentials.
+const signInRejected = {
+  code: "INVALID_EMAIL_OR_PASSWORD",
+  message: "Invalid email or password",
+};
+// The only endpoints that create a session after a second factor succeeded.
+const twoFactorVerifyPaths = new Set([
+  "/two-factor/verify-backup-code",
+  "/two-factor/verify-totp",
+]);
+
+const signUpBodySchema = z.looseObject({
+  email: z.string(),
+  signupCode: z.string(),
+});
+const trustDeviceBodySchema = z.looseObject({ trustDevice: z.literal(true) });
+const sessionUserSchema = z.looseObject({
+  email: z.string(),
+  twoFactorEnabled: z.boolean().nullish(),
+});
 
 let authPromise: ReturnType<typeof initializeAuth> | undefined;
 
@@ -29,25 +55,52 @@ async function initializeAuthWithRetry() {
 async function initializeAuth() {
   const { betterAuthSecret } = await getInstallationSecrets();
   return betterAuth({
-    appName: "Local Vault Assistant",
+    appName: "iCommAssist",
     baseURL: betterAuthBaseURL(),
     database: drizzleAdapter(db, {
       provider: "pg",
-      schema: { account, session, user, verification },
+      schema: { account, session, twoFactor, user, verification },
     }),
-    disabledPaths: [
-      "/change-email",
-      "/request-password-reset",
-      "/reset-password",
-      "/reset-password/:token",
-      "/send-verification-email",
-      "/sign-in/email",
-      "/sign-in/social",
-      "/sign-up/email",
-      "/verify-email",
-      // No OAuth provider is configured, so there is no account to unlink.
-      "/unlink-account",
-    ],
+    // There is no mailer: no verification email and no self-serve reset.
+    // app/api/auth/[...all]/route.ts exposes only the endpoints the sign-in
+    // pages call; every other Better Auth path answers 404 there.
+    emailAndPassword: {
+      autoSignIn: false,
+      enabled: true,
+      maxPasswordLength: 128,
+      minPasswordLength: 12,
+      requireEmailVerification: false,
+    },
+    session: {
+      additionalFields: {
+        twoFactorVerified: {
+          defaultValue: false,
+          input: false,
+          required: false,
+          type: "boolean",
+        },
+      },
+      // A session idle for 24 hours ends; activity extends it hourly.
+      expiresIn: 60 * 60 * 24,
+      updateAge: 60 * 60,
+    },
+    // Better Auth limits only in production. Memory storage suits the single
+    // replica. The client IP comes from X-Forwarded-For only when that header
+    // holds exactly one address, because no trustedProxies are set. Railway's
+    // edge header format is unverified: if it forwards several hops, every
+    // client shares one bucket per path. That throttles the team but cannot be
+    // bypassed with a spoofed header. Never set disableIpTracking, which turns
+    // rate limiting off.
+    rateLimit: {
+      customRules: {
+        "/sign-in/email": { max: 5, window: 60 },
+        "/sign-up/email": { max: 5, window: 600 },
+        "/two-factor/enable": { max: 5, window: 60 },
+        "/two-factor/verify-backup-code": { max: 5, window: 60 },
+        "/two-factor/verify-totp": { max: 5, window: 60 },
+      },
+      storage: "memory",
+    },
     account: {
       encryptOAuthTokens: true,
       additionalFields: {
@@ -59,6 +112,28 @@ async function initializeAuth() {
         },
       },
     },
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        // Checked before Better Auth looks the email up, so a caller without
+        // the code cannot tell registered emails from the rest.
+        if (
+          ctx.path === "/sign-up/email" &&
+          !signUpAllowed(signUpBodySchema.safeParse(ctx.body).data)
+        ) {
+          throw APIError.from("BAD_REQUEST", signUpRejected);
+        }
+        // A trusted device would skip TOTP on later sign-ins.
+        if (
+          twoFactorVerifyPaths.has(ctx.path) &&
+          trustDeviceBodySchema.safeParse(ctx.body).success
+        ) {
+          throw APIError.from("BAD_REQUEST", {
+            code: "TRUST_DEVICE_DISABLED",
+            message: "Every sign-in needs an authenticator code.",
+          });
+        }
+      }),
+    },
     databaseHooks: {
       account: {
         create: {
@@ -67,75 +142,60 @@ async function initializeAuth() {
           }),
         },
       },
+      user: {
+        create: {
+          // A backstop for the request hook: users are created only by an
+          // email sign-up that carries the right code for a listed email.
+          // Not a 403, which Better Auth turns into a fake success.
+          before: async (value, context) => {
+            if (
+              context?.path !== "/sign-up/email" ||
+              !signUpAllowed(signUpBodySchema.safeParse(context.body).data) ||
+              !isAllowedEmail(value.email)
+            ) {
+              throw APIError.from("BAD_REQUEST", signUpRejected);
+            }
+          },
+        },
+      },
+      session: {
+        create: {
+          before: async (value, context) => {
+            const found = sessionUserSchema.safeParse(
+              await context?.context.internalAdapter.findUserById(value.userId)
+            );
+            if (
+              !context ||
+              !found.success ||
+              !isAllowedEmail(found.data.email)
+            ) {
+              throw APIError.from("UNAUTHORIZED", signInRejected);
+            }
+            return {
+              data: {
+                ...value,
+                twoFactorVerified:
+                  found.data.twoFactorEnabled === true &&
+                  twoFactorVerifyPaths.has(context.path),
+              },
+            };
+          },
+        },
+      },
     },
     plugins: [
-      phoneNumber({
-        allowedAttempts: 3,
-        expiresIn: 300,
-        phoneNumberValidator: isE164PhoneNumber,
-        requireVerification: true,
-        sendOTP: localPhoneAuthBypassEnabled
-          ? () => undefined
-          : ({ code, phoneNumber: to }) => sendPhoneCode({ code, to }),
-        signUpOnVerification: {
-          getTempEmail: (phoneNumberValue) =>
-            `phone-${createHash("sha256")
-              .update(phoneNumberValue)
-              .digest("hex")}@local-vault.invalid`,
-          getTempName: () => "Phone user",
-        },
-        verifyOTP: localPhoneAuthBypassEnabled
-          ? ({ phoneNumber: value }) => isE164PhoneNumber(value)
-          : undefined,
+      twoFactorPlugin({
+        backupCodeOptions: { storeBackupCodes: "encrypted" },
+        issuer: "iCommAssist",
       }),
     ],
     secret: betterAuthSecret,
   });
 }
 
-export async function sendPhoneCode({
-  code,
-  to,
-}: {
-  readonly code: string;
-  readonly to: string;
-}) {
-  if (!env.LINQ_CONNECTOR) {
-    throw new APIError("SERVICE_UNAVAILABLE", {
-      code: "LINQ_NOT_CONFIGURED",
-      message:
-        "iMessage sign-in is not configured. Attach a Linq connector to this deployment.",
-    });
-  }
-
-  try {
-    await sendLinqText({
-      connector: env.LINQ_CONNECTOR,
-      idempotencyKey: `auth-otp-${createHash("sha256")
-        .update(`${to}\u0000${code}`)
-        .digest("hex")}`,
-      message: `Local Vault Assistant sign-in code: ${code}. Expires in 5 minutes.`,
-      to,
-    });
-  } catch (error) {
-    if (error instanceof LinqDeliveryError) {
-      const failure = linqOtpFailure(error);
-      throw new APIError("BAD_GATEWAY", {
-        code: failure.code,
-        linqError: {
-          code: error.code,
-          message: error.linqMessage,
-          status: error.status,
-          trace_id: error.traceId,
-        },
-        message: failure.message,
-      });
-    }
-
-    throw new APIError("BAD_GATEWAY", {
-      code: "LINQ_CONNECTOR_UNAVAILABLE",
-      message:
-        "This deployment cannot access its Linq connector. Check LINQ_CONNECTOR and the connector's Vercel project attachment.",
-    });
-  }
+// Both checks always run, so the response time does not reveal which failed.
+function signUpAllowed(body: z.infer<typeof signUpBodySchema> | undefined) {
+  const emailAllowed = body !== undefined && isAllowedEmail(body.email);
+  const codeMatches = body !== undefined && signupCodeMatches(body.signupCode);
+  return emailAllowed && codeMatches;
 }

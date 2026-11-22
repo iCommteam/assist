@@ -5,7 +5,6 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@linqapp/chat-sdk-adapter@0.5.1': 78b56cdd08c4250ad2680c094858b28d6d6935538d8e59e6dd578f106c77b9e7
   eve@1.0.0-rc.1: 7bce4296a24b2b4d02d4758d6ddc8c89ae626c65bf6ac3b4354dee1dbbddf857
 
 importers:
@@ -15,9 +14,6 @@ importers:
       '@base-ui/react':
         specifier: ^1.7.0
         version: 1.7.0(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@linqapp/sdk':
-        specifier: 0.47.1
-        version: 0.47.1
       '@onkernel/browser-loop':
         specifier: 0.12.0
         version: 0.12.0(@aws-sdk/credential-provider-node@3.972.81)(@earendil-works/pi-agent-core@0.83.0(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(@smithy/signature-v4@5.7.3)(@types/node@24.13.3)(ws@8.21.3)(zod@4.5.4)
@@ -60,9 +56,6 @@ importers:
       '@vercel/blob':
         specifier: 2.8.0
         version: 2.8.0
-      '@vercel/connect':
-        specifier: ^2.7.0
-        version: 2.7.0(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ai@7.0.159(zod@4.5.4))(better-auth@1.7.5(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.5.8)(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(kysely@0.29.5)(pg@8.23.0)(sql.js@1.17.0))(next@16.3.3(@babel/core@7.29.7)(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(pg@8.23.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.11(@edge-runtime/vm@3.2.0)(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(vite@8.3.5(@types/node@24.13.3)(esbuild@0.27.0)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.9.0))))(eve@1.0.0-rc.1)
       '@vercel/oidc':
         specifier: 3.8.5
         version: 3.8.5
@@ -126,6 +119,9 @@ importers:
       tailwindcss:
         specifier: 4.3.3
         version: 4.3.3
+      uqr:
+        specifier: 0.1.3
+        version: 0.1.3
       use-stick-to-bottom:
         specifier: 1.1.6
         version: 1.1.6(react@19.2.8)
@@ -136,9 +132,6 @@ importers:
       '@electric-sql/pglite':
         specifier: ^0.5.8
         version: 0.5.8
-      '@linqapp/chat-sdk-adapter':
-        specifier: 0.5.1
-        version: 0.5.1(patch_hash=78b56cdd08c4250ad2680c094858b28d6d6935538d8e59e6dd578f106c77b9e7)(chat@4.43.0(ai@7.0.159(zod@4.5.4))(zod@4.5.4))
       '@next/env':
         specifier: 16.3.3
         version: 16.3.3
@@ -157,9 +150,6 @@ importers:
       '@types/react-dom':
         specifier: 19.2.5
         version: 19.2.5(@types/react@19.2.18)
-      chat:
-        specifier: 4.43.0
-        version: 4.43.0(ai@7.0.159(zod@4.5.4))(zod@4.5.4)
       drizzle-kit:
         specifier: ^0.31.10
         version: 0.31.10
@@ -1354,11 +1344,6 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
-
-  '@linqapp/chat-sdk-adapter@0.5.1':
-    resolution: {integrity: sha512-3NE5yLb/ihPFd/gsUbT1SNWGftManyfzIUKUARGQqH4p8N2BRaHidIXS6xJFosw54mUGS++cFS9CoR63qTXl6w==}
-    peerDependencies:
-      chat: ^4.28.1
 
   '@linqapp/sdk@0.47.1':
     resolution: {integrity: sha512-jXBZdXccuL5Sm3s9URtxzSnhQdSFQhZ1R2W2Aw33+RhAzKIsplPmQcyBKdXhv9tY7n17xitjO6MPv+mSk0Ytcg==}
@@ -6140,6 +6125,9 @@ packages:
     peerDependencies:
       browserslist: '>= 4.21.0'
 
+  uqr@0.1.3:
+    resolution: {integrity: sha512-0rjE8iEJe4YmT9TOhwsZtqCMRLc5DXZUI2UEYUUg63ikBkqqE5EYWaI0etFe/5KUcmcYwLih2RND1kq+hrUJXA==}
+
   uri-js@4.4.1:
     resolution: {integrity: sha512-7rKUyy33Q1yc98pQ1DAmLtwX109F7TIfWlW1Ydo8Wl1ii1SeHieeh0HHfPeL2fMXK6z0s8ecKs9frCuLJvndBg==}
 
@@ -6930,7 +6918,8 @@ snapshots:
 
   '@braintree/sanitize-url@7.1.2': {}
 
-  '@chat-adapter/catalog@4.43.0': {}
+  '@chat-adapter/catalog@4.43.0':
+    optional: true
 
   '@chevrotain/types@11.1.2': {}
 
@@ -7480,15 +7469,10 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@linqapp/chat-sdk-adapter@0.5.1(patch_hash=78b56cdd08c4250ad2680c094858b28d6d6935538d8e59e6dd578f106c77b9e7)(chat@4.43.0(ai@7.0.159(zod@4.5.4))(zod@4.5.4))':
-    dependencies:
-      '@linqapp/sdk': 0.47.1
-      chat: 4.43.0(ai@7.0.159(zod@4.5.4))(zod@4.5.4)
-      standardwebhooks: 1.1.1
-
   '@linqapp/sdk@0.47.1':
     dependencies:
       standardwebhooks: 1.1.1
+    optional: true
 
   '@mermaid-js/parser@1.2.1':
     dependencies:
@@ -8241,7 +8225,8 @@ snapshots:
       '@smithy/util-buffer-from': 2.2.0
       tslib: 2.8.1
 
-  '@stablelib/base64@1.0.1': {}
+  '@stablelib/base64@1.0.1':
+    optional: true
 
   '@standard-schema/spec@1.1.0': {}
 
@@ -8630,6 +8615,7 @@ snapshots:
     dependencies:
       xdg-app-paths: 5.5.1
       zod: 4.1.11
+    optional: true
 
   '@vercel/cli-exec@1.0.1':
     dependencies:
@@ -8643,6 +8629,7 @@ snapshots:
       ai: 7.0.159(zod@4.5.4)
       better-auth: 1.7.5(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.5.8)(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(kysely@0.29.5)(pg@8.23.0)(sql.js@1.17.0))(next@16.3.3(@babel/core@7.29.7)(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(pg@8.23.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.11(@edge-runtime/vm@3.2.0)(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(vite@8.3.5(@types/node@24.13.3)(esbuild@0.27.0)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.9.0)))
       eve: 1.0.0-rc.1(patch_hash=7bce4296a24b2b4d02d4758d6ddc8c89ae626c65bf6ac3b4354dee1dbbddf857)(@linqapp/sdk@0.47.1)(@opentelemetry/api@1.9.1)(@vercel/connect@2.7.0)(ai@7.0.159(zod@4.5.4))(chat@4.43.0(ai@7.0.159(zod@4.5.4))(zod@4.5.4))(just-bash@3.6.1)(next@16.3.3(@babel/core@7.29.7)(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)(vite@8.3.5(@types/node@24.13.3)(esbuild@0.27.0)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.9.0))
+    optional: true
 
   '@vercel/oidc@3.2.0': {}
 
@@ -8657,6 +8644,7 @@ snapshots:
       '@vercel/cli-config': 0.3.5
       '@vercel/cli-exec': 1.0.1
       jose: 5.10.0
+    optional: true
 
   '@vitest/expect@4.1.11':
     dependencies:
@@ -8701,7 +8689,8 @@ snapshots:
 
   '@workflow/serde@4.1.0': {}
 
-  '@workflow/serde@4.1.0-beta.2': {}
+  '@workflow/serde@4.1.0-beta.2':
+    optional: true
 
   accepts@2.0.0:
     dependencies:
@@ -8919,6 +8908,7 @@ snapshots:
       zod: 4.5.4
     transitivePeerDependencies:
       - supports-color
+    optional: true
 
   class-variance-authority@0.7.1:
     dependencies:
@@ -9666,7 +9656,8 @@ snapshots:
 
   fast-levenshtein@2.0.6: {}
 
-  fast-sha256@1.3.0: {}
+  fast-sha256@1.3.0:
+    optional: true
 
   fast-uri@3.1.6: {}
 
@@ -11920,6 +11911,7 @@ snapshots:
     dependencies:
       '@stablelib/base64': 1.0.1
       fast-sha256: 1.3.0
+    optional: true
 
   statuses@2.0.2: {}
 
@@ -12219,6 +12211,8 @@ snapshots:
       browserslist: 4.28.8
       escalade: 3.2.0
       picocolors: 1.1.1
+
+  uqr@0.1.3: {}
 
   uri-js@4.4.1:
     dependencies:

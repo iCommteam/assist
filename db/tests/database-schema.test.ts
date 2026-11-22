@@ -16,6 +16,7 @@ import {
   scheduledAgentRuns,
   session,
   settings,
+  twoFactor,
   user,
   userProfiles,
   vaultItems,
@@ -46,6 +47,7 @@ describe("database schema", () => {
         session,
         account,
         verification,
+        twoFactor,
       ].map((table) => getTableConfig(table).name)
     ).toEqual([
       "workspaces",
@@ -66,7 +68,33 @@ describe("database schema", () => {
       "session",
       "account",
       "verification",
+      "twoFactor",
     ]);
+  });
+
+  it("stores TOTP enrolment per user and its proof per session", () => {
+    expect(getTableConfig(user).columns.map(({ name }) => name)).toContain(
+      "twoFactorEnabled"
+    );
+    expect(getTableConfig(session).columns.map(({ name }) => name)).toContain(
+      "twoFactorVerified"
+    );
+    expect(
+      getTableConfig(twoFactor)
+        .columns.map(({ name }) => name)
+        .toSorted()
+    ).toEqual([
+      "backupCodes",
+      "failedVerificationCount",
+      "id",
+      "lockedUntil",
+      "secret",
+      "userId",
+      "verified",
+    ]);
+    expect(
+      getTableConfig(twoFactor).foreignKeys.map((key) => key.onDelete)
+    ).toEqual(["cascade"]);
   });
 
   it("uses native PostgreSQL types for structured application values", () => {

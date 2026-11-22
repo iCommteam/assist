@@ -5,6 +5,7 @@ import {
 } from "eve/sessions";
 import type { ScheduleHandlerArgs, ScheduleToFn } from "eve/schedules";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { allowedUserIds } from "@db/services/auth/allowlist";
 import type {
   claimReadyScheduledAgentRuns,
   claimScheduledReport,
@@ -17,6 +18,7 @@ import type {
 } from "@db/services/scheduled-agent-jobs";
 
 const services = vi.hoisted(() => ({
+  allowedUserIds: vi.fn<typeof allowedUserIds>(),
   claimReports: vi.fn<typeof claimScheduledReport>(),
   claimRuns: vi.fn<typeof claimReadyScheduledAgentRuns>(),
   finalizeReport: vi.fn<typeof finalizeScheduledReport>(),
@@ -30,6 +32,9 @@ const requests = vi.hoisted(() => ({
   report: vi.fn<(runId: string) => Promise<void>>(),
 }));
 
+vi.mock("@db/services/auth/allowlist", () => ({
+  allowedUserIds: services.allowedUserIds,
+}));
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
   claimReadyScheduledAgentRuns: services.claimRuns,
   claimScheduledReport: services.claimReports,
@@ -40,7 +45,6 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   releaseScheduledReport: services.releaseReport,
   setScheduledRunSession: services.setSession,
 }));
-vi.mock("@agent/channels/linq", () => ({ default: { channel: "linq" } }));
 vi.mock("@agent/lib/schedules/request", () => ({
   postScheduledReport: requests.report,
 }));
@@ -54,6 +58,7 @@ import { dispatchScheduledReport } from "@agent/lib/schedules/report";
 describe("dynamic schedule dispatch", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    services.allowedUserIds.mockResolvedValue(["user-1"]);
     services.materialize.mockResolvedValue([]);
     services.listReports.mockResolvedValue([]);
     services.claimRuns.mockResolvedValue([]);
@@ -90,6 +95,38 @@ describe("dynamic schedule dispatch", () => {
     );
   });
 
+  it("dispatches only work created by allowlisted team members", async () => {
+    services.allowedUserIds.mockResolvedValue(["user-1", "user-2"]);
+    const to = vi.fn<ScheduleToFn>();
+
+    await runSchedule(to);
+
+    const creatorIds = ["better-auth:user-1", "better-auth:user-2"];
+    expect(services.materialize).toHaveBeenCalledWith(
+      expect.objectContaining({ creatorIds })
+    );
+    expect(services.claimRuns).toHaveBeenCalledWith(
+      expect.objectContaining({ creatorIds })
+    );
+    expect(services.listReports).toHaveBeenCalledWith(
+      creatorIds,
+      expect.any(Date),
+      25
+    );
+  });
+
+  it("passes an empty creator list when nobody is allowlisted", async () => {
+    services.allowedUserIds.mockResolvedValue([]);
+    const to = vi.fn<ScheduleToFn>();
+
+    await runSchedule(to);
+
+    expect(services.claimRuns).toHaveBeenCalledWith(
+      expect.objectContaining({ creatorIds: [] })
+    );
+    expect(to).not.toHaveBeenCalled();
+  });
+
   it("requests a clean restart for a reclaimed interrupted worker", async () => {
     const claim = scheduledClaim();
     claim.run.workerSessionId = "interrupted-worker-session";
@@ -107,27 +144,7 @@ describe("dynamic schedule dispatch", () => {
     });
   });
 
-  it("delivers recoverable Linq reports through the schedule channel handle", async () => {
-    const report = scheduledReport();
-    services.listReports.mockResolvedValue([
-      { conversationChannel: "linq", runId: report.run.id },
-    ]);
-    services.claimReports.mockResolvedValue(report);
-    const send = vi
-      .fn<ReturnType<ScheduleToFn>["send"]>()
-      .mockResolvedValue(acceptedDelivery("main-session"));
-    const to = vi.fn<ScheduleToFn>(() => ({ send }));
-
-    await runSchedule(to);
-
-    expect(requests.report).not.toHaveBeenCalled();
-    expect(send.mock.calls[0]?.[1]).toMatchObject({
-      auth: { authenticator: "scheduled-result" },
-      turnPolicy: "queue",
-    });
-  });
-
-  it("keeps Eve debug reports on its active-session callback", async () => {
+  it("keeps Eve reports on its active-session callback", async () => {
     const report = scheduledReport();
     services.listReports.mockResolvedValue([
       { conversationChannel: "eve", runId: report.run.id },
@@ -144,14 +161,6 @@ describe("dynamic schedule dispatch", () => {
     const claim = scheduledClaim();
     services.claimRuns.mockResolvedValue([claim]);
     services.releaseRun.mockResolvedValue("dead_letter");
-    services.claimReports.mockResolvedValue({
-      ...scheduledReport(),
-      job: claim.job,
-      run: {
-        ...scheduledReport().run,
-        id: claim.run.id,
-      },
-    });
     const send = vi
       .fn<ReturnType<ScheduleToFn>["send"]>()
       .mockRejectedValue(new Error("Workflow did not accept the candidate."));
@@ -164,8 +173,7 @@ describe("dynamic schedule dispatch", () => {
       claim.run.leaseToken,
       "Workflow did not accept the candidate."
     );
-    expect(requests.report).not.toHaveBeenCalled();
-    expect(services.claimReports).toHaveBeenCalledExactlyOnceWith(claim.run.id);
+    expect(requests.report).toHaveBeenCalledExactlyOnceWith(claim.run.id);
   });
 });
 
@@ -175,45 +183,9 @@ describe("scheduled report delivery", () => {
     services.releaseReport.mockResolvedValue(true);
   });
 
-  it("routes Linq reports to the stored conversation", async () => {
+  it("routes Eve reports to the stored session", async () => {
     const report = scheduledReport();
     report.job.replyAnchorMessageId = "original-message";
-    services.claimReports.mockResolvedValue(report);
-    const send = vi
-      .fn<ReturnType<ScheduleToFn>["send"]>()
-      .mockResolvedValue(acceptedDelivery("main-session"));
-    const to = vi.fn<ScheduleToFn>(() => ({ send }));
-    const attachSession = vi.fn<(sessionId: string) => Session>();
-
-    await dispatchScheduledReport({ attachSession, to }, report.run.id);
-
-    expect(to).toHaveBeenCalledWith(expect.anything(), {
-      adapterName: "linq",
-      threadId: "linq:dm:chat-1",
-    });
-    expect(attachSession).not.toHaveBeenCalled();
-    expect(send.mock.calls[0]?.[1]).toMatchObject({
-      auth: {
-        attributes: {
-          linqReplyAnchorMessageId: "original-message",
-          scheduleId: report.job.id,
-        },
-        authenticator: "scheduled-result",
-      },
-      turnPolicy: "queue",
-    });
-    expect(send.mock.calls[0]?.[0]).toContain(
-      `Reply handle: {"kind":"automation","id":"${report.job.id}"}`
-    );
-    expect(send.mock.calls[0]?.[0]).toContain(
-      "Pass this exact value as send_message.replyTo for every user-visible message about this scheduled task."
-    );
-  });
-
-  it("routes Eve reports to the stored debug session", async () => {
-    const report = scheduledReport();
-    report.job.conversationChannel = "eve";
-    report.job.conversationId = "web-session";
     services.claimReports.mockResolvedValue(report);
     const send = vi.fn<Session["send"]>();
     const attached = attachedSession("web-session", send);
@@ -221,24 +193,27 @@ describe("scheduled report delivery", () => {
     const attachSession = vi
       .fn<(sessionId: string) => Session>()
       .mockReturnValue(attached);
-    const to = vi.fn<ScheduleToFn>();
 
-    await dispatchScheduledReport({ attachSession, to }, report.run.id);
+    await dispatchScheduledReport(attachSession, report.run.id);
 
     expect(attachSession).toHaveBeenCalledExactlyOnceWith("web-session");
-    expect(to).not.toHaveBeenCalled();
     expect(send.mock.calls[0]?.[0]).toContain(
       "A background scheduled run has completed."
     );
-    expect(send.mock.calls[0]?.[1].auth?.authenticator).toBe(
-      "scheduled-result"
+    expect(send.mock.calls[0]?.[0]).toContain(
+      `Reply handle: {"kind":"automation","id":"${report.job.id}"}`
     );
-    expect(send.mock.calls[0]?.[1].turnPolicy).toBe("queue");
+    expect(send.mock.calls[0]?.[1]).toMatchObject({
+      auth: {
+        attributes: { scheduleId: report.job.id },
+        authenticator: "scheduled-result",
+      },
+      turnPolicy: "queue",
+    });
   });
 
-  it("suppresses reports for inactive Eve debug sessions", async () => {
+  it("suppresses reports for inactive Eve sessions", async () => {
     const report = scheduledReport();
-    report.job.conversationChannel = "eve";
     report.job.conversationId = "retired-session";
     services.claimReports.mockResolvedValue(report);
     const send = vi
@@ -248,10 +223,7 @@ describe("scheduled report delivery", () => {
       .fn<(sessionId: string) => Session>()
       .mockReturnValue(attachedSession("retired-session", send));
 
-    await dispatchScheduledReport(
-      { attachSession, to: vi.fn<ScheduleToFn>() },
-      report.run.id
-    );
+    await dispatchScheduledReport(attachSession, report.run.id);
 
     expect(services.finalizeReport).toHaveBeenCalledExactlyOnceWith(
       report.run.id,
@@ -314,12 +286,12 @@ function scheduledClaim(): Awaited<
   return {
     job: {
       createdAt: new Date("2026-09-01T12:00:00.000Z"),
-      createdByUserId: "user-1",
+      createdByUserId: "better-auth:user-1",
       id: "00000000-0000-4000-8000-000000000001",
       lastError: null,
       lastRunAt: new Date("2026-09-02T13:00:00.000Z"),
-      conversationChannel: "linq",
-      conversationId: "linq:dm:chat-1",
+      conversationChannel: "eve",
+      conversationId: "web-session",
       missedRunPolicy: "run_latest",
       nextRunAt: new Date("2026-09-03T13:00:00.000Z"),
       prompt: "Watch the price.",

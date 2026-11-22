@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 
 const databases: PGlite[] = [];
 
@@ -42,6 +43,7 @@ describe("database migrations", () => {
     await applyMigration(database, "0012_harsh_domino.sql");
     await applyMigration(database, "0013_last_christian_walker.sql");
     await applyMigration(database, "0014_chief_tigra.sql");
+    await applyMigration(database, "0015_wet_joseph.sql");
 
     const tables = await database.query<{ count: number }>(
       `SELECT count(*)::int AS count
@@ -67,18 +69,56 @@ describe("database migrations", () => {
            'user',
            'session',
            'account',
-           'verification'
+           'verification',
+           'twoFactor'
          )`
     );
     const pendingConstraints = await pendingConstraintCount(database);
 
-    expect(tables.rows[0]?.count).toBe(20);
+    expect(tables.rows[0]?.count).toBe(21);
     expect(pendingConstraints).toBe(0);
     await expect(
       database.query("SELECT id FROM vault_items WHERE id = 'contact-1'")
     ).resolves.toMatchObject({
       rows: [{ id: "contact-1" }],
     });
+  }, 15_000);
+
+  it("leaves sessions from before two-factor sign-in unverified", async () => {
+    const database = createDatabase();
+    const journal = z
+      .object({ entries: z.array(z.object({ tag: z.string() })) })
+      .parse(
+        JSON.parse(
+          await readFile(
+            new URL("../migrations/meta/_journal.json", import.meta.url),
+            "utf8"
+          )
+        )
+      );
+    const tags = journal.entries.map(({ tag }) => tag);
+    const twoFactorMigration = tags.indexOf("0015_wet_joseph");
+    /* oxlint-disable eslint/no-await-in-loop -- Migrations must execute in journal order. */
+    for (const tag of tags.slice(0, twoFactorMigration)) {
+      await applyMigration(database, `${tag}.sql`);
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+    await database.exec(`
+      INSERT INTO "user" (id, name, email, "emailVerified")
+      VALUES ('legacy-user', 'Legacy', 'legacy@example.test', false);
+      INSERT INTO "session" (id, "expiresAt", token, "updatedAt", "userId")
+      VALUES ('legacy-session', now() + interval '1 day', 'legacy-token', now(), 'legacy-user');
+    `);
+
+    await applyMigration(database, "0015_wet_joseph.sql");
+
+    const rows = await database.query(`
+      SELECT "user"."twoFactorEnabled", "session"."twoFactorVerified"
+      FROM "session" JOIN "user" ON "user".id = "session"."userId"
+    `);
+    expect(rows.rows).toEqual([
+      { twoFactorEnabled: false, twoFactorVerified: false },
+    ]);
   }, 15_000);
 
   it("reconciles the pre-merge reply-anchor migration", async () => {

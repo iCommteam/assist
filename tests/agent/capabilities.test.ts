@@ -34,7 +34,6 @@ describe("authored mode capability matrix", () => {
       "schedules-list",
       "schedules-update",
       "send_message",
-      "share_contact",
       "workstreams__find",
       "workstreams__forget",
       "workstreams__read",

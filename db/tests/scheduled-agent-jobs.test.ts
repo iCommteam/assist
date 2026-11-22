@@ -46,6 +46,7 @@ describe("scheduled agent jobs", () => {
     const leases = await import("@db/services/scheduled-agent-run-leases");
     const alice = { userId: "alice", workspaceId: "workspace:alice" };
     const bob = { userId: "bob", workspaceId: "workspace:bob" };
+    const creatorIds = [alice.userId, bob.userId];
     const aliceConversation = {
       conversationChannel: "linq" as const,
       conversationId: "linq:chat-alice",
@@ -98,11 +99,43 @@ describe("scheduled agent jobs", () => {
     );
 
     const dueAt = new Date("2026-09-01T13:00:00.000Z");
-    await jobs.materializeDueScheduledAgentRuns({ limit: 25, now: dueAt });
+    // A creator no longer on the team list gets no runs and no claims.
     expect(
-      await jobs.materializeDueScheduledAgentRuns({ limit: 25, now: dueAt })
+      await jobs.materializeDueScheduledAgentRuns({
+        creatorIds: [bob.userId],
+        limit: 25,
+        now: dueAt,
+      })
+    ).toEqual([]);
+    expect(
+      await jobs.materializeDueScheduledAgentRuns({
+        creatorIds: [],
+        limit: 25,
+        now: dueAt,
+      })
+    ).toEqual([]);
+    await jobs.materializeDueScheduledAgentRuns({
+      creatorIds,
+      limit: 25,
+      now: dueAt,
+    });
+    expect(
+      await jobs.materializeDueScheduledAgentRuns({
+        creatorIds,
+        limit: 25,
+        now: dueAt,
+      })
+    ).toEqual([]);
+    expect(
+      await jobs.claimReadyScheduledAgentRuns({
+        creatorIds: [bob.userId],
+        leaseForMs: 21_600_000,
+        limit: 25,
+        now: dueAt,
+      })
     ).toEqual([]);
     let [claim] = await jobs.claimReadyScheduledAgentRuns({
+      creatorIds,
       leaseForMs: 21_600_000,
       limit: 25,
       now: dueAt,
@@ -114,6 +147,7 @@ describe("scheduled agent jobs", () => {
     });
     expect(
       await jobs.claimReadyScheduledAgentRuns({
+        creatorIds,
         leaseForMs: 21_600_000,
         limit: 25,
         now: dueAt,
@@ -202,6 +236,7 @@ describe("scheduled agent jobs", () => {
     });
     expect(
       await jobs.claimReadyScheduledAgentRuns({
+        creatorIds,
         leaseForMs: 21_600_000,
         limit: 25,
         now: new Date("2026-09-02T13:00:00.000Z"),
@@ -233,11 +268,19 @@ describe("scheduled agent jobs", () => {
     );
     expect(
       await jobs.listRecoverableScheduledReports(
+        creatorIds,
         new Date("2026-09-01T13:06:00.000Z")
       )
     ).toEqual([]);
     expect(
       await jobs.listRecoverableScheduledReports(
+        [bob.userId],
+        new Date("2026-09-01T13:07:00.000Z")
+      )
+    ).toEqual([]);
+    expect(
+      await jobs.listRecoverableScheduledReports(
+        creatorIds,
         new Date("2026-09-01T13:07:00.000Z")
       )
     ).toEqual([{ conversationChannel: "linq", runId: claim.run.id }]);
@@ -285,6 +328,7 @@ describe("scheduled agent jobs", () => {
     );
     expect(
       await jobs.claimReadyScheduledAgentRuns({
+        creatorIds,
         leaseForMs: 21_600_000,
         limit: 25,
         now: new Date("2026-09-01T19:03:00.000Z"),
@@ -300,12 +344,14 @@ describe("scheduled agent jobs", () => {
     ).toBe("queued");
     expect(
       await jobs.claimReadyScheduledAgentRuns({
+        creatorIds,
         leaseForMs: 21_600_000,
         limit: 25,
         now: new Date("2026-09-01T19:07:00.000Z"),
       })
     ).toEqual([]);
     const [recoveredWorker] = await jobs.claimReadyScheduledAgentRuns({
+      creatorIds,
       leaseForMs: 21_600_000,
       limit: 25,
       now: new Date("2026-09-01T19:08:00.000Z"),
@@ -346,9 +392,11 @@ describe("scheduled agent jobs", () => {
     });
     const recovered = await Promise.all([
       jobs.listRecoverableScheduledReports(
+        creatorIds,
         new Date("2026-09-01T13:10:00.000Z")
       ),
       jobs.listRecoverableScheduledReports(
+        creatorIds,
         new Date("2026-09-01T13:10:00.000Z")
       ),
     ]);
@@ -369,6 +417,7 @@ describe("scheduled agent jobs", () => {
     );
     expect(
       await jobs.listRecoverableScheduledReports(
+        creatorIds,
         new Date("2026-09-01T13:04:00.000Z")
       )
     ).toEqual([]);
@@ -377,7 +426,9 @@ describe("scheduled agent jobs", () => {
       currentReportLease,
       "delivered"
     );
-    expect(await jobs.listRecoverableScheduledReports(dueAt)).toEqual([]);
+    expect(
+      await jobs.listRecoverableScheduledReports(creatorIds, dueAt)
+    ).toEqual([]);
 
     expect(
       await jobs.updateScheduledAgentJob(bob, aliceConversation, created.id, {
@@ -417,10 +468,12 @@ describe("scheduled agent jobs", () => {
 
     const recoveredAt = new Date("2026-09-08T13:30:00.000Z");
     await jobs.materializeDueScheduledAgentRuns({
+      creatorIds,
       limit: 25,
       now: recoveredAt,
     });
     let [latestClaim] = await jobs.claimReadyScheduledAgentRuns({
+      creatorIds,
       leaseForMs: 21_600_000,
       limit: 25,
       now: recoveredAt,
@@ -443,6 +496,7 @@ describe("scheduled agent jobs", () => {
       );
       retryAt = new Date(retryAt.getTime() + 5 * 60_000);
       [latestClaim] = await jobs.claimReadyScheduledAgentRuns({
+        creatorIds,
         leaseForMs: 21_600_000,
         limit: 25,
         now: retryAt,
@@ -475,6 +529,7 @@ describe("scheduled agent jobs", () => {
     if (!acceptedRun) throw new Error("Expected an accepted worker run.");
     expect(
       await jobs.claimReadyScheduledAgentRuns({
+        creatorIds,
         leaseForMs: 300_000,
         limit: 25,
         now: new Date("2026-09-09T13:06:00.000Z"),
@@ -495,6 +550,7 @@ describe("scheduled agent jobs", () => {
     if (!exhaustedRun) throw new Error("Expected an exhausted worker run.");
     expect(
       await jobs.claimReadyScheduledAgentRuns({
+        creatorIds,
         leaseForMs: 300_000,
         limit: 25,
         now: new Date("2026-09-09T14:06:00.000Z"),

@@ -1,7 +1,7 @@
 import { defineSchedule, type ScheduleToFn } from "eve/schedules";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
-import { dispatchScheduledReport } from "@agent/lib/schedules/report";
 import { postScheduledReport } from "@agent/lib/schedules/request";
+import { allowedUserIds } from "@db/services/auth/allowlist";
 import {
   claimReadyScheduledAgentRuns,
   listRecoverableScheduledReports,
@@ -21,16 +21,23 @@ export default defineSchedule({
 
 async function dispatchDueWork(to: ScheduleToFn) {
   const now = new Date();
+  // Runs and reports act as their creator with no live session, so only
+  // creators whose email is still on the team list get work dispatched.
+  const creatorIds = (await allowedUserIds()).map(
+    (userId) => `better-auth:${userId}`
+  );
   const materializedRunIds = await materializeDueScheduledAgentRuns({
+    creatorIds,
     limit: 25,
     now,
   });
   const runs = await claimReadyScheduledAgentRuns({
+    creatorIds,
     leaseForMs: workerStartupLimitMs,
     limit: 25,
     now,
   });
-  const reports = await listRecoverableScheduledReports(now, 25);
+  const reports = await listRecoverableScheduledReports(creatorIds, now, 25);
   if (materializedRunIds.length > 0 || runs.length > 0 || reports.length > 0) {
     console.info("[scheduled-run] schedule tick found work", {
       claimedRunCount: runs.length,
@@ -40,7 +47,7 @@ async function dispatchDueWork(to: ScheduleToFn) {
   }
   await Promise.all([
     ...runs.map((claim) => executeScheduledRun(to, claim)),
-    ...reports.map((report) => dispatchRecoverableReport(to, report)),
+    ...reports.map((report) => postScheduledReport(report.runId)),
   ]);
 }
 
@@ -88,21 +95,9 @@ async function executeScheduledRun(
       error instanceof Error ? error.message : String(error)
     );
     if (status === "dead_letter") {
-      await dispatchRecoverableReport(to, {
-        conversationChannel: claim.job.conversationChannel,
-        runId: claim.run.id,
-      });
+      await postScheduledReport(claim.run.id);
     }
   }
-}
-
-function dispatchRecoverableReport(
-  to: ScheduleToFn,
-  report: Awaited<ReturnType<typeof listRecoverableScheduledReports>>[number]
-) {
-  return report.conversationChannel === "linq"
-    ? dispatchScheduledReport({ to }, report.runId)
-    : postScheduledReport(report.runId);
 }
 
 function scheduledRunPrompt(

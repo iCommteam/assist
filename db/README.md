@@ -1,6 +1,6 @@
 # Database
 
-This directory owns the workspace application tables, the four Better
+This directory owns the workspace application tables, the five Better
 Auth tables, and the application domain query services. Better Auth uses the
 canonical Drizzle client from `db/index.ts`; request paths never create or
 migrate tables.
@@ -36,7 +36,11 @@ Migration `0001` adopts the singular `user`, `session`, `account`, and
 existing `timestamptz` representation and rows, safely adds the nullable
 phone-number plugin fields when absent, and installs the indexes used by Better
 Auth. The runtime now assumes versioned migrations have run before requests are
-served.
+served. Phone sign-in has since been removed; those columns stay unused.
+
+Migration `0015` adds Better Auth's `twoFactor` table, `user.twoFactorEnabled`,
+and `session.twoFactorVerified`. Sessions that existed before it are left
+unverified, so every member signs in again with an authenticator code.
 
 Before validating historical rows, back up the database and audit the pending
 constraints:

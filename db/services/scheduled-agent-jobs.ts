@@ -185,10 +185,14 @@ export async function updateScheduledAgentJob(
   return job ? parseJob(job) : undefined;
 }
 
+// The dispatcher passes `creatorIds`, the principals still allowed to run
+// work. Jobs of anyone else stay untouched until they are allowed again.
 export async function materializeDueScheduledAgentRuns(options: {
+  readonly creatorIds: readonly string[];
   readonly limit: number;
   readonly now: Date;
 }) {
+  if (options.creatorIds.length === 0) return [];
   return db.transaction(async (transaction) => {
     const due = await transaction
       .select()
@@ -196,7 +200,8 @@ export async function materializeDueScheduledAgentRuns(options: {
       .where(
         and(
           eq(scheduledAgentJobs.status, "active"),
-          lte(scheduledAgentJobs.nextRunAt, options.now)
+          lte(scheduledAgentJobs.nextRunAt, options.now),
+          inArray(scheduledAgentJobs.createdByUserId, [...options.creatorIds])
         )
       )
       .orderBy(asc(scheduledAgentJobs.nextRunAt))
@@ -240,10 +245,12 @@ export async function materializeDueScheduledAgentRuns(options: {
 }
 
 export async function claimReadyScheduledAgentRuns(options: {
+  readonly creatorIds: readonly string[];
   readonly leaseForMs: number;
   readonly limit: number;
   readonly now: Date;
 }) {
+  if (options.creatorIds.length === 0) return [];
   return db.transaction(async (transaction) => {
     const ready = await transaction
       .select({ job: scheduledAgentJobs, run: scheduledAgentRuns })
@@ -265,7 +272,8 @@ export async function claimReadyScheduledAgentRuns(options: {
           or(
             isNull(scheduledAgentRuns.retryAt),
             lte(scheduledAgentRuns.retryAt, options.now)
-          )
+          ),
+          inArray(scheduledAgentJobs.createdByUserId, [...options.creatorIds])
         )
       )
       .orderBy(asc(scheduledAgentRuns.scheduledFor))
@@ -651,9 +659,11 @@ export async function claimScheduledReport(runId: string, now = new Date()) {
 }
 
 export async function listRecoverableScheduledReports(
+  creatorIds: readonly string[],
   now = new Date(),
   limit = 25
 ) {
+  if (creatorIds.length === 0) return [];
   return db.transaction(async (transaction) => {
     const reports = await transaction
       .select({
@@ -678,7 +688,8 @@ export async function listRecoverableScheduledReports(
               eq(scheduledAgentRuns.reportStatus, "queued"),
               lte(scheduledAgentRuns.reportLeaseExpiresAt, now)
             )
-          )
+          ),
+          inArray(scheduledAgentJobs.createdByUserId, [...creatorIds])
         )
       )
       .orderBy(asc(scheduledAgentRuns.updatedAt))

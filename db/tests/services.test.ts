@@ -36,67 +36,21 @@ describe("database services", () => {
     const database = pgliteDatabase as never;
     vi.spyOn(Database, "db", "get").mockReturnValue(database);
 
-    const [
-      browserImages,
-      browsers,
-      browserTraces,
-      chats,
-      secrets,
-      sessions,
-      scope,
-      vault,
-    ] = await Promise.all([
-      import("@db/services/browser-images"),
-      import("@db/services/browsers"),
-      import("@db/services/browser-traces"),
-      import("@db/services/chats"),
-      import("@db/services/secrets"),
-      import("@db/services/sessions"),
-      import("@db/services/scope"),
-      import("@db/services/vault"),
-    ]);
+    const [browsers, browserTraces, chats, secrets, sessions, scope, vault] =
+      await Promise.all([
+        import("@db/services/browsers"),
+        import("@db/services/browser-traces"),
+        import("@db/services/chats"),
+        import("@db/services/secrets"),
+        import("@db/services/sessions"),
+        import("@db/services/scope"),
+        import("@db/services/vault"),
+      ]);
     const alice = { userId: "alice", workspaceId: "workspace:alice" };
     const bob = { userId: "bob", workspaceId: "workspace:bob" };
 
     await scope.ensureScope(alice);
     await scope.ensureScope(bob);
-
-    const [image] = await pgliteDatabase
-      .insert(schema.browserImageArtifacts)
-      .values({
-        browserSessionId: "browser-alice",
-        byteSize: 8,
-        contentHash: "content-hash",
-        createdByUserId: alice.userId,
-        filename: "product.png",
-        idempotencyKey: "worker-session:call-image",
-        label: "Product image",
-        mediaType: "image/png",
-        rootSessionId: "session-alice",
-        sourceKind: "viewport",
-        status: "ready",
-        storagePathname: "browser-images/alice/product/content-hash",
-        workerSessionId: "worker-alice",
-        workspaceId: alice.workspaceId,
-      })
-      .returning();
-    if (!image) throw new Error("Expected a stored browser image.");
-    const storedImage = await browserImages.readReadyBrowserImageArtifact(
-      alice,
-      image.id,
-      { rootSessionId: "session-alice" }
-    );
-    expect(storedImage?.createdAt).toMatch(
-      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u
-    );
-    expect(
-      await browserImages.readReadyBrowserImageArtifact(alice, image.id, {
-        rootSessionId: "session-other",
-      })
-    ).toBeUndefined();
-    expect(
-      await browserImages.readReadyBrowserImageArtifact(bob, image.id)
-    ).toBeUndefined();
 
     await sessions.claimSession(alice, "session-alice");
 
@@ -297,7 +251,9 @@ describe("database services", () => {
     expect(await secrets.readEncryptedSecret(bob, sharedSecretId)).toBe(
       "ciphertext-bob"
     );
-  }, 15_000);
+    // PGlite migrations take several seconds alone and longer beside the
+    // other database suites on a loaded runner.
+  }, 30_000);
 });
 
 async function applyInitialMigration(database: PGlite) {

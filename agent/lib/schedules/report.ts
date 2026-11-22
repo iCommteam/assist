@@ -1,22 +1,17 @@
 import type { AttachSessionFn } from "eve/channels";
 import { SessionNotActiveError } from "eve/client";
-import type { ScheduleToFn } from "eve/schedules";
 import {
   claimScheduledReport,
   finalizeScheduledReport,
   releaseScheduledReport,
 } from "@db/services/scheduled-agent-jobs";
-import linq from "../../channels/linq";
 
 type ClaimedScheduledReport = NonNullable<
   Awaited<ReturnType<typeof claimScheduledReport>>
 >;
 
 export async function dispatchScheduledReport(
-  delivery: {
-    readonly attachSession?: AttachSessionFn;
-    readonly to: ScheduleToFn;
-  },
+  attachSession: AttachSessionFn,
   runId: string
 ) {
   const claimed = await claimScheduledReport(runId);
@@ -41,29 +36,12 @@ export async function dispatchScheduledReport(
   };
   try {
     const prompt = scheduledReportPrompt(claimed);
-    if (claimed.job.conversationChannel === "linq") {
-      const session = await delivery
-        .to(linq, {
-          adapterName: "linq",
-          threadId: claimed.job.conversationId,
-        })
-        .send(prompt, options);
-      console.info("[scheduled-run] report session accepted", {
-        channel: claimed.job.conversationChannel,
-        reportSequence: claimed.run.reportSequence,
-        runId: claimed.run.id,
-        sessionId: session.sessionId,
-      });
-      return;
-    }
-    if (!delivery.attachSession) {
-      throw new Error("Eve debug reports require an active session handle.");
-    }
     let accepted;
     try {
-      accepted = await delivery
-        .attachSession(claimed.job.conversationId)
-        .send(prompt, options);
+      accepted = await attachSession(claimed.job.conversationId).send(
+        prompt,
+        options
+      );
     } catch (error) {
       if (
         !SessionNotActiveError.is(error) ||
@@ -140,15 +118,6 @@ function scheduledReportAttributes(
     ["scheduledRunId", claimed.run.id],
     ["workspaceId", claimed.job.workspaceId],
   ]);
-  if (
-    claimed.job.conversationChannel === "linq" &&
-    claimed.job.replyAnchorMessageId
-  ) {
-    attributes.set(
-      "linqReplyAnchorMessageId",
-      claimed.job.replyAnchorMessageId
-    );
-  }
   if (claimed.run.workerSessionId) {
     attributes.set("scheduledRunSessionId", claimed.run.workerSessionId);
   }

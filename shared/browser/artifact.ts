@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const maximumBrowserImageBytes = 8 * 1024 * 1024;
+const maximumBrowserImageBytes = 8 * 1024 * 1024;
 
 const browserImageMediaTypeSchema = z.enum([
   "image/gif",

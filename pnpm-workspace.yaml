@@ -21,7 +21,6 @@ allowBuilds:
   protobufjs: false
   sharp: true
 patchedDependencies:
-  "@linqapp/chat-sdk-adapter@0.5.1": patches/@linqapp__chat-sdk-adapter@0.5.1.patch
   eve@1.0.0-rc.1: patches/eve@1.0.0-rc.1.patch
 ignoredOptionalDependencies:
   # Optional native codecs of just-bash; the sandbox only stores files, so they are not needed.

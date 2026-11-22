@@ -12,11 +12,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   getAuthSessionMock.mockResolvedValue(
-    authSessionFor({
-      id: "user-1",
-      phoneNumber: "+12025550123",
-      phoneNumberVerified: true,
-    })
+    authSessionFor({ id: "user-1", email: "member@example.test" })
   );
   isSessionOwnedMock.mockResolvedValue(false);
 });

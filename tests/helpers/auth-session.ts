@@ -1,24 +1,17 @@
 interface AuthSessionFixture {
-  readonly session: {
-    readonly createdAt: Date;
-    readonly expiresAt: Date;
-    readonly id: string;
-    readonly token: string;
-    readonly updatedAt: Date;
-    readonly userId: string;
-  };
   readonly user: {
     readonly createdAt: Date;
     readonly email: string;
     readonly emailVerified: boolean;
     readonly id: string;
     readonly name: string;
-    readonly phoneNumber?: string | null;
-    readonly phoneNumberVerified?: boolean | null;
+    readonly twoFactorEnabled: boolean;
     readonly updatedAt: Date;
   };
 }
 
+// A Better Auth session payload for a completed sign-in: the authenticator is
+// enrolled and this session proved a second factor.
 export function authSessionFor<
   const User extends Pick<AuthSessionFixture["user"], "id"> &
     Partial<AuthSessionFixture["user"]>,
@@ -30,6 +23,7 @@ export function authSessionFor<
       expiresAt: new Date("2026-09-01T00:00:00.000Z"),
       id: `session-${user.id}`,
       token: `token-${user.id}`,
+      twoFactorVerified: true as const,
       updatedAt: now,
       userId: user.id,
     },
@@ -38,8 +32,21 @@ export function authSessionFor<
       email: `${user.id}@example.com`,
       emailVerified: true,
       name: user.id,
+      twoFactorEnabled: true as const,
       updatedAt: now,
       ...user,
     },
+  };
+}
+
+// A session opened with the password alone, before any second factor.
+export function passwordOnlySessionFor<
+  const User extends Pick<AuthSessionFixture["user"], "id"> &
+    Partial<AuthSessionFixture["user"]>,
+>(user: User) {
+  const complete = authSessionFor(user);
+  return {
+    ...complete,
+    session: { ...complete.session, twoFactorVerified: false },
   };
 }

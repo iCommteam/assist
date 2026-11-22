@@ -50,14 +50,12 @@ export default defineChannel({
   routes: [
     POST(
       "/internal/scheduled-run/report",
-      async (request, { attachSession, to, waitUntil }) => {
+      async (request, { attachSession, waitUntil }) => {
         const auth = await routeAuth(request, internalRouteAuth);
         if (auth instanceof Response) return auth;
         const parsed = reportSchema.safeParse(await request.json());
         if (parsed.success) {
-          waitUntil(
-            dispatchScheduledReport({ attachSession, to }, parsed.data.runId)
-          );
+          waitUntil(dispatchScheduledReport(attachSession, parsed.data.runId));
         }
         return new Response(null, { status: 202 });
       }

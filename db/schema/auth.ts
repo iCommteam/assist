@@ -2,6 +2,7 @@ import { relations, sql } from "drizzle-orm";
 import {
   boolean,
   index,
+  integer,
   pgTable,
   text,
   timestamp,
@@ -21,8 +22,10 @@ export const user = pgTable("user", {
     .defaultNow()
     .$onUpdate(() => new Date())
     .notNull(),
+  // Unused since phone sign-in was removed; kept so existing rows stay intact.
   phoneNumber: text("phoneNumber").unique(),
   phoneNumberVerified: boolean("phoneNumberVerified"),
+  twoFactorEnabled: boolean("twoFactorEnabled").default(false).notNull(),
 });
 
 export const session = pgTable(
@@ -42,8 +45,31 @@ export const session = pgTable(
     userId: text("userId")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
+    // Set only on sessions created by a completed TOTP or backup-code check.
+    twoFactorVerified: boolean("twoFactorVerified").default(false).notNull(),
   },
   (table) => [index("session_userId_idx").on(table.userId)]
+);
+
+export const twoFactor = pgTable(
+  "twoFactor",
+  {
+    id: text("id").primaryKey(),
+    secret: text("secret").notNull(),
+    backupCodes: text("backupCodes").notNull(),
+    userId: text("userId")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    verified: boolean("verified").default(true).notNull(),
+    failedVerificationCount: integer("failedVerificationCount")
+      .default(0)
+      .notNull(),
+    lockedUntil: timestamp("lockedUntil", { withTimezone: true }),
+  },
+  (table) => [
+    index("twoFactor_secret_idx").on(table.secret),
+    index("twoFactor_userId_idx").on(table.userId),
+  ]
 );
 
 export const account = pgTable(
@@ -107,6 +133,14 @@ export const verification = pgTable(
 export const userRelations = relations(user, ({ many }) => ({
   accounts: many(account),
   sessions: many(session),
+  twoFactors: many(twoFactor),
+}));
+
+export const twoFactorRelations = relations(twoFactor, ({ one }) => ({
+  user: one(user, {
+    fields: [twoFactor.userId],
+    references: [user.id],
+  }),
 }));
 
 export const sessionRelations = relations(session, ({ one }) => ({

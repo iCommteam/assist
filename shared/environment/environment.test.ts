@@ -16,8 +16,9 @@ describe("environment", () => {
     for (const [name, value] of Object.entries(requiredEnvironment)) {
       vi.stubEnv(name, value);
     }
-    vi.stubEnv("LINQ_CONNECTOR", "");
-    vi.stubEnv("LINQ_PHONE_NUMBER", "");
+    vi.stubEnv("ASSIST_ADMIN_EMAILS", "");
+    vi.stubEnv("ASSIST_ALLOWED_EMAILS", "");
+    vi.stubEnv("ASSIST_SIGNUP_CODE", "");
   });
 
   afterEach(() => {
@@ -31,11 +32,40 @@ describe("environment", () => {
     expect(env).toMatchObject(requiredEnvironment);
   });
 
-  it("leaves Linq disabled by default", async () => {
+  it("leaves team sign-in closed by default", async () => {
     const { env } = await import("@shared/environment");
 
-    expect(env.LINQ_CONNECTOR).toBeUndefined();
-    expect(env.LINQ_PHONE_NUMBER).toBeUndefined();
+    expect(env.ASSIST_ADMIN_EMAILS).toBeUndefined();
+    expect(env.ASSIST_ALLOWED_EMAILS).toBeUndefined();
+    expect(env.ASSIST_SIGNUP_CODE).toBeUndefined();
+  });
+
+  it("normalizes the team email lists to trimmed lower-case addresses", async () => {
+    vi.stubEnv(
+      "ASSIST_ALLOWED_EMAILS",
+      " Alice@Example.test, bob@example.test ,,"
+    );
+    vi.stubEnv("ASSIST_ADMIN_EMAILS", "ALICE@example.test");
+
+    const { env } = await import("@shared/environment");
+
+    expect(env.ASSIST_ALLOWED_EMAILS).toEqual([
+      "alice@example.test",
+      "bob@example.test",
+    ]);
+    expect(env.ASSIST_ADMIN_EMAILS).toEqual(["alice@example.test"]);
+  });
+
+  it.each([
+    ["ASSIST_ALLOWED_EMAILS", "alice@example.test, not-an-email"],
+    ["ASSIST_ADMIN_EMAILS", "alice"],
+    ["ASSIST_SIGNUP_CODE", "too-short"],
+  ])("rejects an invalid %s during import", async (name, value) => {
+    vi.stubEnv(name, value);
+
+    await expect(import("@shared/environment")).rejects.toThrow(
+      "Invalid environment variables"
+    );
   });
 
   it("provides stable auth and encryption defaults in local development", async () => {
@@ -45,15 +75,13 @@ describe("environment", () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("VERCEL_ENV", undefined);
 
-    const { env, localPhoneAuthBypassEnabled } =
-      await import("@shared/environment");
+    const { env } = await import("@shared/environment");
 
     expect(env).toMatchObject({
       BETTER_AUTH_SECRET: "openinstinct-local-auth-development-secret",
       BETTER_AUTH_URL: "http://localhost:3000",
       SECRET_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     });
-    expect(localPhoneAuthBypassEnabled).toBe(true);
   });
 
   it.each([
@@ -72,16 +100,6 @@ describe("environment", () => {
       );
     }
   );
-
-  it("accepts connector overrides", async () => {
-    vi.stubEnv("LINQ_CONNECTOR", "linq/custom");
-    vi.stubEnv("LINQ_PHONE_NUMBER", "+12025550123");
-
-    const { env } = await import("@shared/environment");
-
-    expect(env.LINQ_CONNECTOR).toBe("linq/custom");
-    expect(env.LINQ_PHONE_NUMBER).toBe("+12025550123");
-  });
 
   it("does not provide local defaults in a Vercel development environment", async () => {
     vi.stubEnv("BETTER_AUTH_SECRET", "");
@@ -149,16 +167,6 @@ describe("environment", () => {
     );
   });
 
-  it("accepts a Linq connector without a copied phone number", async () => {
-    vi.stubEnv("LINQ_CONNECTOR", "linq/open-instinct");
-    vi.stubEnv("LINQ_PHONE_NUMBER", "");
-
-    const { env } = await import("@shared/environment");
-
-    expect(env.LINQ_CONNECTOR).toBe("linq/open-instinct");
-    expect(env.LINQ_PHONE_NUMBER).toBeUndefined();
-  });
-
   it("accepts Vercel OIDC Blob storage without a static token", async () => {
     vi.stubEnv("BLOB_READ_WRITE_TOKEN", "");
     vi.stubEnv("BLOB_STORE_ID", "store_openinstinct");
@@ -168,33 +176,4 @@ describe("environment", () => {
     expect(env.BLOB_READ_WRITE_TOKEN).toBeUndefined();
     expect(env.BLOB_STORE_ID).toBe("store_openinstinct");
   });
-
-  it("rejects a Linq phone number outside E.164 format", async () => {
-    vi.stubEnv("LINQ_CONNECTOR", "linq/open-instinct");
-    vi.stubEnv("LINQ_PHONE_NUMBER", "(202) 555-0123");
-
-    await expect(import("@shared/environment")).rejects.toThrow(
-      "Invalid environment variables"
-    );
-  });
-
-  it.each([
-    ["http://localhost:3000", "development", undefined, true],
-    ["https://openinstinct.localhost", "development", undefined, true],
-    ["http://localhost:3000", "production", undefined, false],
-    ["http://localhost:3000", "development", "development", false],
-    ["https://preview.example.com", "development", undefined, false],
-  ] as const)(
-    "resolves local phone auth bypass for %s in %s",
-    async (url, nodeEnv, vercelEnv, expected) => {
-      vi.stubEnv("BETTER_AUTH_URL", url);
-      vi.stubEnv("NODE_ENV", nodeEnv);
-      vi.stubEnv("VERCEL_ENV", vercelEnv);
-
-      const { localPhoneAuthBypassEnabled } =
-        await import("@shared/environment");
-
-      expect(localPhoneAuthBypassEnabled).toBe(expected);
-    }
-  );
 });

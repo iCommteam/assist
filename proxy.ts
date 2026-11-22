@@ -1,16 +1,22 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getAuthSession } from "@db/services/auth/session";
 
+// Pages and endpoints reachable without a completed sign-in. The setup page
+// checks its own password-only session; Better Auth checks its endpoints.
+const publicPaths = new Set([
+  "/sign-in",
+  "/sign-up",
+  "/two-factor",
+  "/eve/v1/health",
+  "/eve/v1/dev/schedules/dynamic",
+]);
+
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   if (
-    pathname === "/sign-in" ||
-    // The contact route verifies its signed URL; Linq downloads without cookies.
-    pathname === "/contacts/openinstinct.vcf" ||
+    publicPaths.has(pathname) ||
     pathname.startsWith("/api/auth/") ||
-    pathname === "/eve/v1/health" ||
-    pathname.startsWith("/internal/scheduled-run/") ||
-    pathname === "/eve/v1/dev/schedules/dynamic"
+    pathname.startsWith("/internal/scheduled-run/")
   ) {
     return NextResponse.next();
   }
