@@ -6,6 +6,7 @@ import type { ensureScope } from "@db/services/scope";
 import type { claimSession } from "@db/services/sessions";
 import sessionOwner from "@agent/hooks/session-owner";
 import { hookContextFor } from "@tests/helpers/hook-context";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 
 const mocks = vi.hoisted(() => ({
   claimSession: vi.fn<typeof claimSession>(),
@@ -19,7 +20,7 @@ vi.mock("@db/services/sessions", () => ({
   claimSession: mocks.claimSession,
 }));
 
-const scope = { userId: "user-1", workspaceId: "workspace-1" };
+const scope = accessScopeForUser("better-auth:user-1");
 const auth: HookContext["session"]["auth"] = {
   current: null,
   initiator: {

@@ -9,6 +9,7 @@ import {
   withEvaluableDynamic,
 } from "@tests/helpers/dynamic";
 import { toolContextFor } from "@tests/helpers/tool-context";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 
 vi.mock("eve/tools", async (importOriginal) =>
   withEvaluableDynamic(await importOriginal<typeof EveTools>())
@@ -44,6 +45,8 @@ import schedules, {
   updateSchedule,
 } from "@agent/tools/schedules";
 
+const member = accessScopeForUser("better-auth:user-1");
+
 describe("schedule tools", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -78,7 +81,7 @@ describe("schedule tools", () => {
       toolContext("schedules-answer", "linq")
     );
     expect(services.getInput).toHaveBeenCalledExactlyOnceWith(
-      { userId: "user-1", workspaceId: "workspace-1" },
+      member,
       {
         conversationChannel: "linq",
         conversationId: "linq:dm:chat-1",
@@ -164,22 +167,19 @@ describe("schedule tools", () => {
       "prompt",
       "timing",
     ]);
-    expect(services.create).toHaveBeenCalledExactlyOnceWith(
-      { userId: "user-1", workspaceId: "workspace-1" },
-      {
-        conversationChannel: "linq",
-        conversationId: "linq:dm:chat-1",
-        missedRunPolicy: "run_latest",
-        prompt: "Send the morning summary.",
-        replyAnchorMessageId: "message-1",
-        timing: {
-          frequency: "daily",
-          kind: "calendar",
-          localTime: "09:00",
-          timezone: "America/New_York",
-        },
-      }
-    );
+    expect(services.create).toHaveBeenCalledExactlyOnceWith(member, {
+      conversationChannel: "linq",
+      conversationId: "linq:dm:chat-1",
+      missedRunPolicy: "run_latest",
+      prompt: "Send the morning summary.",
+      replyAnchorMessageId: "message-1",
+      timing: {
+        frequency: "daily",
+        kind: "calendar",
+        localTime: "09:00",
+        timezone: "America/New_York",
+      },
+    });
     expect(result).toEqual(scheduleSummary(job));
   });
 
@@ -193,13 +193,10 @@ describe("schedule tools", () => {
     );
 
     expect(inputProperties(listSchedules.inputSchema)).toEqual([]);
-    expect(services.list).toHaveBeenCalledExactlyOnceWith(
-      { userId: "user-1", workspaceId: "workspace-1" },
-      {
-        conversationChannel: "linq",
-        conversationId: "linq:dm:chat-1",
-      }
-    );
+    expect(services.list).toHaveBeenCalledExactlyOnceWith(member, {
+      conversationChannel: "linq",
+      conversationId: "linq:dm:chat-1",
+    });
     expect(result).toEqual([scheduleListSummary(job)]);
   });
 
@@ -222,7 +219,7 @@ describe("schedule tools", () => {
       "timing",
     ]);
     expect(services.update).toHaveBeenCalledExactlyOnceWith(
-      { userId: "user-1", workspaceId: "workspace-1" },
+      member,
       {
         conversationChannel: "linq",
         conversationId: "linq:dm:chat-1",
@@ -302,7 +299,7 @@ describe("schedule tools", () => {
     );
 
     expect(services.create).toHaveBeenCalledWith(
-      { userId: "user-1", workspaceId: "workspace-1" },
+      member,
       expect.objectContaining({
         conversationChannel: "eve",
         conversationId: "session-1",
@@ -320,7 +317,7 @@ function dynamicContext(
       current: {
         attributes: {},
         authenticator,
-        principalId: "user-1",
+        principalId: member.userId,
         principalType: "user",
       },
       initiator: null,
@@ -338,7 +335,7 @@ function resumedWorkerContext() {
       initiator: {
         attributes: {},
         authenticator: "scheduled-worker",
-        principalId: "user-1",
+        principalId: member.userId,
         principalType: "user",
       },
     },
@@ -361,11 +358,11 @@ function toolContext(
           conversationId: "linq:dm:chat-1",
           linqMessageId: "message-1",
           linqThreadId: "linq:dm:chat-1",
-          workspaceId: "workspace-1",
+          workspaceId: member.workspaceId,
           ...attributes,
         },
         authenticator,
-        principalId: "user-1",
+        principalId: member.userId,
         principalType: "user",
       },
       initiator: null,
@@ -403,7 +400,7 @@ function scheduledJob(
 ): Awaited<ReturnType<typeof listScheduledAgentJobs>>[number] {
   return {
     createdAt: new Date("2026-09-01T12:00:00.000Z"),
-    createdByUserId: "user-1",
+    createdByUserId: member.userId,
     id: "00000000-0000-4000-8000-000000000001",
     lastError: null,
     lastRunAt: null,
@@ -422,7 +419,7 @@ function scheduledJob(
       timezone: "America/New_York",
     },
     updatedAt: new Date("2026-09-01T12:00:00.000Z"),
-    workspaceId: "workspace-1",
+    workspaceId: member.workspaceId,
   };
 }
 

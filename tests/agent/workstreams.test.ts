@@ -17,6 +17,7 @@ import {
   vi,
 } from "vitest";
 import * as Database from "@db";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 import * as schema from "@db/schema";
 import {
   findWorkstreams,
@@ -33,8 +34,8 @@ import {
 
 const client = new PGlite();
 const database = drizzle(client, { schema });
-const alice = { userId: "alice", workspaceId: "workspace-alice" };
-const bob = { userId: "bob", workspaceId: "workspace-bob" };
+const alice = accessScopeForUser("better-auth:alice");
+const bob = accessScopeForUser("better-auth:bob");
 const content = {
   title: "Autumn trip",
   objective: "Choose train tickets for the autumn trip.",

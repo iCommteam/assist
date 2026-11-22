@@ -19,6 +19,7 @@ import { domainFromUrl } from "@agent/subagents/browser-agent/lib/trace/domains"
 import traceTelemetry from "@agent/subagents/browser-agent/hooks/trace-telemetry";
 import { hookContextFor } from "@tests/helpers/hook-context";
 import { viewOf } from "@tests/helpers/session-view";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 
 const mocks = vi.hoisted(() => ({
   beginBrowserTrace: vi.fn<typeof beginBrowserTrace>(),
@@ -44,7 +45,7 @@ vi.mock(
   })
 );
 
-const scope = { userId: "user-1", workspaceId: "workspace-1" };
+const scope = accessScopeForUser("better-auth:user-1");
 const auth: HookContext["session"]["auth"] = {
   current: null,
   initiator: {

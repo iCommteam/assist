@@ -6,6 +6,7 @@ import {
   evaluateDynamic,
   withEvaluableDynamic,
 } from "@tests/helpers/dynamic";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 
 vi.mock("eve", async (importOriginal) =>
   withEvaluableDynamic(await importOriginal<typeof Eve>())
@@ -19,6 +20,8 @@ import workstreamMemory from "@agent/memory/workstreams";
 import messaging from "@agent/tools/messaging";
 import schedules from "@agent/tools/schedules";
 import vault from "@agent/tools/vault";
+
+const member = accessScopeForUser("better-auth:user-1");
 
 const groupedTools = [messaging, schedules, vault];
 
@@ -74,7 +77,7 @@ async function authoredCapabilities(authenticator: string) {
       scope: {
         key: "personal-info-key",
         namespace: "openinstinct-personal-info-v1",
-        value: "personal:workspace",
+        value: member.workspaceId,
       },
       slot: "personal_info",
     },
@@ -93,7 +96,7 @@ async function authoredCapabilities(authenticator: string) {
       scope: {
         key: "workstreams-key",
         namespace: "workstreams",
-        value: "personal:workspace",
+        value: member.workspaceId,
       },
       slot: "workstreams",
     },
@@ -110,9 +113,9 @@ function dynamicContext(authenticator: string) {
   return dynamicContextFor({
     auth: {
       current: {
-        attributes: { workspaceId: "personal:workspace" },
+        attributes: { workspaceId: member.workspaceId },
         authenticator,
-        principalId: "user-1",
+        principalId: member.userId,
         principalType: "user",
       },
       initiator: null,
