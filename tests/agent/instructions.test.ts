@@ -108,6 +108,12 @@ describe("agent instructions", () => {
       expect(selected?.content).toContain(
         "using the completion tool Eve supplies"
       );
+      expect(selected?.content).toContain(
+        "do not retry the task, start another worker for the same site, or try another route to it"
+      );
+      expect(selected?.content).toContain(
+        "Never assign an Amazon site: they are blocked by policy for now."
+      );
     }
 
     expect(
