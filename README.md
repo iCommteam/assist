@@ -87,8 +87,9 @@ start check refuses them: `VERCEL` and every `VERCEL_*`, `EVE_DEV`,
 `EVE_NEXT_PRODUCTION_ORIGIN`, `EVE_NEXT_PRODUCTION_PORT`,
 `EVE_SCHEDULES_DISABLED`, `WORKFLOW_LOCAL_BASE_URL`, `WORKFLOW_POSTGRES_URL`,
 `BLOB_READ_WRITE_TOKEN`, `BLOB_STORE_ID`, `AI_GATEWAY_API_KEY`,
-`BETTER_AUTH_TRUSTED_ORIGINS`, `BETTER_AUTH_SECRETS`, `KERNEL_BASE_URL`,
-`STRIPE_PUBLISHABLE_KEY`, and every `LINK_*`, `LINQ_*` and `OTEL_EXPORTER_*`.
+`ANTHROPIC_BASE_URL`, `BETTER_AUTH_TRUSTED_ORIGINS`, `BETTER_AUTH_SECRETS`,
+`KERNEL_BASE_URL`, `STRIPE_PUBLISHABLE_KEY`, `TEST`, and every `LINK_*`,
+`LINQ_*` and `OTEL_EXPORTER_*`.
 
 The vault key encrypts saved secrets: losing it loses them, and rotating it
 requires re-encrypting existing vault values. Application migrations live in

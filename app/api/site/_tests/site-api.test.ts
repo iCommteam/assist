@@ -159,6 +159,45 @@ describe("site API authentication", () => {
   );
 });
 
+describe("site API database errors", () => {
+  it("answers every call with 503 JSON when the owner lookup fails", async () => {
+    services.resolveSiteOwner.mockRejectedValue(new Error("pool timeout"));
+
+    const responses = await Promise.all([
+      ping(siteRequest("/ping", teemiqToken)),
+      createTask(siteRequest("/tasks", teemiqToken, { message: "hello" })),
+      readTask(siteRequest(`/tasks/${taskId}`, teemiqToken), params(taskId)),
+    ]);
+
+    expect(responses.map(({ status }) => status)).toEqual([503, 503, 503]);
+    expect(
+      responses.map((response) => response.headers.get("cache-control"))
+    ).toEqual(["no-store", "no-store", "no-store"]);
+    await expect(
+      Promise.all(responses.map((response) => response.json()))
+    ).resolves.toEqual([
+      { error: "unavailable" },
+      { error: "unavailable" },
+      { error: "unavailable" },
+    ]);
+    expect(eve.create).not.toHaveBeenCalled();
+    expect(eve.read).not.toHaveBeenCalled();
+  });
+
+  it("answers a task read with 503 JSON when the task lookup fails", async () => {
+    services.findSiteTaskSession.mockRejectedValue(new Error("pool timeout"));
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "unavailable" });
+    expect(eve.read).not.toHaveBeenCalled();
+  });
+});
+
 describe("POST /api/site/tasks", () => {
   it("starts the task as the owner and returns its id", async () => {
     const response = await createTask(
@@ -231,6 +270,34 @@ describe("POST /api/site/tasks", () => {
     );
 
     expect(response.status).toBe(400);
+  });
+
+  it("retries recording a started task once the database recovers", async () => {
+    services.recordSiteTask
+      .mockRejectedValueOnce(new Error("connection reset"))
+      .mockResolvedValueOnce(taskId);
+
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, { message: "hello" })
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ taskId });
+    expect(eve.create).toHaveBeenCalledOnce();
+    expect(services.recordSiteTask).toHaveBeenCalledTimes(2);
+  });
+
+  it("answers 503 after three failed attempts to record a started task", async () => {
+    services.recordSiteTask.mockRejectedValue(new Error("connection reset"));
+
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, { message: "hello" })
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "unavailable" });
+    expect(eve.create).toHaveBeenCalledOnce();
+    expect(services.recordSiteTask).toHaveBeenCalledTimes(3);
   });
 
   it("answers 503 and records nothing when eve does not accept the task", async () => {

@@ -35,6 +35,7 @@ describe("production environment guard", () => {
 
   it.each([
     "AI_GATEWAY_API_KEY",
+    "ANTHROPIC_BASE_URL",
     "BETTER_AUTH_SECRETS",
     "BETTER_AUTH_TRUSTED_ORIGINS",
     "BLOB_READ_WRITE_TOKEN",
@@ -48,6 +49,7 @@ describe("production environment guard", () => {
     "LINQ_CONNECTOR",
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "STRIPE_PUBLISHABLE_KEY",
+    "TEST",
     "VERCEL",
     "VERCEL_ENV",
     "VERCEL_OIDC_TOKEN",
@@ -70,7 +72,6 @@ describe("production environment guard", () => {
   it.each([
     "ANTHROPIC_API_KEY",
     "ASSIST_ALLOWED_EMAILS",
-    "ASSIST_SIGNUP_CODE",
     "BETTER_AUTH_SECRET",
     "BETTER_AUTH_URL",
     "DATABASE_URL",
@@ -81,6 +82,12 @@ describe("production environment guard", () => {
     expect(
       productionEnvironmentProblems({ ...complete, [name]: "  " })
     ).toEqual([`${name} is required.`]);
+  });
+
+  it("accepts an unset ASSIST_SIGNUP_CODE, which closes sign-up", () => {
+    expect(
+      productionEnvironmentProblems({ ...complete, ASSIST_SIGNUP_CODE: " " })
+    ).toEqual([]);
   });
 
   it.each([
@@ -152,7 +159,6 @@ describe("production environment guard", () => {
       "ASSIST_ALLOWED_EMAILS is required.",
       "BETTER_AUTH_SECRET must not be the local development default.",
       "BETTER_AUTH_URL is required.",
-      "ASSIST_SIGNUP_CODE is required.",
     ]);
     const text = problems.join("\n");
     for (const value of [

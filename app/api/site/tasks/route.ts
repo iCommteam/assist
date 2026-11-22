@@ -32,7 +32,9 @@ export async function POST(request: Request) {
       op: "create",
       site,
     }).sessions.create({ message: input.data.message });
-    const taskId = await recordSiteTask(site, owner.scope, session.id);
+    const taskId = await recordStartedTask(() =>
+      recordSiteTask(site, owner.scope, session.id)
+    );
     return siteJson({ taskId }, 202);
   } catch (error) {
     console.warn("[site] task could not start", {
@@ -40,6 +42,25 @@ export async function POST(request: Request) {
       site,
     });
     return siteError(503, "unavailable");
+  }
+}
+
+// eve has already started the task, so a lost row leaves it running where the
+// site can never read it, and a retried POST would run it twice. A short
+// retry covers a passing database error.
+const recordAttempts = 3;
+const recordRetryDelayMs = 250;
+
+async function recordStartedTask(
+  record: () => Promise<string>,
+  attempt = 1
+): Promise<string> {
+  try {
+    return await record();
+  } catch (error) {
+    if (attempt >= recordAttempts) throw error;
+    await new Promise((resolve) => setTimeout(resolve, recordRetryDelayMs));
+    return recordStartedTask(record, attempt + 1);
   }
 }
 

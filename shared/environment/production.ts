@@ -9,6 +9,9 @@
 // one either bypasses sign-in, sends data to Vercel, or changes where eve runs.
 const refusedVariables = new Set([
   "AI_GATEWAY_API_KEY",
+  // The bundled Anthropic provider sends every prompt, and the API key, to
+  // this host instead of Anthropic's.
+  "ANTHROPIC_BASE_URL",
   "BETTER_AUTH_SECRETS",
   "BETTER_AUTH_TRUSTED_ORIGINS",
   "BLOB_READ_WRITE_TOKEN",
@@ -21,6 +24,9 @@ const refusedVariables = new Set([
   "EVE_SCHEDULES_DISABLED",
   "KERNEL_BASE_URL",
   "STRIPE_PUBLISHABLE_KEY",
+  // The built eve server skips its schedule runner when TEST is set, so
+  // scheduled jobs would stop without any error.
+  "TEST",
   "VERCEL",
   "WORKFLOW_LOCAL_BASE_URL",
   "WORKFLOW_POSTGRES_URL",
@@ -107,10 +113,9 @@ export function productionEnvironmentProblems(
     );
   }
 
+  // Unset closes sign-up, which is a valid state once the team has accounts.
   const signupCode = value("ASSIST_SIGNUP_CODE");
-  if (signupCode === undefined) {
-    problems.push("ASSIST_SIGNUP_CODE is required.");
-  } else if (signupCode.length < 16) {
+  if (signupCode !== undefined && signupCode.length < 16) {
     problems.push("ASSIST_SIGNUP_CODE must contain at least 16 characters.");
   }
 

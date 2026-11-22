@@ -24,9 +24,18 @@ export async function GET(
   if (!caller.ok) return caller.response;
   const { taskId } = await context.params;
   const { owner, site } = caller;
-  const task = z.uuid().safeParse(taskId).success
-    ? await findSiteTaskSession(site, owner.scope, taskId)
-    : undefined;
+  let task: Awaited<ReturnType<typeof findSiteTaskSession>>;
+  try {
+    task = z.uuid().safeParse(taskId).success
+      ? await findSiteTaskSession(site, owner.scope, taskId)
+      : undefined;
+  } catch (error) {
+    console.warn("[site] task lookup failed", {
+      error: error instanceof Error ? error.name : "unknown",
+      site,
+    });
+    return siteError(503, "unavailable");
+  }
   if (!task) return siteError(404, "not_found");
   const { sessionId } = task;
 

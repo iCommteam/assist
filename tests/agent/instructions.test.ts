@@ -29,6 +29,18 @@ describe("agent instructions", () => {
     expect(selected?.content).toContain(phrase);
   });
 
+  it.each(["interactive", "scheduled-worker", "scheduled-result"])(
+    "names the agent iCommAssist in %s turns",
+    async (role) => {
+      const selected = await evaluateDynamic(
+        roleInstructions,
+        dynamicContext(role)
+      );
+      expect(selected?.content).toContain("You are iCommAssist");
+      expect(selected?.content).not.toContain("OpenInstinct");
+    }
+  );
+
   it("limits scheduled-result turns to reporting", async () => {
     const selected = await evaluateDynamic(
       roleInstructions,

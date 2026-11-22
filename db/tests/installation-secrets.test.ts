@@ -12,6 +12,8 @@ const productionEnvironment = {
   NODE_ENV: "production",
   SCHEDULED_RUN_SECRET: "test-scheduled-run-secret-0123456789abcdef",
   SECRET_ENCRYPTION_KEY: Buffer.alloc(32, 5).toString("base64"),
+  // Vitest sets TEST itself, and the production guard refuses it.
+  TEST: "",
 };
 
 beforeEach(() => {
