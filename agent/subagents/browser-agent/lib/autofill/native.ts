@@ -1061,7 +1061,8 @@ export async function fillKernelOneTimeCode({
         refocus
       );
       const boxes = oneTimeCodeBoxes(controls, field);
-      const characters = code.split("");
+      // A code given as "482 913" or "482-913" still fills six boxes.
+      const characters = code.replaceAll(/[\s-]+/gu, "").split("");
       if (boxes && boxes.length !== characters.length) {
         throw new Error(codeBoxesMessage);
       }

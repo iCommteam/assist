@@ -86,7 +86,7 @@ function markFilledBrowser(browserSessionId: string) {
 }
 
 export const codeScreenshotWithheld =
-  "The screenshot was withheld because the page holds a filled one-time code. Use browser_snapshot until the page changes.";
+  "The screenshot was withheld because this browser may still show a filled one-time code. Use browser_snapshot; screenshots return once the code page is gone.";
 
 // Whether a document a one-time code was filled into may still be open.
 export function showsFilledCode(browserSessionId: string) {
@@ -149,28 +149,51 @@ export function redactBrowserOutput<T>(
   browserSessionId: string,
   output: T
 ): T {
-  const stripRendered = browserSessionId in filledDocuments.get();
-  return mapStrings(output, (text) =>
-    redact(workerSessionId, text, stripRendered)
-  );
+  const shown = {
+    codeCharacters: showsFilledCode(browserSessionId),
+    renderedValues: browserSessionId in filledDocuments.get(),
+  };
+  return mapStrings(output, (text) => redact(workerSessionId, text, shown));
 }
 
 // Redacts trace data for a worker, stripping rendered values while any of its
 // browsers may still show a filled document. Run it before the data is
 // serialized or truncated, so a cut-off value cannot escape the patterns.
 export function redactWorkerOutput<T>(workerSessionId: string, value: T): T {
-  const stripRendered = Object.keys(filledDocuments.get()).length > 0;
-  return mapStrings(value, (text) =>
-    redact(workerSessionId, text, stripRendered)
-  );
+  const shown = {
+    codeCharacters: Object.keys(codeDocuments.get()).some(showsFilledCode),
+    renderedValues: Object.keys(filledDocuments.get()).length > 0,
+  };
+  return mapStrings(value, (text) => redact(workerSessionId, text, shown));
 }
 
-function redact(workerSessionId: string, text: string, stripRendered: boolean) {
-  let result = stripRendered
+// A code field split into boxes renders each box's character as its own text
+// line, between lines that name the boxes, and a slot widget draws each one in
+// its own element. While a filled code may be on screen, every one-character
+// text line is hidden, also after a restart has forgotten the code itself.
+const singleCharacterText =
+  /\b(?<role>StaticText|generic) "(?:[^"\\\n]|\\.)"/gu;
+// The same line in a trace row, JSON-escaped once more.
+const escapedSingleCharacterText =
+  /\b(?<role>StaticText|generic) \\"[^"\\]\\"/gu;
+const singleCharacterLine = /^(?<indent>[ \t]*)[\p{L}\p{N}][ \t]*$/gmu;
+
+function redact(
+  workerSessionId: string,
+  text: string,
+  shown: { readonly codeCharacters: boolean; readonly renderedValues: boolean }
+) {
+  let result = shown.renderedValues
     ? text
         .replace(escapedRenderedValue, escapedHiddenValue)
         .replace(renderedValue, hiddenValue)
     : text;
+  if (shown.codeCharacters) {
+    result = result
+      .replace(escapedSingleCharacterText, String.raw`$<role> \"[hidden]\"`)
+      .replace(singleCharacterText, '$<role> "[hidden]"')
+      .replace(singleCharacterLine, "$<indent>[hidden]");
+  }
   for (const value of injectedValues.get(workerSessionId) ?? []) {
     for (const variant of new Set([
       value,

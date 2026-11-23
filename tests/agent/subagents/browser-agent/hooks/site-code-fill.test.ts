@@ -5,13 +5,38 @@ import { traceTimelineRows } from "@agent/subagents/browser-agent/lib/trace/time
 import {
   forgetFilledBrowser,
   redactBrowserOutput,
+  releaseNavigatedDocuments,
   showsFilledCode,
 } from "@agent/subagents/browser-agent/lib/autofill/redaction";
+import type * as PageCheckModule from "@agent/subagents/browser-agent/lib/policy/page-check";
+import type { BrowserPageState } from "@agent/subagents/browser-agent/lib/policy/page-check";
 import { hookContextFor } from "@tests/helpers/hook-context";
 import { resetEveState } from "@tests/helpers/eve-state";
 import { viewOf } from "@tests/helpers/session-view";
 
 vi.mock("eve/context", () => import("@tests/helpers/eve-state"));
+
+const inspectBrowserPages = vi.hoisted(() =>
+  vi.fn<(sessionId: string) => Promise<BrowserPageState[]>>()
+);
+vi.mock(
+  "@agent/subagents/browser-agent/lib/policy/page-check",
+  async (importOriginal) => ({
+    ...(await importOriginal<typeof PageCheckModule>()),
+    inspectBrowserPages,
+  })
+);
+
+function codePage(timeOrigin: number): BrowserPageState {
+  return {
+    frames: [],
+    status: 200,
+    text: "Enter the code we emailed you.",
+    timeOrigin,
+    title: "Verify",
+    url: "https://login.vendor.example/verify",
+  };
+}
 
 const turnFacts: Fact[] = [
   {
@@ -53,6 +78,8 @@ function codeCall(output: { filled: boolean; message: string }) {
 beforeEach(() => {
   resetEveState();
   forgetFilledBrowser("browser-1");
+  inspectBrowserPages.mockReset();
+  inspectBrowserPages.mockResolvedValue([codePage(5)]);
 });
 
 describe("site code fill hook", () => {
@@ -70,6 +97,25 @@ describe("site code fill hook", () => {
       redactBrowserOutput("worker-1", "browser-1", 'textbox value="482913"')
     ).toBe('textbox value="[hidden]"');
     expect(showsFilledCode("browser-1")).toBe(true);
+
+    // The mark ends once the code page is replaced.
+    releaseNavigatedDocuments("browser-1", [codePage(5)]);
+    expect(showsFilledCode("browser-1")).toBe(true);
+    releaseNavigatedDocuments("browser-1", [codePage(6)]);
+    expect(showsFilledCode("browser-1")).toBe(false);
+  });
+
+  it("keeps the mark until the browser is deleted when its pages cannot be read", async () => {
+    inspectBrowserPages.mockRejectedValue(new Error("Kernel unavailable"));
+    const { settled, view } = codeCall({ filled: true, message: "Filled." });
+
+    await siteCodeFill.events["call.settled"]?.(
+      settled,
+      hookContextFor({ sessionId: "worker-1", view })
+    );
+
+    releaseNavigatedDocuments("browser-1", [codePage(6)]);
+    expect(showsFilledCode("browser-1")).toBe(true);
   });
 
   it("marks nothing when no code was filled", async () => {
@@ -84,6 +130,7 @@ describe("site code fill hook", () => {
       redactBrowserOutput("worker-1", "browser-1", 'textbox value="mugs"')
     ).toBe('textbox value="mugs"');
     expect(showsFilledCode("browser-1")).toBe(false);
+    expect(inspectBrowserPages).not.toHaveBeenCalled();
   });
 });
 

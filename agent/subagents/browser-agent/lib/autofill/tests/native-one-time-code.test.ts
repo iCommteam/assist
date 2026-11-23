@@ -280,6 +280,20 @@ describe("native one-time code injection", () => {
     );
   });
 
+  it("fills split boxes from a code typed with a space or hyphen", async () => {
+    codeBoxes(6);
+
+    await expect(
+      fillKernelOneTimeCode({
+        browserSessionId: "browser-1",
+        code: "287-082",
+        expectedOrigin: "https://login.vendor.example",
+      })
+    ).resolves.toBeUndefined();
+
+    expect(inputs.map(({ value }) => value)).toEqual("287082".split(""));
+  });
+
   it("refuses a split field whose boxes do not match the code", async () => {
     codeBoxes(4);
 

@@ -244,7 +244,7 @@ describe("semantic browser tools", () => {
       content: [
         { text: "snapshot", type: "text" },
         {
-          text: "The screenshot was withheld because the page holds a filled one-time code. Use browser_snapshot until the page changes.",
+          text: "The screenshot was withheld because this browser may still show a filled one-time code. Use browser_snapshot; screenshots return once the code page is gone.",
           type: "text",
         },
       ],

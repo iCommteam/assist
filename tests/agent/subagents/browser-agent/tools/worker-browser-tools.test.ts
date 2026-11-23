@@ -203,7 +203,7 @@ describe("worker browser tools", () => {
 
     expect(withheld).toEqual({
       message:
-        "Executed 1 computer action. The screenshot was withheld because the page holds a filled one-time code. Use browser_snapshot until the page changes.",
+        "Executed 1 computer action. The screenshot was withheld because this browser may still show a filled one-time code. Use browser_snapshot; screenshots return once the code page is gone.",
     });
 
     // Once the code page is replaced, screenshots come back.

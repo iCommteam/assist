@@ -1,7 +1,11 @@
 import { call } from "eve/events";
 import { defineHook } from "eve/hooks";
 import { z } from "zod";
-import { markCodeFilledBrowser } from "@agent/subagents/browser-agent/lib/autofill/redaction";
+import {
+  markCodeFilledBrowser,
+  recordFilledDocuments,
+} from "@agent/subagents/browser-agent/lib/autofill/redaction";
+import { inspectBrowserPages } from "@agent/subagents/browser-agent/lib/policy/page-check";
 
 const filledCodeSchema = z.object({
   input: z.object({ browserSessionId: z.string().min(1) }),
@@ -15,12 +19,23 @@ const filledCodeSchema = z.object({
 // forgets the code itself, is set here once the call has settled.
 export default defineHook({
   events: {
-    "call.settled"(event, ctx) {
+    async "call.settled"(event, ctx) {
       const filled = filledCodeSchema.safeParse(
         call(ctx.view, event.data.callId)
       );
       if (!filled.success) return;
-      markCodeFilledBrowser(filled.data.input.browserSessionId);
+      const { browserSessionId } = filled.data.input;
+      markCodeFilledBrowser(browserSessionId);
+      // The documents open now hold the code, so the mark ends once they are
+      // replaced. Unread, it lasts until the browser is deleted.
+      try {
+        recordFilledDocuments(
+          browserSessionId,
+          await inspectBrowserPages(browserSessionId)
+        );
+      } catch {
+        // The mark stays on every document.
+      }
     },
   },
 });

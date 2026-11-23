@@ -204,14 +204,17 @@ describe("vault value redaction", () => {
       '  button "Verify" [ref=e5]',
     ].join("\n");
 
-    const redacted = redactBrowserOutput("worker-1", "browser-1", slots);
-
-    expect(redacted).toBe(
+    // The code is known, so it is found across the lines wherever it shows.
+    expect(redactBrowserOutput("worker-1", "browser-2", slots)).toBe(
       '  textbox "Verification code" [ref=e4]\n  StaticText "[vault value hidden]"\n  button "Verify" [ref=e5]'
     );
     expect(
-      redactBrowserOutput("worker-1", "browser-1", "Code: 4 8 2 9 1 3.")
+      redactBrowserOutput("worker-1", "browser-2", "Code: 4 8 2 9 1 3.")
     ).toBe("Code: [vault value hidden].");
+    // In the browser it was filled into, each character line is hidden too.
+    expect(redactBrowserOutput("worker-1", "browser-1", slots)).not.toMatch(
+      /"[4829136-]"/u
+    );
     // Trace rows carry the snapshot JSON-escaped once more.
     expect(
       redactWorkerOutput("worker-1", JSON.stringify({ text: slots }))
@@ -224,6 +227,36 @@ describe("vault value redaction", () => {
       '  button "Page 4" [ref=e8]\n  StaticText "Invoice 2913, due 8 Dec"\n  link "Download" [ref=e9]';
 
     expect(redactBrowserOutput("worker-1", "browser-1", page)).toBe(page);
+  });
+
+  it("hides each box's character of a split code field, even once the code is forgotten", () => {
+    const boxes = [1, 2, 3]
+      .map(
+        (box) =>
+          `  textbox "Digit ${String(box)}" [ref=e${String(box + 3)}] [value="${"482"[box - 1] ?? ""}"]\n    StaticText "${"482"[box - 1] ?? ""}"`
+      )
+      .join("\n");
+    rememberInjectedCode("worker-1", "browser-1", "482913");
+    forgetInjectedValues("worker-1");
+
+    const redacted = redactBrowserOutput("worker-1", "browser-1", boxes);
+
+    expect(redacted).not.toMatch(/"[482]"/u);
+    expect(redacted).toContain('textbox "Digit 2" [ref=e5]');
+    expect(redacted).toContain('StaticText "[hidden]"');
+    // Text output with one character per line, as slot widgets give.
+    expect(redactBrowserOutput("worker-1", "browser-1", "Code\n4\n8\n2")).toBe(
+      "Code\n[hidden]\n[hidden]\n[hidden]"
+    );
+    // A trace row carries the snapshot JSON-escaped once more.
+    expect(
+      redactWorkerOutput("worker-1", JSON.stringify({ text: boxes }))
+    ).not.toMatch(/StaticText \\"[482]\\"/u);
+
+    // Pages without a filled code keep their one-character text.
+    expect(redactBrowserOutput("worker-1", "browser-2", boxes)).toContain(
+      'StaticText "8"'
+    );
   });
 
   it("marks a browser that shows a filled code until its document is gone", () => {
