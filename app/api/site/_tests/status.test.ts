@@ -519,6 +519,29 @@ describe("site task code wait", () => {
     });
   });
 
+  it("counts a code that decided its question as used, whatever outcome eve gave", () => {
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      codeQuestion("interaction-1", "Enter the code."),
+      [
+        codeAnswer("interaction-1"),
+        {
+          data: {
+            cause: { responseId: "response-interaction-1" },
+            interactionId: "interaction-1",
+            outcome: "invalid",
+            response: { text: "assist-code.v1.sealed" },
+          },
+          type: "interaction.settled",
+        },
+      ],
+      endTask("call-1", "done"),
+      [turnSettled("completed")],
+    ]);
+
+    expect(statusOf(events)).toMatchObject({ status: "completed" });
+  });
+
   it("fails as timed out when the delivered code was settled without being taken", () => {
     const events = eventsOf([
       [turnStarted, runRequested],

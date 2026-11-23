@@ -205,7 +205,11 @@ function lastCodeWentUnused(view: SessionView, turnId: string) {
     (interaction) =>
       interaction.turnId === turnId && isSiteCodeQuestion(interaction.request)
   );
-  return last?.status === "settled" && last.outcome !== "accepted";
+  return (
+    last?.status === "settled" &&
+    last.outcome !== "accepted" &&
+    last.answer === undefined
+  );
 }
 
 // A turn the site task hook stopped at a request it cannot answer, or one a
