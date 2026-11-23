@@ -184,6 +184,7 @@ describe("POST /api/site/logins", () => {
     expect(z.uuid().safeParse(login.loginId).success).toBe(true);
     const [item] = await listVaultItems(owner);
     expect(item).toMatchObject({
+      account: "login.vendor.example",
       createdAt: login.createdAt,
       id: login.loginId,
       kind: "login",

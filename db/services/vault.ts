@@ -206,22 +206,29 @@ export async function saveVaultItem(
   scope: AccessScope,
   input: VaultCreateItem
 ) {
-  await insertVaultItem(scope, input, null);
+  await insertVaultItem(scope, input, null, vaultAccountHint(input));
 }
 
 // A login a connected site saved through the site API, marked with that site.
+// Its account hint names the website alone: the browser worker's model reads
+// hints, and a site's username never reaches a model, not even masked.
 export async function saveSiteLogin(
   scope: AccessScope,
   site: string,
   input: VaultCreateItem
 ) {
-  return insertVaultItem(scope, input, site);
+  const login = parseLoginVaultPayload(input.secret);
+  if (!login || !("origin" in login)) {
+    throw new Error("The saved login is incomplete or invalid.");
+  }
+  return insertVaultItem(scope, input, site, new URL(login.origin).hostname);
 }
 
 async function insertVaultItem(
   scope: AccessScope,
   input: VaultCreateItem,
-  site: string | null
+  site: string | null,
+  account: string
 ) {
   await ensureScope(scope);
   const id = randomUUID();
@@ -230,7 +237,7 @@ async function insertVaultItem(
 
   try {
     await createVaultRecord(scope, {
-      account: vaultAccountHint(input),
+      account,
       createdAt: now,
       id,
       kind: input.kind,

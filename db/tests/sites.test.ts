@@ -354,9 +354,11 @@ describe("site logins", () => {
       ]) {
         expect(listed).not.toContain(secret);
       }
+      // The account hint, which the browser worker reads, names only the
+      // website, never the username, not even masked.
       await expect(listVaultItems(owner)).resolves.toMatchObject([
-        { site: "teemiq" },
-        { site: "teemiq" },
+        { account: "second.example", site: "teemiq" },
+        { account: "first.example", site: "teemiq" },
       ]);
     } finally {
       vi.useRealTimers();

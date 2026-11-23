@@ -146,8 +146,9 @@ A site saves the logins its tasks use through the API. `POST /api/site/logins`
 keeps the sign-in page's origin, a label, the username or email, the password
 and, optionally, an authenticator setup key in the owner's vault, encrypted
 like any saved login and marked with the site that saved it; `/vault` shows
-that site beside the login. The username, password and key are never returned,
-logged or shown to the model. The origin is the `https:` URL of the sign-in
+that site beside the login, and its website where an owner's login shows a
+masked username. The username, password and key are never returned, logged or
+shown to the model. The origin is the `https:` URL of the sign-in
 page, such as `https://login.vendor.com/sign-in`, of which only the origin is
 kept; an IP address, `localhost`, a single-label host or a port is refused. A
 label has 1 to 60 characters, and a site cannot save two logins whose labels
