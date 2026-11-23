@@ -354,9 +354,11 @@ async function interceptedDownload(
         stopped.removeEventListener("abort", onStopped);
         outcome();
       };
+      // A refusal already decided stays the outcome, even when the
+      // connection drops before the request could be failed.
       const fail = (error: Error) => {
         settle(() => {
-          reject(error);
+          reject(refused ?? error);
         });
       };
       const onStopped = () => {
@@ -364,7 +366,8 @@ async function interceptedDownload(
       };
 
       // A refused request is failed before the refusal settles, so it is
-      // never sent, whatever becomes of the tab.
+      // never sent while the connection lives. Chrome lets a held request go
+      // when the connection drops; its URL policy is then the only guard.
       const refuse = async (requestId: string, refusal: SaveRefusal) => {
         refused = refusal;
         held.delete(requestId);

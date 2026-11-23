@@ -781,6 +781,15 @@ describe("save_file redirects", () => {
     expect(sentCommands("Fetch.failRequest")).toHaveLength(1);
   });
 
+  it("keeps off_site when the connection drops before the refused hop is failed", async () => {
+    serve(invoiceUrl, { location: "https://attacker.example/x.pdf" });
+    chrome.dropOn.add("Fetch.failRequest");
+
+    await expect(refusal()).resolves.toBe(offSiteMessage);
+    expect(chrome.openTabs).toBe(0);
+    expect(mocks.saveSiteTaskFile).not.toHaveBeenCalled();
+  });
+
   it("reads off_site when Chrome's URL policy blocks a hop", async () => {
     serve(invoiceUrl, { location: "https://cdn.vendor.example/x.pdf" });
     chrome.blocked.add("cdn.vendor.example");

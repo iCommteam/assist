@@ -345,8 +345,10 @@ when:
   hosts, and so is every redirect, at most 5: the tab bypasses the site's
   service workers, so the browser holds each request before it is sent, and
   `save_file` lets it go only once it has checked it, with Chrome's URL policy
-  checking it too. A hop to any other host is never sent, and the task ends
-  with `off_site`;
+  checking it too. A hop to any other host is not sent, and the task ends
+  with `off_site`. If the browser connection drops in the moment between that
+  check and the browser being told, Chrome lets the held request go, and its
+  URL policy alone stops it;
 - the answer is a `200` whose bytes start with `%PDF-`, of at most 20 MB,
   that arrives within 60 seconds: a larger declared length is refused before
   the bytes are read, and reading stops once they pass 20 MB;
