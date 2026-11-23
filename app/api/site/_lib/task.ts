@@ -1,20 +1,35 @@
-import { ClientError } from "eve/client";
+import { ClientError, SessionNotActiveError } from "eve/client";
 import type { ReceivedEvent } from "eve/events";
 import { z } from "zod";
 import type { siteTasks } from "@db";
-import { findSiteTaskSession, listSiteTasksOfLogin } from "@db/services/sites";
+import {
+  countSiteTaskFiles,
+  findSiteTaskSession,
+  listSiteTasksOfLogin,
+} from "@db/services/sites";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { siteError } from "@app/api/site/_lib/site-auth";
 import { siteEveClient } from "@app/api/site/_lib/eve";
-import { siteTaskStatus } from "@app/api/site/_lib/status";
+import {
+  isOpen,
+  siteTaskLifetimeMs,
+  siteTaskState,
+  siteTaskStatus,
+  type SiteTaskState,
+} from "@app/api/site/_lib/status";
 
 // A session that eve has accepted but not started yet reads as one of these.
 const notReadyStatuses = new Set([404, 409, 425]);
 // eve also answers 404 when the run itself is gone (a lost volume, or a crash
 // before the run was stored). Past this age a 404 no longer means "starting".
 const missingRunGraceMs = 120_000;
-// No site task stays open longer than this.
-const taskLifetimeMs = 45 * 60_000;
+// One open task per login, so its open task is always among its newest.
+const loginTaskLimit = 5;
+
+export type SiteTask = Pick<
+  typeof siteTasks.$inferSelect,
+  "createdAt" | "id" | "sessionId"
+>;
 
 // A task this site created in its owner's workspace. Anything else, including
 // an id that is not a task id, reads as not found.
@@ -38,10 +53,10 @@ export async function lookupSiteTask(
   if (!task) {
     return { ok: false as const, response: siteError(404, "not_found") };
   }
-  return { ok: true as const, task };
+  return { ok: true as const, task: { ...task, id: taskId } };
 }
 
-export async function readSiteTaskEvents(site: string, sessionId: string) {
+async function readSiteTaskEvents(site: string, sessionId: string) {
   const events: ReceivedEvent[] = [];
   const stream = siteEveClient({ op: "read", session: sessionId, site })
     .sessions.attach(sessionId)
@@ -54,67 +69,128 @@ export async function readSiteTaskEvents(site: string, sessionId: string) {
   return events;
 }
 
-// What a site reads for one of its tasks, or 503 while eve cannot say.
+// Where one of this site's tasks stands, or 503 while eve cannot say. A task
+// whose turn still runs past its lifetime reads timed_out once eve has taken
+// the cancel of that turn.
+export async function readSiteTaskState(site: string, task: SiteTask) {
+  let events: ReceivedEvent[];
+  try {
+    events = await readSiteTaskEvents(site, task.sessionId);
+  } catch (error) {
+    return unreadTaskState(
+      site,
+      task,
+      ClientError.is(error) ? error : undefined
+    );
+  }
+  const { openTurn, state } = siteTaskState(events, task.createdAt, Date.now());
+  if (openTurn !== undefined && !isOpen(state)) {
+    const cancelled = await cancelSiteTurn(site, task.sessionId, openTurn);
+    if (!cancelled.ok) return cancelled;
+    console.info("[site] task passed its lifetime and was cancelled", {
+      site,
+    });
+  }
+  return { ok: true as const, openTurn, state };
+}
+
+function unreadTaskState(
+  site: string,
+  task: SiteTask,
+  error: ClientError | undefined
+) {
+  const age = Date.now() - task.createdAt.getTime();
+  if (error?.code === "session_expired") {
+    return readState({ error: "failed", reply: null, status: "failed" });
+  }
+  if (error?.status === 404 && age > missingRunGraceMs) {
+    console.warn("[site] task run is missing", { site });
+    return readState({ error: "failed", reply: null, status: "failed" });
+  }
+  if (error && notReadyStatuses.has(error.status)) {
+    return readState(
+      age >= siteTaskLifetimeMs
+        ? { error: "timed_out", reply: null, status: "failed" }
+        : { status: "running" }
+    );
+  }
+  console.warn("[site] task status unavailable", {
+    error: error?.code ?? "unknown",
+    site,
+  });
+  return { ok: false as const, response: siteError(503, "unavailable") };
+}
+
+function readState(state: SiteTaskState) {
+  return { ok: true as const, openTurn: undefined, state };
+}
+
+// What a site reads for one of its tasks, or 503 while eve or the database
+// cannot say.
 export async function readSiteTaskStatus(
   site: string,
-  task: Pick<typeof siteTasks.$inferSelect, "createdAt" | "sessionId">
+  scope: AccessScope,
+  task: SiteTask
+) {
+  const read = await readSiteTaskState(site, task);
+  if (!read.ok) return read;
+  if (read.state.status !== "completed") {
+    return { ok: true as const, status: siteTaskStatus(read.state, 0) };
+  }
+  let savedFiles: number;
+  try {
+    savedFiles = await countSiteTaskFiles(site, scope, task.id);
+  } catch (error) {
+    console.warn("[site] task files could not be counted", {
+      error: error instanceof Error ? error.name : "unknown",
+      site,
+    });
+    return { ok: false as const, response: siteError(503, "unavailable") };
+  }
+  return { ok: true as const, status: siteTaskStatus(read.state, savedFiles) };
+}
+
+// Cancels the site's own turn. The turn id guards it, so a later turn the
+// owner started in the chat is never stopped; a session that is no longer
+// active has nothing left to stop.
+export async function cancelSiteTurn(
+  site: string,
+  sessionId: string,
+  turnId: string
 ) {
   try {
-    const events = await readSiteTaskEvents(site, task.sessionId);
-    return { ok: true as const, status: siteTaskStatus(events) };
+    await siteEveClient({ op: "cancel", session: sessionId, site })
+      .sessions.attach(sessionId)
+      .cancel({ signal: AbortSignal.timeout(20_000), turnId });
+    return { ok: true as const };
   } catch (error) {
-    if (ClientError.is(error) && error.code === "session_expired") {
-      return {
-        ok: true as const,
-        status: failedTask("The task record has expired."),
-      };
-    }
     if (
-      ClientError.is(error) &&
-      error.status === 404 &&
-      Date.now() - task.createdAt.getTime() > missingRunGraceMs
+      SessionNotActiveError.is(error) &&
+      error.code === "session_not_active"
     ) {
-      console.warn("[site] task run is missing", { site });
-      return {
-        ok: true as const,
-        status: failedTask("The task record is no longer available."),
-      };
+      return { ok: true as const };
     }
-    if (ClientError.is(error) && notReadyStatuses.has(error.status)) {
-      return {
-        ok: true as const,
-        status: {
-          error: null,
-          question: null,
-          questionId: null,
-          reply: null,
-          status: "running" as const,
-        },
-      };
-    }
-    console.warn("[site] task status unavailable", {
-      error: ClientError.is(error) ? error.code : "unknown",
+    console.warn("[site] task could not be cancelled", {
+      error:
+        ClientError.is(error) || SessionNotActiveError.is(error)
+          ? error.code
+          : "unknown",
       site,
     });
     return { ok: false as const, response: siteError(503, "unavailable") };
   }
 }
 
-// This site's task that still runs or waits for a code while pinned to the
-// login, if any, or 503 while one of them cannot be read.
-export async function openTaskOfLogin(
+// The newest tasks this site pinned to the login, newest first, each read as
+// GET /tasks/{id} reads it, so the reads also enforce their lifetime.
+async function readTasksOfLogin(
   site: string,
   scope: AccessScope,
   loginId: string
 ) {
   let tasks: Awaited<ReturnType<typeof listSiteTasksOfLogin>>;
   try {
-    tasks = await listSiteTasksOfLogin(
-      site,
-      scope,
-      loginId,
-      new Date(Date.now() - taskLifetimeMs)
-    );
+    tasks = await listSiteTasksOfLogin(site, scope, loginId, loginTaskLimit);
   } catch (error) {
     console.warn("[site] login tasks lookup failed", {
       error: error instanceof Error ? error.name : "unknown",
@@ -124,27 +200,48 @@ export async function openTaskOfLogin(
   }
   const reads = await Promise.all(
     tasks.map(async (task) => ({
-      read: await readSiteTaskStatus(site, task),
-      taskId: task.id,
+      read: await readSiteTaskState(site, task),
+      task,
     }))
   );
-  const open = reads.find(
-    ({ read }) =>
-      read.ok &&
-      (read.status.status === "running" ||
-        read.status.status === "awaiting-input")
-  );
-  if (open) return { ok: true as const, taskId: open.taskId };
-  for (const { read } of reads) if (!read.ok) return read;
-  return { ok: true as const, taskId: undefined };
+  return { ok: true as const, reads };
 }
 
-function failedTask(error: string) {
-  return {
-    error,
-    question: null,
-    questionId: null,
-    reply: null,
-    status: "failed" as const,
-  };
+// What GET /tasks?loginId lists, or 503 while one of the tasks cannot be read.
+export async function listTasksOfLogin(
+  site: string,
+  scope: AccessScope,
+  loginId: string
+) {
+  const found = await readTasksOfLogin(site, scope, loginId);
+  if (!found.ok) return found;
+  const tasks: {
+    createdAt: string;
+    status: SiteTaskState["status"];
+    taskId: string;
+  }[] = [];
+  for (const { read, task } of found.reads) {
+    if (!read.ok) return read;
+    tasks.push({
+      createdAt: task.createdAt.toISOString(),
+      status: read.state.status,
+      taskId: task.id,
+    });
+  }
+  return { ok: true as const, tasks };
+}
+
+// This site's task that still runs or waits for a code while pinned to the
+// login, if any, or 503 while none is known open and one cannot be read.
+export async function openTaskOfLogin(
+  site: string,
+  scope: AccessScope,
+  loginId: string
+) {
+  const found = await readTasksOfLogin(site, scope, loginId);
+  if (!found.ok) return found;
+  const open = found.reads.find(({ read }) => read.ok && isOpen(read.state));
+  if (open) return { ok: true as const, taskId: open.task.id };
+  for (const { read } of found.reads) if (!read.ok) return read;
+  return { ok: true as const, taskId: undefined };
 }

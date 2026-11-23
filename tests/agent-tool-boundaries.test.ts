@@ -24,6 +24,7 @@ describe("root and worker capability boundaries", () => {
       "messaging.ts",
       "run_browser.ts",
       "schedules.ts",
+      "site_task.ts",
       "vault.ts",
       "web_search.ts",
     ]);

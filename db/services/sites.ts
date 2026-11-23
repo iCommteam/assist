@@ -1,5 +1,5 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
-import { db, siteTasks, user } from "@db";
+import { and, count, desc, eq, sql } from "drizzle-orm";
+import { db, siteTasks, taskFiles, user } from "@db";
 import { siteOwnerEmail } from "@shared/environment/sites";
 import {
   accessScopeForUser,
@@ -51,13 +51,13 @@ export async function recordSiteTask(
   return task.id;
 }
 
-// The tasks this site pinned to a login in this workspace since a time,
-// newest first.
+// The newest tasks this site pinned to a login in this workspace, newest
+// first.
 export async function listSiteTasksOfLogin(
   site: string,
   scope: AccessScope,
   loginId: string,
-  since: Date
+  limit: number
 ) {
   return db
     .select({
@@ -70,11 +70,31 @@ export async function listSiteTasksOfLogin(
       and(
         eq(siteTasks.site, site),
         eq(siteTasks.loginId, loginId),
-        eq(siteTasks.workspaceId, scope.workspaceId),
-        gte(siteTasks.createdAt, since)
+        eq(siteTasks.workspaceId, scope.workspaceId)
       )
     )
-    .orderBy(desc(siteTasks.createdAt));
+    .orderBy(desc(siteTasks.createdAt), desc(siteTasks.id))
+    .limit(limit);
+}
+
+// How many files a task of this site saved, kept or past their seven days
+// until they are purged.
+export async function countSiteTaskFiles(
+  site: string,
+  scope: AccessScope,
+  taskId: string
+) {
+  const [files] = await db
+    .select({ files: count() })
+    .from(taskFiles)
+    .where(
+      and(
+        eq(taskFiles.taskId, taskId),
+        eq(taskFiles.site, site),
+        eq(taskFiles.workspaceId, scope.workspaceId)
+      )
+    );
+  return files?.files ?? 0;
 }
 
 // The session and creation time of a task this site created in this

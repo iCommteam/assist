@@ -196,6 +196,46 @@ describe("site task instructions", () => {
     expect(selected?.content).not.toContain("Pinned login");
   });
 
+  it("tells the coordinator to end every site task through the end tool, with when to use each result", async () => {
+    const selected = await evaluateDynamic(siteTask, siteContext());
+    expect(selected?.content).toContain(
+      "Then always end the task with `end_site_task`, alone in your last step, also when the task failed or stopped early. The site reads that result, not your message"
+    );
+    for (const result of [
+      "- `done`: the work the task asked for is finished.",
+      "- `nothing_found`: the work was possible, but what the task asked for does not exist",
+      "- `login_failed`: the website refused the saved username or password",
+      "- `code_failed`: a one-time code was refused or expired, no code arrived in time, or an authenticator-app code could not be filled.",
+      "- `blocked`: the website wants something only a person can do, such as a CAPTCHA or bot check, a device or push approval, a passkey, or a link sent to a new device, or the task needs a sign-in it has no saved login for.",
+      "- `off_site`: what the task needs, such as the invoice file, is on a website the browser may not open.",
+      "- `failed`: anything else that kept the task from finishing",
+    ]) {
+      expect(selected?.content).toContain(result);
+    }
+    expect(selected?.content).toContain(
+      "decided by what it actually saved, never by the result or the message"
+    );
+    expect(selected?.content).toContain(
+      "The task has 45 minutes in all, its wait for a code included"
+    );
+    expect(selected?.content).not.toContain(
+      "That message is the whole answer the site receives"
+    );
+  });
+
+  it("tells the coordinator of a pinned task which result its own limits end with", async () => {
+    const selected = await evaluateDynamic(siteTask, pinnedSiteContext());
+    expect(selected?.content).toContain(
+      "including a sign-in or billing page on another domain: when what the task needs is there, end the task with `off_site`."
+    );
+    expect(selected?.content).toContain(
+      "An authenticator-app code the vault cannot fill ends the task with `code_failed`"
+    );
+    expect(selected?.content).toContain(
+      "Say in your reply that a pinned site task cannot do it, and end the task with `failed`."
+    );
+  });
+
   it("tells the coordinator of a pinned task its one account, site and limits", async () => {
     const selected = await evaluateDynamic(siteTask, pinnedSiteContext());
     expect(selected?.content).toContain("connected site `teemiq`");

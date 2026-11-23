@@ -5,9 +5,9 @@ import { loginOriginSchema } from "@shared/vault/schema";
 // The site API (Next) calls the co-located eve server with this credential
 // instead of the site's own token. It is signed with a key derived from the
 // server-only BETTER_AUTH_SECRET, so neither a browser nor a site can mint one,
-// and it is bound to one site, one operation and, for a read, one session. A
-// create may pin the task to one saved login, whose origin the API resolved.
-// An answer is bound to one open question of one session.
+// and it is bound to one site, one operation and, for a read or a cancel, one
+// session. A create may pin the task to one saved login, whose origin the API
+// resolved. An answer is bound to one open question of one session.
 const credentialPrefix = "assist-site.v1.";
 const credentialLifetimeMs = 60_000;
 const clockSkewMs = 5_000;
@@ -26,6 +26,11 @@ const siteGrantSchema = z.discriminatedUnion("op", [
   }),
   z.strictObject({
     op: z.literal("read"),
+    session: z.string().min(1).max(512),
+    site: z.string().min(1),
+  }),
+  z.strictObject({
+    op: z.literal("cancel"),
     session: z.string().min(1).max(512),
     site: z.string().min(1),
   }),

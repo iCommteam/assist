@@ -23,6 +23,13 @@ vi.hoisted(() => {
 
 const eve = vi.hoisted(() => ({
   bearers: new Array<() => Promise<string>>(),
+  cancel:
+    vi.fn<
+      (
+        sessionId: string,
+        turnId: string | null | undefined
+      ) => Promise<undefined>
+    >(),
   create:
     vi.fn<
       (input: { message: string }) => Promise<{ session: { id: string } }>
@@ -44,6 +51,8 @@ vi.mock("eve/client", async (importOriginal) => {
   class FakeClient {
     readonly sessions = {
       attach: (sessionId: string) => ({
+        cancel: async (options: { readonly turnId?: string | null }) =>
+          eve.cancel(sessionId, options.turnId),
         async *stream() {
           yield* await eve.read(sessionId);
         },
@@ -86,7 +95,8 @@ const { GET: listLogins, POST: postLogin } =
   await import("@app/api/site/logins/route");
 const { DELETE: removeLogin } =
   await import("@app/api/site/logins/[loginId]/route");
-const { POST: createTask } = await import("@app/api/site/tasks/route");
+const { GET: listTasks, POST: createTask } =
+  await import("@app/api/site/tasks/route");
 const { ClientError } = await import("eve/client");
 
 const client = new PGlite();
@@ -135,6 +145,7 @@ beforeEach(async () => {
   vi.spyOn(console, "info").mockImplementation(() => undefined);
   eve.create.mockResolvedValue({ session: { id: "wrun_pinned" } });
   eve.read.mockResolvedValue(completedTask());
+  eve.cancel.mockResolvedValue(undefined);
   kernel.deleteProfile.mockResolvedValue();
   await database.delete(schema.siteTasks);
   await database.delete(schema.vaultItems);
@@ -523,15 +534,10 @@ describe("DELETE /api/site/logins/{loginId}", () => {
     }
   );
 
-  it("removes a login whose tasks finished, belong to another site or are past their lifetime", async () => {
+  it("removes a login whose tasks finished or belong to another site", async () => {
     const { loginId } = await saveLogin(teemiqToken, validLogin({}));
     await recordSiteTask("teemiq", owner, "wrun_done", loginId);
     await recordSiteTask("agents", owner, "wrun_agents", loginId);
-    const old = await recordSiteTask("teemiq", owner, "wrun_old", loginId);
-    await database
-      .update(schema.siteTasks)
-      .set({ createdAt: new Date(Date.now() - 46 * 60_000) })
-      .where(eq(schema.siteTasks.id, old));
     eve.read.mockImplementation(async (sessionId) =>
       sessionId === "wrun_done" ? completedTask() : runningTask()
     );
@@ -542,6 +548,53 @@ describe("DELETE /api/site/logins/{loginId}", () => {
 
     expect(response.status).toBe(204);
     expect(eve.read).toHaveBeenCalledExactlyOnceWith("wrun_done");
+    expect(eve.cancel).not.toHaveBeenCalled();
+  });
+
+  it("cancels a task of the login still open past its lifetime, then removes the login", async () => {
+    const { loginId } = await saveLogin(teemiqToken, validLogin({}));
+    const old = await recordSiteTask("teemiq", owner, "wrun_old", loginId);
+    await database
+      .update(schema.siteTasks)
+      .set({ createdAt: new Date(Date.now() - 46 * 60_000) })
+      .where(eq(schema.siteTasks.id, old));
+    eve.read.mockResolvedValue(runningTask());
+
+    const response = await call(
+      removeLogin(...deleteRequest(teemiqToken, loginId))
+    );
+
+    expect(response.status).toBe(204);
+    expect(eve.cancel).toHaveBeenCalledExactlyOnceWith("wrun_old", "turn_0");
+    await expect(listVaultItems(owner)).resolves.toEqual([]);
+  });
+
+  it("waits for a start of the same login, then finds its task open", async () => {
+    const { loginId } = await saveLogin(teemiqToken, validLogin({}));
+    eve.read.mockResolvedValue(runningTask());
+    let accept: (() => void) | undefined;
+    eve.create.mockImplementation(
+      async () =>
+        new Promise((resolve) => {
+          accept = () => {
+            resolve({ session: { id: "wrun_started" } });
+          };
+        })
+    );
+
+    const started = call(createTask(taskRequest(teemiqToken, loginId)));
+    const removed = call(removeLogin(...deleteRequest(teemiqToken, loginId)));
+    await vi.waitFor(() => {
+      expect(accept).toBeDefined();
+    });
+    accept?.();
+
+    expect((await started).status).toBe(202);
+    const refused = await removed;
+    expect(refused.status).toBe(409);
+    await expect(refused.json()).resolves.toEqual({ error: "login_busy" });
+    await expect(listVaultItems(owner)).resolves.toHaveLength(1);
+    expect(kernel.deleteProfile).not.toHaveBeenCalled();
   });
 
   it("answers 503 and keeps the login while eve cannot say whether its task is open", async () => {
@@ -604,6 +657,81 @@ describe("POST /api/site/tasks with a saved login", () => {
         .select({ loginId: schema.siteTasks.loginId })
         .from(schema.siteTasks)
     ).toEqual([{ loginId }]);
+  });
+});
+
+describe("one open task per saved login", () => {
+  it("answers a second start for the login with the open task's id", async () => {
+    const { loginId } = await saveLogin(teemiqToken, validLogin({}));
+    const first = await call(createTask(taskRequest(teemiqToken, loginId)));
+    const { taskId } = z.object({ taskId: z.uuid() }).parse(await first.json());
+    eve.read.mockResolvedValue(awaitingCode());
+
+    const second = await call(createTask(taskRequest(teemiqToken, loginId)));
+
+    expect(second.status).toBe(409);
+    await expect(second.json()).resolves.toEqual({
+      error: "login_busy",
+      taskId,
+    });
+    expect(eve.create).toHaveBeenCalledOnce();
+  });
+
+  it("starts the next task once the open one has ended", async () => {
+    const { loginId } = await saveLogin(teemiqToken, validLogin({}));
+    eve.create
+      .mockResolvedValueOnce({ session: { id: "wrun_first" } })
+      .mockResolvedValueOnce({ session: { id: "wrun_next" } });
+    await call(createTask(taskRequest(teemiqToken, loginId)));
+    eve.read.mockResolvedValue(completedTask());
+
+    const next = await call(createTask(taskRequest(teemiqToken, loginId)));
+
+    expect(next.status).toBe(202);
+    expect(eve.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("lists only this site's tasks pinned to the login, newest first", async () => {
+    const { loginId } = await saveLogin(teemiqToken, validLogin({}));
+    const older = await recordSiteTask("teemiq", owner, "wrun_a", loginId);
+    await database
+      .update(schema.siteTasks)
+      .set({ createdAt: new Date(Date.now() - 10 * 60_000) })
+      .where(eq(schema.siteTasks.id, older));
+    const newer = await recordSiteTask("teemiq", owner, "wrun_b", loginId);
+    await recordSiteTask("agents", owner, "wrun_c", loginId);
+    await recordSiteTask("teemiq", owner, "wrun_d", undefined);
+    eve.read.mockImplementation(async (sessionId) =>
+      sessionId === "wrun_b" ? runningTask() : completedTask()
+    );
+
+    const response = await call(
+      listTasks(
+        new Request(
+          `https://assist.example/api/site/tasks?loginId=${loginId}`,
+          {
+            headers: { authorization: `Bearer ${teemiqToken}` },
+          }
+        )
+      )
+    );
+
+    expect(response.status).toBe(200);
+    const { tasks } = z
+      .object({
+        tasks: z.array(
+          z.strictObject({
+            createdAt: z.iso.datetime(),
+            status: z.string(),
+            taskId: z.string(),
+          })
+        ),
+      })
+      .parse(await response.json());
+    expect(tasks.map(({ status, taskId }) => ({ status, taskId }))).toEqual([
+      { status: "running", taskId: newer },
+      { status: "completed", taskId: older },
+    ]);
   });
 });
 

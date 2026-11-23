@@ -15,7 +15,7 @@ const publicPaths = new Set([
 // cookies, so it skips the sign-in redirect and the Origin check. Only its
 // exact routes match.
 const siteApiPath =
-  /^\/api\/site\/(?:ping|logins(?:\/[^/]+)?|tasks(?:\/[^/]+(?:\/input)?)?)$/u;
+  /^\/api\/site\/(?:ping|logins(?:\/[^/]+)?|tasks(?:\/[^/]+(?:\/(?:input|cancel))?)?)$/u;
 
 const safeMethods = new Set(["GET", "HEAD"]);
 

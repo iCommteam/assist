@@ -3,6 +3,7 @@ import type { Fact, ReceivedEvent } from "eve/events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ensureScope } from "@db/services/scope";
 import type {
+  countSiteTaskFiles,
   findSiteTaskSession,
   listSiteTasksOfLogin,
   recordSiteTask,
@@ -17,6 +18,13 @@ import { eventsOf } from "@tests/helpers/session-view";
 const eve = vi.hoisted(() => ({
   bearers: new Array<() => Promise<string>>(),
   baseUrls: new Array<string>(),
+  cancel:
+    vi.fn<
+      (
+        sessionId: string,
+        turnId: string | null | undefined
+      ) => Promise<undefined>
+    >(),
   create:
     vi.fn<
       (input: { message: string }) => Promise<{ session: { id: string } }>
@@ -31,6 +39,7 @@ const eve = vi.hoisted(() => ({
     >(),
 }));
 const services = vi.hoisted(() => ({
+  countSiteTaskFiles: vi.fn<typeof countSiteTaskFiles>(),
   ensureScope: vi.fn<typeof ensureScope>(),
   findSiteTaskSession: vi.fn<typeof findSiteTaskSession>(),
   listSiteTasksOfLogin: vi.fn<typeof listSiteTasksOfLogin>(),
@@ -44,6 +53,8 @@ vi.mock("eve/client", async (importOriginal) => {
   class FakeClient {
     readonly sessions = {
       attach: (sessionId: string) => ({
+        cancel: async (options: { readonly turnId?: string | null }) =>
+          eve.cancel(sessionId, options.turnId),
         respond: async (
           answers: readonly { interactionId: string; text?: string }[]
         ) => eve.respond(sessionId, answers),
@@ -66,6 +77,7 @@ vi.mock("eve/client", async (importOriginal) => {
 });
 vi.mock("@db/services/scope", () => ({ ensureScope: services.ensureScope }));
 vi.mock("@db/services/sites", () => ({
+  countSiteTaskFiles: services.countSiteTaskFiles,
   findSiteTaskSession: services.findSiteTaskSession,
   listSiteTasksOfLogin: services.listSiteTasksOfLogin,
   recordSiteTask: services.recordSiteTask,
@@ -76,11 +88,14 @@ vi.mock("@db/services/vault", () => ({
 }));
 
 const { GET: ping } = await import("@app/api/site/ping/route");
-const { POST: createTask } = await import("@app/api/site/tasks/route");
+const { GET: listTasks, POST: createTask } =
+  await import("@app/api/site/tasks/route");
 const { GET: readTask } = await import("@app/api/site/tasks/[taskId]/route");
 const { POST: sendInput } =
   await import("@app/api/site/tasks/[taskId]/input/route");
-const { ClientError } = await import("eve/client");
+const { POST: cancelTask } =
+  await import("@app/api/site/tasks/[taskId]/cancel/route");
+const { ClientError, SessionNotActiveError } = await import("eve/client");
 
 const teemiqToken = "teemiq-test-token-0123456789abcdef";
 const agentsToken = "agents-test-token-0123456789abcdef";
@@ -121,9 +136,12 @@ beforeEach(() => {
   services.readSiteLoginOrigin.mockResolvedValue(
     "https://login.vendor.example"
   );
+  services.listSiteTasksOfLogin.mockResolvedValue([]);
+  services.countSiteTaskFiles.mockResolvedValue(0);
   eve.create.mockResolvedValue({ session: { id: "wrun_1" } });
   eve.read.mockResolvedValue([]);
   eve.respond.mockResolvedValue(undefined);
+  eve.cancel.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -529,8 +547,17 @@ async function startEveryMinute(count: number) {
   return statuses;
 }
 
+const runningStatus = {
+  error: null,
+  outcome: null,
+  question: null,
+  questionId: null,
+  reply: null,
+  status: "running",
+};
+
 describe("GET /api/site/tasks/{taskId}", () => {
-  it("returns the agent's reply once the task completes", async () => {
+  it("returns the agent's reply once the task completes, finding nothing without files", async () => {
     eve.read.mockResolvedValue(completedPong());
 
     const response = await readTask(
@@ -539,8 +566,10 @@ describe("GET /api/site/tasks/{taskId}", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     await expect(response.json()).resolves.toEqual({
       error: null,
+      outcome: "nothing_found",
       question: null,
       questionId: null,
       reply: "pong",
@@ -552,12 +581,61 @@ describe("GET /api/site/tasks/{taskId}", () => {
       owner,
       taskId
     );
+    expect(services.countSiteTaskFiles).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      taskId
+    );
     expect(eve.read).toHaveBeenCalledExactlyOnceWith("wrun_1");
+    expect(eve.cancel).not.toHaveBeenCalled();
     expect(await grantOfLastClient()).toEqual({
       op: "read",
       session: "wrun_1",
       site: "teemiq",
     });
+  });
+
+  it("reports files once the task saved at least one, whatever the agent said", async () => {
+    eve.read.mockResolvedValue(completedPong());
+    services.countSiteTaskFiles.mockResolvedValue(2);
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      outcome: "files",
+      status: "completed",
+    });
+  });
+
+  it("counts no files for a task that has not completed", async () => {
+    eve.read.mockResolvedValue(runningTask());
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ...runningStatus,
+      taskId,
+    });
+    expect(services.countSiteTaskFiles).not.toHaveBeenCalled();
+  });
+
+  it("answers 503 when the task's files cannot be counted", async () => {
+    eve.read.mockResolvedValue(completedPong());
+    services.countSiteTaskFiles.mockRejectedValue(new Error("pool timeout"));
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "unavailable" });
   });
 
   it("answers 404 for another site's task", async () => {
@@ -600,38 +678,12 @@ describe("GET /api/site/tasks/{taskId}", () => {
 
   it.each([
     // A task created just now whose run eve has not stored yet.
-    [
-      404,
-      "{}",
-      {
-        error: null,
-        question: null,
-        questionId: null,
-        reply: null,
-        status: "running",
-      },
-    ],
-    [
-      409,
-      JSON.stringify({ code: "session_not_ready" }),
-      {
-        error: null,
-        question: null,
-        questionId: null,
-        reply: null,
-        status: "running",
-      },
-    ],
+    [404, "{}", runningStatus],
+    [409, JSON.stringify({ code: "session_not_ready" }), runningStatus],
     [
       410,
       JSON.stringify({ code: "session_expired" }),
-      {
-        error: "The task record has expired.",
-        question: null,
-        questionId: null,
-        reply: null,
-        status: "failed",
-      },
+      { ...runningStatus, error: "failed", status: "failed" },
     ],
   ])("maps an eve %i to a task status", async (status, body, expected) => {
     eve.read.mockRejectedValue(new ClientError(status, body));
@@ -657,11 +709,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
       params(taskId)
     );
     await expect(starting.json()).resolves.toEqual({
-      error: null,
-      question: null,
-      questionId: null,
-      reply: null,
-      status: "running",
+      ...runningStatus,
       taskId,
     });
 
@@ -677,10 +725,8 @@ describe("GET /api/site/tasks/{taskId}", () => {
 
     expect(missing.status).toBe(200);
     await expect(missing.json()).resolves.toEqual({
-      error: "The task record is no longer available.",
-      question: null,
-      questionId: null,
-      reply: null,
+      ...runningStatus,
+      error: "failed",
       status: "failed",
       taskId,
     });
@@ -702,6 +748,143 @@ describe("GET /api/site/tasks/{taskId}", () => {
   });
 });
 
+describe("GET /api/site/tasks/{taskId} past the task's lifetime", () => {
+  it.each([
+    ["runs", () => runningTask()],
+    ["waits for a code", () => awaitingCode()],
+  ])(
+    "cancels a task that still %s at 45 minutes and reads it timed out",
+    async (_case, events) => {
+      eve.read.mockResolvedValue(events());
+      services.findSiteTaskSession.mockResolvedValue({
+        createdAt: new Date(Date.now() - 45 * 60_000),
+        sessionId: "wrun_1",
+      });
+
+      const response = await readTask(
+        siteRequest(`/tasks/${taskId}`, teemiqToken),
+        params(taskId)
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        ...runningStatus,
+        error: "timed_out",
+        status: "failed",
+        taskId,
+      });
+      expect(eve.cancel).toHaveBeenCalledExactlyOnceWith("wrun_1", "turn_0");
+      expect(await grantOfLastClient()).toEqual({
+        op: "cancel",
+        session: "wrun_1",
+        site: "teemiq",
+      });
+      expect(console.info).toHaveBeenCalledWith(
+        "[site] task passed its lifetime and was cancelled",
+        { site: "teemiq" }
+      );
+    }
+  );
+
+  it("does not cancel a task one moment inside its lifetime", async () => {
+    eve.read.mockResolvedValue(runningTask());
+    services.findSiteTaskSession.mockResolvedValue({
+      createdAt: new Date(Date.now() - 45 * 60_000 + 1),
+      sessionId: "wrun_1",
+    });
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      status: "running",
+    });
+    expect(eve.cancel).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel a task that ended inside its lifetime", async () => {
+    eve.read.mockResolvedValue(completedPong());
+    services.findSiteTaskSession.mockResolvedValue({
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      sessionId: "wrun_1",
+    });
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      reply: "pong",
+      status: "completed",
+    });
+    expect(eve.cancel).not.toHaveBeenCalled();
+  });
+
+  it("reads timed out without a cancel when eve no longer runs the session", async () => {
+    eve.read.mockResolvedValue(runningTask());
+    eve.cancel.mockRejectedValue(new SessionNotActiveError());
+    services.findSiteTaskSession.mockResolvedValue({
+      createdAt: new Date(Date.now() - 50 * 60_000),
+      sessionId: "wrun_1",
+    });
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      error: "timed_out",
+      status: "failed",
+    });
+  });
+
+  it("answers 503 while eve cannot take the cancel, so the read is retried", async () => {
+    eve.read.mockResolvedValue(runningTask());
+    eve.cancel.mockRejectedValue(new ClientError(500, "{}"));
+    services.findSiteTaskSession.mockResolvedValue({
+      createdAt: new Date(Date.now() - 50 * 60_000),
+      sessionId: "wrun_1",
+    });
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "unavailable" });
+    expect(console.warn).toHaveBeenCalledWith(
+      "[site] task could not be cancelled",
+      { error: "http_error", site: "teemiq" }
+    );
+  });
+
+  it("reads a task eve has not started after 45 minutes as timed out", async () => {
+    eve.read.mockRejectedValue(
+      new ClientError(409, JSON.stringify({ code: "session_not_ready" }))
+    );
+    services.findSiteTaskSession.mockResolvedValue({
+      createdAt: new Date(Date.now() - 45 * 60_000),
+      sessionId: "wrun_1",
+    });
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      error: "timed_out",
+      status: "failed",
+    });
+    expect(eve.cancel).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /api/site/tasks/{taskId} while the worker waits for a code", () => {
   it("awaits input with the worker's question", async () => {
     eve.read.mockResolvedValue(awaitingCode());
@@ -713,6 +896,7 @@ describe("GET /api/site/tasks/{taskId} while the worker waits for a code", () =>
 
     await expect(response.json()).resolves.toEqual({
       error: null,
+      outcome: null,
       question:
         'Enter the one-time code that login.vendor.example just sent by email for the saved login "Vendor".',
       questionId: "interaction-1",
@@ -947,6 +1131,489 @@ describe("POST /api/site/tasks/{taskId}/input", () => {
     expect(eve.respond).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /api/site/tasks/{taskId}/input past the task's lifetime", () => {
+  it("answers 409 not_waiting for a code question older than the task's lifetime, cancelling the task", async () => {
+    eve.read.mockResolvedValue(awaitingCode());
+    services.findSiteTaskSession.mockResolvedValue({
+      createdAt: new Date(Date.now() - 46 * 60_000),
+      sessionId: "wrun_1",
+    });
+
+    const response = await sendInput(
+      inputRequest(teemiqToken, JSON.stringify({ text: "482913" })),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "not_waiting" });
+    expect(eve.respond).not.toHaveBeenCalled();
+    expect(eve.cancel).toHaveBeenCalledOnce();
+  });
+
+  it("answers 409 not_waiting when eve says the session is no longer active", async () => {
+    eve.read.mockResolvedValue(awaitingCode());
+    eve.respond.mockRejectedValue(new SessionNotActiveError());
+
+    const response = await sendInput(
+      inputRequest(teemiqToken, JSON.stringify({ text: "482913" })),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "not_waiting" });
+  });
+});
+
+const loginTask = (id: string, sessionId: string, minutesAgo = 1) => ({
+  createdAt: new Date(Date.now() - minutesAgo * 60_000),
+  id,
+  sessionId,
+});
+const openTaskId = "00000000-0000-4000-8000-0000000000aa";
+const olderTaskId = "00000000-0000-4000-8000-0000000000bb";
+
+describe("POST /api/site/tasks one task per login", () => {
+  it("answers 409 login_busy with the open task of the login, starting nothing", async () => {
+    services.listSiteTasksOfLogin.mockResolvedValue([
+      loginTask(openTaskId, "wrun_open"),
+      loginTask(olderTaskId, "wrun_done", 30),
+    ]);
+    eve.read.mockImplementation(async (sessionId) =>
+      sessionId === "wrun_open" ? awaitingCode() : completedPong()
+    );
+
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, {
+        loginId: "login-1",
+        message: "Fetch the October invoice.",
+      })
+    );
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({
+      error: "login_busy",
+      taskId: openTaskId,
+    });
+    expect(services.listSiteTasksOfLogin).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      "login-1",
+      5
+    );
+    expect(eve.create).not.toHaveBeenCalled();
+    expect(services.recordSiteTask).not.toHaveBeenCalled();
+  });
+
+  it("does not count a busy refusal toward the rate cap", async () => {
+    services.listSiteTasksOfLogin.mockResolvedValue([
+      loginTask(openTaskId, "wrun_open"),
+    ]);
+    eve.read.mockResolvedValue(runningTask());
+
+    const refused = await Promise.all(
+      Array.from({ length: 11 }, async () =>
+        createTask(
+          siteRequest("/tasks", teemiqToken, {
+            loginId: "login-1",
+            message: "hello",
+          })
+        )
+      )
+    );
+
+    expect(refused.map(({ status }) => status)).toEqual(
+      Array.from({ length: 11 }, () => 409)
+    );
+    expect((await startTask(teemiqToken)).status).toBe(202);
+  });
+
+  it("starts a task once every earlier task of the login has ended", async () => {
+    services.listSiteTasksOfLogin.mockResolvedValue([
+      loginTask(olderTaskId, "wrun_done", 10),
+    ]);
+    eve.read.mockResolvedValue(completedPong());
+
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, { loginId: "login-1", message: "hi" })
+    );
+
+    expect(response.status).toBe(202);
+    expect(eve.cancel).not.toHaveBeenCalled();
+  });
+
+  it("cancels an open task of the login past its lifetime, then starts the new one", async () => {
+    services.listSiteTasksOfLogin.mockResolvedValue([
+      loginTask(olderTaskId, "wrun_stale", 50),
+    ]);
+    eve.read.mockResolvedValue(runningTask());
+
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, { loginId: "login-1", message: "hi" })
+    );
+
+    expect(response.status).toBe(202);
+    expect(eve.cancel).toHaveBeenCalledExactlyOnceWith("wrun_stale", "turn_0");
+    expect(eve.create).toHaveBeenCalledOnce();
+  });
+
+  it("lets only one of two starts at once for the same login run", async () => {
+    // The task the first start records reads as running for the second.
+    services.listSiteTasksOfLogin.mockImplementation(async () =>
+      services.recordSiteTask.mock.calls.length > 0
+        ? [loginTask(taskId, "wrun_1")]
+        : []
+    );
+    eve.read.mockResolvedValue(runningTask());
+
+    const statuses = await Promise.all(
+      [0, 1].map(async () =>
+        createTask(
+          siteRequest("/tasks", teemiqToken, {
+            loginId: "login-1",
+            message: "hello",
+          })
+        )
+      )
+    );
+
+    expect(statuses.map(({ status }) => status)).toEqual([202, 409]);
+    await expect(statuses[1]?.json()).resolves.toEqual({
+      error: "login_busy",
+      taskId,
+    });
+    expect(eve.create).toHaveBeenCalledOnce();
+  });
+
+  it("answers 409 while one task is open although another cannot be read", async () => {
+    services.listSiteTasksOfLogin.mockResolvedValue([
+      loginTask(openTaskId, "wrun_open"),
+      loginTask(olderTaskId, "wrun_unknown", 20),
+    ]);
+    eve.read.mockImplementation(async (sessionId) => {
+      if (sessionId === "wrun_unknown") throw new ClientError(500, "{}");
+      return runningTask();
+    });
+
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, { loginId: "login-1", message: "hi" })
+    );
+
+    expect(response.status).toBe(409);
+  });
+
+  it("answers 503 and starts nothing while the login's tasks cannot be read", async () => {
+    services.listSiteTasksOfLogin.mockResolvedValue([
+      loginTask(olderTaskId, "wrun_unknown"),
+    ]);
+    eve.read.mockRejectedValue(new ClientError(500, "{}"));
+
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, { loginId: "login-1", message: "hi" })
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "unavailable" });
+    expect(eve.create).not.toHaveBeenCalled();
+  });
+
+  it("answers 503 and starts nothing while the database cannot list them", async () => {
+    services.listSiteTasksOfLogin.mockRejectedValue(new Error("pool timeout"));
+
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, { loginId: "login-1", message: "hi" })
+    );
+
+    expect(response.status).toBe(503);
+    expect(eve.create).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "[site] login tasks lookup failed",
+      { error: "Error", site: "teemiq" }
+    );
+  });
+
+  it("checks no other task for a task without a pin", async () => {
+    expect((await startTask(teemiqToken)).status).toBe(202);
+    expect(services.listSiteTasksOfLogin).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/site/tasks?loginId", () => {
+  it("lists the login's tasks newest first, each with its status and start time", async () => {
+    const newer = loginTask(openTaskId, "wrun_open", 2);
+    const older = loginTask(olderTaskId, "wrun_done", 30);
+    services.listSiteTasksOfLogin.mockResolvedValue([newer, older]);
+    eve.read.mockImplementation(async (sessionId) =>
+      sessionId === "wrun_open" ? awaitingCode() : completedPong()
+    );
+
+    const response = await listTasks(
+      siteRequest("/tasks?loginId=login-1", teemiqToken)
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({
+      tasks: [
+        {
+          createdAt: newer.createdAt.toISOString(),
+          status: "awaiting-input",
+          taskId: openTaskId,
+        },
+        {
+          createdAt: older.createdAt.toISOString(),
+          status: "completed",
+          taskId: olderTaskId,
+        },
+      ],
+    });
+    expect(services.listSiteTasksOfLogin).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      "login-1",
+      5
+    );
+    expect(services.countSiteTaskFiles).not.toHaveBeenCalled();
+  });
+
+  it("lists nothing for a login this site has no task of", async () => {
+    const response = await listTasks(
+      siteRequest("/tasks?loginId=login-other", agentsToken)
+    );
+
+    await expect(response.json()).resolves.toEqual({ tasks: [] });
+    expect(services.listSiteTasksOfLogin).toHaveBeenCalledExactlyOnceWith(
+      "agents",
+      owner,
+      "login-other",
+      5
+    );
+  });
+
+  it("cancels a listed task past its lifetime and lists it as failed", async () => {
+    services.listSiteTasksOfLogin.mockResolvedValue([
+      loginTask(olderTaskId, "wrun_stale", 50),
+    ]);
+    eve.read.mockResolvedValue(runningTask());
+
+    const response = await listTasks(
+      siteRequest("/tasks?loginId=login-1", teemiqToken)
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      tasks: [{ status: "failed", taskId: olderTaskId }],
+    });
+    expect(eve.cancel).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["no loginId", "/tasks"],
+    ["an empty loginId", "/tasks?loginId="],
+    ["a loginId over 200 characters", `/tasks?loginId=${"x".repeat(201)}`],
+  ])("refuses %s with 400 before any lookup", async (_case, path) => {
+    const response = await listTasks(siteRequest(path, teemiqToken));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "invalid_request",
+    });
+    expect(services.listSiteTasksOfLogin).not.toHaveBeenCalled();
+  });
+
+  it("answers 503 while one of the tasks cannot be read", async () => {
+    services.listSiteTasksOfLogin.mockResolvedValue([
+      loginTask(olderTaskId, "wrun_unknown"),
+    ]);
+    eve.read.mockRejectedValue(new ClientError(500, "{}"));
+
+    const response = await listTasks(
+      siteRequest("/tasks?loginId=login-1", teemiqToken)
+    );
+
+    expect(response.status).toBe(503);
+  });
+
+  it("refuses a wrong token with 401", async () => {
+    const response = await listTasks(
+      siteRequest(
+        "/tasks?loginId=login-1",
+        "not-a-configured-site-token-0123456789"
+      )
+    );
+
+    expect(response.status).toBe(401);
+    expect(services.listSiteTasksOfLogin).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/site/tasks/{taskId}/cancel", () => {
+  it.each([
+    ["runs", () => runningTask()],
+    ["waits for a code", () => awaitingCode()],
+  ])("cancels the site's turn of a task that %s", async (_case, events) => {
+    eve.read.mockResolvedValue(events());
+
+    const response = await cancelTask(
+      cancelRequest(teemiqToken),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({ taskId });
+    expect(eve.cancel).toHaveBeenCalledExactlyOnceWith("wrun_1", "turn_0");
+    expect(await grantOfLastClient()).toEqual({
+      op: "cancel",
+      session: "wrun_1",
+      site: "teemiq",
+    });
+    expect(console.info).toHaveBeenCalledWith("[site] task cancelled", {
+      site: "teemiq",
+    });
+  });
+
+  it("reads the task cancelled once eve has stopped its turn", async () => {
+    eve.read.mockResolvedValue(cancelledTask());
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      error: "cancelled",
+      status: "failed",
+    });
+  });
+
+  it.each([
+    ["has completed", () => completedPong()],
+    ["was cancelled before", () => cancelledTask()],
+  ])(
+    "answers 202 and leaves a task that %s as it is",
+    async (_case, events) => {
+      eve.read.mockResolvedValue(events());
+
+      const response = await cancelTask(
+        cancelRequest(teemiqToken),
+        params(taskId)
+      );
+
+      expect(response.status).toBe(202);
+      await expect(response.json()).resolves.toEqual({ taskId });
+      expect(eve.cancel).not.toHaveBeenCalled();
+    }
+  );
+
+  it("answers 202 when eve no longer runs the session", async () => {
+    eve.read.mockResolvedValue(runningTask());
+    eve.cancel.mockRejectedValue(new SessionNotActiveError());
+
+    const response = await cancelTask(
+      cancelRequest(teemiqToken),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(202);
+  });
+
+  it.each([
+    ["has no turn yet", () => eventsOf([])],
+    ["eve has not started", () => new ClientError(404, "{}")],
+  ])(
+    "answers 503 for a task whose run %s, so the site retries",
+    async (_case, state) => {
+      const events = state();
+      if (events instanceof Error) eve.read.mockRejectedValue(events);
+      else eve.read.mockResolvedValue(events);
+
+      const response = await cancelTask(
+        cancelRequest(teemiqToken),
+        params(taskId)
+      );
+
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ error: "unavailable" });
+      expect(eve.cancel).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ["eve cannot take the cancel", new ClientError(500, "{}")],
+    [
+      "the session is still starting",
+      new SessionNotActiveError({ retryable: true }),
+    ],
+  ])("answers 503 when %s", async (_case, error) => {
+    eve.read.mockResolvedValue(runningTask());
+    eve.cancel.mockRejectedValue(error);
+
+    const response = await cancelTask(
+      cancelRequest(teemiqToken),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "unavailable" });
+  });
+
+  it("answers 404 for another site's task, without reading eve", async () => {
+    services.findSiteTaskSession.mockResolvedValue(undefined);
+
+    const response = await cancelTask(
+      cancelRequest(agentsToken),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "not_found" });
+    expect(eve.read).not.toHaveBeenCalled();
+    expect(eve.cancel).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 for an id that is not a task id, without a lookup", async () => {
+    const response = await cancelTask(
+      cancelRequest(teemiqToken, "wrun_1"),
+      params("wrun_1")
+    );
+
+    expect(response.status).toBe(404);
+    expect(services.findSiteTaskSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses a missing token with 401", async () => {
+    const response = await cancelTask(
+      new Request(`https://assist.example/api/site/tasks/${taskId}/cancel`, {
+        method: "POST",
+      }),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(401);
+    expect(services.findSiteTaskSession).not.toHaveBeenCalled();
+  });
+});
+
+function cancelRequest(token: string, id = taskId) {
+  return new Request(`https://assist.example/api/site/tasks/${id}/cancel`, {
+    headers: { authorization: `Bearer ${token}` },
+    method: "POST",
+  });
+}
+
+function cancelledTask() {
+  return eventsOf([
+    turnStartedFacts,
+    [
+      {
+        data: { outcome: "cancelled", turnId: "turn_0" },
+        scope: { turnId: "turn_0" },
+        type: "turn.settled",
+      },
+    ],
+  ]);
+}
 
 function inputRequest(token: string, body: string | undefined, id = taskId) {
   const init: RequestInit = {

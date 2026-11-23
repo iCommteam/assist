@@ -19,11 +19,12 @@ import personalInfoMemory from "@agent/memory/personal_info";
 import workstreamMemory from "@agent/memory/workstreams";
 import messaging from "@agent/tools/messaging";
 import schedules from "@agent/tools/schedules";
+import siteTask from "@agent/tools/site_task";
 import vault from "@agent/tools/vault";
 
 const member = accessScopeForUser("better-auth:user-1");
 
-const groupedTools = [messaging, schedules, vault];
+const groupedTools = [messaging, schedules, siteTask, vault];
 
 describe("authored mode capability matrix", () => {
   it("gives interactive turns the authored coordinator capabilities", async () => {
@@ -56,8 +57,9 @@ describe("authored mode capability matrix", () => {
     ]);
   });
 
-  it("gives site tasks no memory tools, so a page cannot rewrite the owner's details or notes", async () => {
+  it("gives site tasks no memory tools, so a page cannot rewrite the owner's details or notes, and the end tool only them", async () => {
     expect(await authoredCapabilities("assist-site", "teemiq")).toEqual([
+      "end_site_task",
       "react_to_message",
       "request_vault_import",
       "request_vault_setup",

@@ -1,7 +1,21 @@
-import type { Fact } from "eve/events";
+import type { Fact, ReceivedEvent } from "eve/events";
 import { describe, expect, it } from "vitest";
-import { awaitedSiteCode, siteTaskStatus } from "@app/api/site/_lib/status";
+import { siteTaskState, siteTaskStatus } from "@app/api/site/_lib/status";
 import { eventsOf } from "@tests/helpers/session-view";
+
+// eventsOf stamps every line at this time, when the task was created.
+const createdAt = new Date("2026-01-01T00:00:00.000Z");
+const minute = 60_000;
+
+function statusOf(
+  events: readonly ReceivedEvent[],
+  { now = createdAt.getTime() + minute, savedFiles = 0 } = {}
+) {
+  return siteTaskStatus(
+    siteTaskState(events, createdAt, now).state,
+    savedFiles
+  );
+}
 
 const turnStarted: Fact = {
   data: {
@@ -18,24 +32,47 @@ const runRequested: Fact = {
   type: "model.requested",
 };
 
-function sendMessage(callId: string, output: Record<string, string>): Fact[] {
+function toolCall(
+  callId: string,
+  name: string,
+  output: Record<string, string>,
+  { outcome = "completed", run = "run-1", turn = "turn_0" } = {}
+): Fact[] {
   return [
     {
       data: {
         callId,
-        capability: { kind: "tool", name: "send_message" },
+        capability: { kind: "tool", name },
         input: output,
-        owner: { runId: "run-1" },
+        owner: { runId: run },
       },
-      scope: { runId: "run-1", turnId: "turn_0" },
+      scope: { runId: run, turnId: turn },
       type: "call.requested",
     },
-    {
-      data: { callId, outcome: "completed", output },
-      scope: { runId: "run-1", turnId: "turn_0" },
-      type: "call.settled",
-    },
+    outcome === "completed"
+      ? {
+          data: { callId, outcome: "completed", output },
+          scope: { runId: run, turnId: turn },
+          type: "call.settled",
+        }
+      : {
+          data: {
+            callId,
+            error: { code: "TOOL_FAILED", message: "failed" },
+            outcome: "failed",
+          },
+          scope: { runId: run, turnId: turn },
+          type: "call.settled",
+        },
   ];
+}
+
+function sendMessage(callId: string, output: Record<string, string>) {
+  return toolCall(callId, "send_message", output);
+}
+
+function endTask(callId: string, result: string, options = {}) {
+  return toolCall(callId, "end_site_task", { result }, options);
 }
 
 function turnSettled(outcome: "cancelled" | "completed" | "failed"): Fact {
@@ -53,15 +90,18 @@ function turnSettled(outcome: "cancelled" | "completed" | "failed"): Fact {
   };
 }
 
+const idle = {
+  error: null,
+  outcome: null,
+  question: null,
+  questionId: null,
+  reply: null,
+  status: "running",
+};
+
 describe("site task status", () => {
   it("is running before the first turn starts", () => {
-    expect(siteTaskStatus([])).toEqual({
-      error: null,
-      question: null,
-      questionId: null,
-      reply: null,
-      status: "running",
-    });
+    expect(statusOf([])).toEqual(idle);
   });
 
   it("withholds acknowledgements while the turn runs", () => {
@@ -70,24 +110,19 @@ describe("site task status", () => {
       sendMessage("call-ack", { kind: "message", text: "On it." }),
     ]);
 
-    expect(siteTaskStatus(events)).toEqual({
-      error: null,
-      question: null,
-      questionId: null,
-      reply: null,
-      status: "running",
-    });
+    expect(statusOf(events)).toEqual(idle);
   });
 
-  it("replies with the text the agent sent once the turn completes", () => {
+  it("replies with the text the agent sent once the turn completes, having found nothing without files", () => {
     const events = eventsOf([
       [turnStarted, runRequested],
       sendMessage("call-1", { kind: "message", text: "pong" }),
       [turnSettled("completed")],
     ]);
 
-    expect(siteTaskStatus(events)).toEqual({
+    expect(statusOf(events)).toEqual({
       error: null,
+      outcome: "nothing_found",
       question: null,
       questionId: null,
       reply: "pong",
@@ -104,9 +139,7 @@ describe("site task status", () => {
       [turnSettled("completed")],
     ]);
 
-    expect(siteTaskStatus(events).reply).toBe(
-      `${long}\n\nhttps://example.com/`
-    );
+    expect(statusOf(events).reply).toBe(`${long}\n\nhttps://example.com/`);
   });
 
   it("completes with no reply when the agent sent nothing", () => {
@@ -115,29 +148,25 @@ describe("site task status", () => {
       [turnSettled("completed")],
     ]);
 
-    expect(siteTaskStatus(events)).toEqual({
-      error: null,
-      question: null,
-      questionId: null,
-      reply: null,
+    expect(statusOf(events)).toEqual({
+      ...idle,
+      outcome: "nothing_found",
       status: "completed",
     });
   });
 
-  it("reports a failed turn without eve's error text", () => {
+  it("reports a failed turn as failed, without eve's error text", () => {
     const events = eventsOf([
       [turnStarted, runRequested],
       [turnSettled("failed")],
     ]);
 
-    expect(siteTaskStatus(events)).toEqual({
-      error: "The task failed before it finished.",
-      question: null,
-      questionId: null,
-      reply: null,
+    expect(statusOf(events)).toEqual({
+      ...idle,
+      error: "failed",
       status: "failed",
     });
-    expect(JSON.stringify(siteTaskStatus(events))).not.toContain("/srv");
+    expect(JSON.stringify(statusOf(events))).not.toContain("/srv");
   });
 
   it("reports a failed session as failed, though its turn ends cancelled", () => {
@@ -156,26 +185,38 @@ describe("site task status", () => {
       ],
     ]);
 
-    expect(siteTaskStatus(events)).toEqual({
-      error: "The task failed before it finished.",
-      question: null,
-      questionId: null,
-      reply: null,
+    expect(statusOf(events)).toEqual({
+      ...idle,
+      error: "failed",
       status: "failed",
     });
   });
 
-  it("reports a cancelled turn as failed", () => {
+  it("reports a session that ended before its turn as failed", () => {
+    const events = eventsOf([
+      [
+        {
+          data: { outcome: "completed" },
+          type: "session.ended",
+        },
+      ],
+    ]);
+
+    expect(statusOf(events)).toMatchObject({
+      error: "failed",
+      status: "failed",
+    });
+  });
+
+  it("reports a cancelled turn as cancelled", () => {
     const events = eventsOf([
       [turnStarted, runRequested],
       [turnSettled("cancelled")],
     ]);
 
-    expect(siteTaskStatus(events)).toEqual({
-      error: "The task was cancelled.",
-      question: null,
-      questionId: null,
-      reply: null,
+    expect(statusOf(events)).toEqual({
+      ...idle,
+      error: "cancelled",
       status: "failed",
     });
   });
@@ -183,17 +224,15 @@ describe("site task status", () => {
   it("awaits the worker's code question, with the question as plain text", () => {
     const events = eventsOf([
       [turnStarted, runRequested],
-      codeQuestion("interaction-1", 'Enter the code\nfor\u200b "Vendor".'),
+      codeQuestion("interaction-1", 'Enter the code\nfor​ "Vendor".'),
     ]);
 
-    expect(siteTaskStatus(events)).toEqual({
-      error: null,
+    expect(statusOf(events)).toEqual({
+      ...idle,
       question: 'Enter the code for "Vendor".',
       questionId: "interaction-1",
-      reply: null,
       status: "awaiting-input",
     });
-    expect(awaitedSiteCode(events)).toBe("interaction-1");
   });
 
   it("caps a long question at 300 characters", () => {
@@ -202,37 +241,20 @@ describe("site task status", () => {
       codeQuestion("interaction-1", "x".repeat(400)),
     ]);
 
-    expect(siteTaskStatus(events).question).toBe(`${"x".repeat(299)}…`);
+    expect(statusOf(events).question).toBe(`${"x".repeat(299)}…`);
   });
 
   it("runs again once an answer to the code question is on its way", () => {
     const events = eventsOf([
       [turnStarted, runRequested],
       codeQuestion("interaction-1", "Enter the code."),
-      [
-        {
-          data: {
-            deliveryId: "delivery-2",
-            interactionId: "interaction-1",
-            responseId: "response-1",
-            value: { text: "assist-code.v1.sealed" },
-          },
-          type: "response.submitted",
-        },
-      ],
+      [codeAnswer("interaction-1")],
     ]);
 
-    expect(siteTaskStatus(events)).toEqual({
-      error: null,
-      question: null,
-      questionId: null,
-      reply: null,
-      status: "running",
-    });
-    expect(awaitedSiteCode(events)).toBeUndefined();
+    expect(statusOf(events)).toEqual(idle);
   });
 
-  it("fails instead of waiting on any other question", () => {
+  it("fails as needing a person instead of waiting on any other question", () => {
     const events = eventsOf([
       [turnStarted, runRequested],
       [
@@ -244,97 +266,65 @@ describe("site task status", () => {
       ],
     ]);
 
-    expect(siteTaskStatus(events)).toEqual({
-      error:
-        "The task stopped at a step that needs a person in iCommAssist, which a site cannot answer.",
-      question: null,
-      questionId: null,
-      reply: null,
+    expect(statusOf(events)).toEqual({
+      ...idle,
+      error: "needs_person",
       status: "failed",
     });
-    expect(awaitedSiteCode(events)).toBeUndefined();
   });
 
   it("fails at the usage limit's continue prompt instead of waiting", () => {
-    const events = eventsOf([
-      [turnStarted, runRequested],
-      [
-        interactionOpened("budget-1", {
-          kind: "budget",
-          options: [
-            { id: "continue", label: "Continue" },
-            { id: "stop", label: "Stop" },
-          ],
-          prompt: "This session reached its usage limit. Continue?",
-        }),
-        turnPaused("budget-1"),
-      ],
-    ]);
+    const events = eventsOf([[turnStarted, runRequested], budgetPrompt()]);
 
-    expect(siteTaskStatus(events)).toEqual({
-      error:
-        "The task reached its usage limit, so it was stopped before it finished.",
-      question: null,
-      questionId: null,
-      reply: null,
+    expect(statusOf(events)).toEqual({
+      ...idle,
+      error: "usage_limit",
       status: "failed",
     });
-    expect(awaitedSiteCode(events)).toBeUndefined();
   });
 
-  it("explains a turn the site task hook stopped at the usage limit", () => {
-    const events = eventsOf([
-      [turnStarted, runRequested],
-      [
-        interactionOpened("budget-1", {
-          kind: "budget",
-          prompt: "This session reached its usage limit. Continue?",
-        }),
-        turnPaused("budget-1"),
-      ],
-      [
-        {
-          data: { interactionId: "budget-1", outcome: "interrupted" },
-          type: "interaction.settled",
-        },
-        turnSettled("cancelled"),
-      ],
-    ]);
+  it("explains a turn the site task hook stopped at the usage limit or another question", () => {
+    const stopped = (opened: Fact[]) =>
+      eventsOf([
+        [turnStarted, runRequested],
+        opened,
+        [
+          {
+            data: { interactionId: "interaction-1", outcome: "interrupted" },
+            type: "interaction.settled",
+          },
+          turnSettled("cancelled"),
+        ],
+      ]);
 
-    expect(siteTaskStatus(events).error).toBe(
-      "The task reached its usage limit, so it was stopped before it finished."
-    );
+    expect(statusOf(stopped(budgetPrompt())).error).toBe("usage_limit");
+    expect(
+      statusOf(
+        stopped([
+          interactionOpened("interaction-1", {
+            kind: "approval",
+            prompt: "Create this scheduled job?",
+          }),
+          turnPaused("interaction-1"),
+        ])
+      ).error
+    ).toBe("needs_person");
   });
 
   it("tells a question asked again from the first, by id and by wording", () => {
     const events = eventsOf([
       [turnStarted, runRequested],
       codeQuestion("interaction-1", "Enter the code."),
-      [
-        {
-          data: {
-            deliveryId: "delivery-2",
-            interactionId: "interaction-1",
-            responseId: "response-1",
-            value: { text: "assist-code.v1.sealed" },
-          },
-          type: "response.submitted",
-        },
-        {
-          data: { interactionId: "interaction-1", outcome: "accepted" },
-          type: "interaction.settled",
-        },
-      ],
+      [codeAnswer("interaction-1"), codeSettled("interaction-1", "accepted")],
       codeQuestion("interaction-2", "Enter the code."),
     ]);
 
-    expect(siteTaskStatus(events)).toMatchObject({
+    expect(statusOf(events)).toMatchObject({
       question:
         "The code sent before could not be used, so a new one is needed. Enter the code.",
       questionId: "interaction-2",
       status: "awaiting-input",
     });
-    expect(awaitedSiteCode(events)).toBe("interaction-2");
   });
 
   it("keeps the site's result when the owner starts another turn in the chat", () => {
@@ -361,36 +351,22 @@ describe("site task status", () => {
       ],
     ] satisfies Fact[][];
 
-    expect(siteTaskStatus(eventsOf([...first, ...second]))).toMatchObject({
+    expect(statusOf(eventsOf([...first, ...second]))).toMatchObject({
       reply: "first",
       status: "completed",
     });
     expect(
-      siteTaskStatus(
+      statusOf(
         eventsOf([
           ...first,
           ...second,
-          [
-            {
-              data: {
-                callId: "call-2",
-                capability: { kind: "tool", name: "send_message" },
-                input: { kind: "message", text: "second" },
-                owner: { runId: "run-2" },
-              },
-              scope: { runId: "run-2", turnId: "turn_1" },
-              type: "call.requested",
-            },
-            {
-              data: {
-                callId: "call-2",
-                outcome: "completed",
-                output: { kind: "message", text: "second" },
-              },
-              scope: { runId: "run-2", turnId: "turn_1" },
-              type: "call.settled",
-            },
-          ],
+          toolCall(
+            "call-2",
+            "send_message",
+            { kind: "message", text: "second" },
+            { run: "run-2", turn: "turn_1" }
+          ),
+          endTask("call-3", "login_failed", { run: "run-2", turn: "turn_1" }),
           [
             {
               data: { outcome: "completed", turnId: "turn_1" },
@@ -401,14 +377,273 @@ describe("site task status", () => {
         ])
       )
     ).toEqual({
-      error: null,
-      question: null,
-      questionId: null,
+      ...idle,
+      outcome: "nothing_found",
       reply: "first",
       status: "completed",
     });
   });
 });
+
+describe("site task end result", () => {
+  it.each(["login_failed", "code_failed", "blocked", "off_site", "failed"])(
+    "fails a task the agent ended with %s, under that error code",
+    (result) => {
+      const events = eventsOf([
+        [turnStarted, runRequested],
+        sendMessage("call-1", { kind: "message", text: "Could not sign in." }),
+        endTask("call-2", result),
+        [turnSettled("completed")],
+      ]);
+
+      expect(statusOf(events, { savedFiles: 2 })).toEqual({
+        ...idle,
+        error: result,
+        reply: "Could not sign in.",
+        status: "failed",
+      });
+    }
+  );
+
+  it.each(["done", "nothing_found"])(
+    "completes a task the agent ended with %s, finding files only when it saved some",
+    (result) => {
+      const events = eventsOf([
+        [turnStarted, runRequested],
+        endTask("call-1", result),
+        [turnSettled("completed")],
+      ]);
+
+      expect(statusOf(events, { savedFiles: 0 })).toMatchObject({
+        error: null,
+        outcome: "nothing_found",
+        status: "completed",
+      });
+      expect(statusOf(events, { savedFiles: 2 })).toMatchObject({
+        error: null,
+        outcome: "files",
+        status: "completed",
+      });
+    }
+  );
+
+  it("maps the agent's last result and ignores a call that failed", () => {
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      endTask("call-1", "blocked"),
+      endTask("call-2", "done"),
+      endTask("call-3", "login_failed", { outcome: "failed" }),
+      [turnSettled("completed")],
+    ]);
+
+    expect(statusOf(events)).toMatchObject({
+      error: null,
+      status: "completed",
+    });
+    expect(
+      statusOf(
+        eventsOf([
+          [turnStarted, runRequested],
+          endTask("call-1", "done"),
+          endTask("call-2", "off_site"),
+          [turnSettled("completed")],
+        ])
+      ).error
+    ).toBe("off_site");
+  });
+
+  it("ignores a result that is not one of the tool's", () => {
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      endTask("call-1", "succeeded"),
+      [turnSettled("completed")],
+    ]);
+
+    expect(statusOf(events)).toMatchObject({ status: "completed" });
+  });
+
+  it("reads no result before the turn ends", () => {
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      endTask("call-1", "login_failed"),
+    ]);
+
+    expect(statusOf(events)).toEqual(idle);
+  });
+});
+
+describe("site task code wait", () => {
+  const waitedOut = (...end: Fact[][]) =>
+    eventsOf([
+      [turnStarted, runRequested],
+      codeQuestion("interaction-1", "Enter the code."),
+      [codeSettled("interaction-1", "withdrawn")],
+      ...end,
+      [turnSettled("completed")],
+    ]);
+
+  it("fails as timed out when no code reached the worker, whatever else the agent said", () => {
+    expect(statusOf(waitedOut())).toMatchObject({
+      error: "timed_out",
+      outcome: null,
+      status: "failed",
+    });
+    expect(
+      statusOf(waitedOut(endTask("call-1", "done")), { savedFiles: 1 })
+    ).toMatchObject({ error: "timed_out", status: "failed" });
+    expect(
+      statusOf(waitedOut(endTask("call-1", "nothing_found")))
+    ).toMatchObject({ error: "timed_out", status: "failed" });
+  });
+
+  it("keeps the agent's failure for a code that did not arrive", () => {
+    expect(statusOf(waitedOut(endTask("call-1", "code_failed")))).toMatchObject(
+      { error: "code_failed", status: "failed" }
+    );
+  });
+
+  it("completes when a later code reached the worker", () => {
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      codeQuestion("interaction-1", "Enter the code."),
+      [codeSettled("interaction-1", "withdrawn")],
+      codeQuestion("interaction-2", "Enter the code."),
+      [codeAnswer("interaction-2"), codeSettled("interaction-2", "accepted")],
+      endTask("call-1", "done"),
+      [turnSettled("completed")],
+    ]);
+
+    expect(statusOf(events, { savedFiles: 1 })).toMatchObject({
+      outcome: "files",
+      status: "completed",
+    });
+  });
+
+  it("fails as timed out when the delivered code was settled without being taken", () => {
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      codeQuestion("interaction-1", "Enter the code."),
+      [codeAnswer("interaction-1"), codeSettled("interaction-1", "withdrawn")],
+      [turnSettled("completed")],
+    ]);
+
+    expect(statusOf(events).error).toBe("timed_out");
+  });
+});
+
+describe("site task lifetime", () => {
+  const deadline = createdAt.getTime() + 45 * minute;
+
+  it("names the open turn while the task runs inside its lifetime", () => {
+    const events = eventsOf([[turnStarted, runRequested]]);
+
+    expect(siteTaskState(events, createdAt, deadline - 1)).toEqual({
+      openTurn: "turn_0",
+      state: { status: "running" },
+    });
+  });
+
+  it.each([
+    ["runs", [[turnStarted, runRequested]]],
+    [
+      "waits for a code",
+      [[turnStarted, runRequested], codeQuestion("interaction-1", "Code?")],
+    ],
+  ] satisfies [string, Fact[][]][])(
+    "times out a task that still %s at 45 minutes, naming the turn to cancel",
+    (_case, lines) => {
+      const read = siteTaskState(eventsOf(lines), createdAt, deadline);
+
+      expect(read.openTurn).toBe("turn_0");
+      expect(siteTaskStatus(read.state, 0)).toEqual({
+        ...idle,
+        error: "timed_out",
+        status: "failed",
+      });
+    }
+  );
+
+  it("times out a task that has no turn yet at 45 minutes, with no turn to cancel", () => {
+    expect(siteTaskState([], createdAt, deadline)).toEqual({
+      openTurn: undefined,
+      state: { error: "timed_out", reply: null, status: "failed" },
+    });
+  });
+
+  it("keeps reading timed out once the cancel has ended the turn after its lifetime", () => {
+    const events = timedEvents([
+      [createdAt.getTime(), [turnStarted, runRequested]],
+      [deadline + 2000, [turnSettled("cancelled")]],
+    ]);
+
+    expect(siteTaskState(events, createdAt, deadline + 5000)).toEqual({
+      openTurn: undefined,
+      state: { error: "timed_out", reply: null, status: "failed" },
+    });
+  });
+
+  it("times out a turn that completed after its lifetime, keeping its reply", () => {
+    const events = timedEvents([
+      [createdAt.getTime(), [turnStarted, runRequested]],
+      [
+        deadline + 1000,
+        sendMessage("call-1", { kind: "message", text: "Found it." }),
+      ],
+      [deadline + 1000, endTask("call-2", "done")],
+      [deadline + 1000, [turnSettled("completed")]],
+    ]);
+
+    expect(
+      siteTaskStatus(
+        siteTaskState(events, createdAt, deadline + 60 * minute).state,
+        3
+      )
+    ).toEqual({
+      ...idle,
+      error: "timed_out",
+      reply: "Found it.",
+      status: "failed",
+    });
+  });
+
+  it("keeps a result reached inside the lifetime, read at any time later", () => {
+    const cancelled = timedEvents([
+      [createdAt.getTime(), [turnStarted, runRequested]],
+      [deadline - 1000, [turnSettled("cancelled")]],
+    ]);
+    const completed = timedEvents([
+      [createdAt.getTime(), [turnStarted, runRequested]],
+      [deadline - 1000, endTask("call-1", "done")],
+      [deadline - 1000, [turnSettled("completed")]],
+    ]);
+    const later = deadline + 24 * 60 * minute;
+
+    expect(siteTaskState(cancelled, createdAt, later).state).toEqual({
+      error: "cancelled",
+      reply: null,
+      status: "failed",
+    });
+    expect(
+      siteTaskStatus(siteTaskState(completed, createdAt, later).state, 1)
+    ).toMatchObject({ outcome: "files", status: "completed" });
+  });
+});
+
+// Each line at its own time, as eve's stream stamps it.
+function timedEvents(
+  lines: readonly (readonly [number, readonly Fact[]])[]
+): ReceivedEvent[] {
+  return lines.flatMap(([at, facts], line) =>
+    facts.map((fact, index) => ({
+      ...fact,
+      meta: {
+        at: new Date(at).toISOString(),
+        endOfLine: index === facts.length - 1,
+        position: { index, line },
+      },
+    }))
+  );
+}
 
 type InteractionOpened = Extract<Fact, { type: "interaction.opened" }>;
 
@@ -429,6 +664,20 @@ function turnPaused(interactionId: string): Fact {
     scope: { turnId: "turn_0" },
     type: "turn.paused",
   };
+}
+
+function budgetPrompt(): Fact[] {
+  return [
+    interactionOpened("interaction-1", {
+      kind: "budget",
+      options: [
+        { id: "continue", label: "Continue" },
+        { id: "stop", label: "Stop" },
+      ],
+      prompt: "This session reached its usage limit. Continue?",
+    }),
+    turnPaused("interaction-1"),
+  ];
 }
 
 // The worker's question, relayed to the root session.
@@ -456,4 +705,26 @@ function codeQuestion(interactionId: string, prompt: string): Fact[] {
     },
     turnPaused(interactionId),
   ];
+}
+
+function codeAnswer(interactionId: string): Fact {
+  return {
+    data: {
+      deliveryId: `delivery-${interactionId}`,
+      interactionId,
+      responseId: `response-${interactionId}`,
+      value: { text: "assist-code.v1.sealed" },
+    },
+    type: "response.submitted",
+  };
+}
+
+function codeSettled(
+  interactionId: string,
+  outcome: "accepted" | "withdrawn"
+): Fact {
+  return {
+    data: { interactionId, outcome },
+    type: "interaction.settled",
+  };
 }

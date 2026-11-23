@@ -23,6 +23,7 @@ import * as Database from "@db";
 import * as schema from "@db/schema";
 import { ensureScope } from "@db/services/scope";
 import {
+  countSiteTaskFiles,
   findSiteTaskSession,
   isAnySiteTaskSession,
   isSiteTaskSession,
@@ -175,7 +176,7 @@ describe("site tasks", () => {
 });
 
 describe("site tasks of a login", () => {
-  it("lists one site's tasks pinned to a login since a time, newest first", async () => {
+  it("lists one site's newest tasks pinned to a login, newest first", async () => {
     await ensureScope(owner);
     await ensureScope(other);
     const now = Date.now();
@@ -195,25 +196,61 @@ describe("site tasks of a login", () => {
     };
     const older = await pinned("teemiq", owner, "wrun_l1", "login-a", 20);
     const newer = await pinned("teemiq", owner, "wrun_l2", "login-a", 5);
-    await pinned("teemiq", owner, "wrun_l3", "login-a", 50);
+    const oldest = await pinned("teemiq", owner, "wrun_l3", "login-a", 50);
     await pinned("teemiq", owner, "wrun_l4", "login-b", 5);
     await pinned("teemiq", owner, "wrun_l5", undefined, 5);
     await pinned("agents", owner, "wrun_l6", "login-a", 5);
     await pinned("teemiq", other, "wrun_l7", "login-a", 5);
 
-    const tasks = await listSiteTasksOfLogin(
-      "teemiq",
-      owner,
-      "login-a",
-      new Date(now - 45 * 60_000)
-    );
+    const tasks = await listSiteTasksOfLogin("teemiq", owner, "login-a", 5);
+    const newest = await listSiteTasksOfLogin("teemiq", owner, "login-a", 2);
 
-    expect(tasks.map(({ id }) => id)).toEqual([newer, older]);
+    expect(tasks.map(({ id }) => id)).toEqual([newer, older, oldest]);
     expect(tasks.map(({ sessionId }) => sessionId)).toEqual([
       "wrun_l2",
       "wrun_l1",
+      "wrun_l3",
     ]);
     expect(tasks[0]?.createdAt).toBeInstanceOf(Date);
+    expect(newest.map(({ id }) => id)).toEqual([newer, older]);
+  });
+});
+
+describe("site task files", () => {
+  it("counts only the files this site's task saved in this workspace", async () => {
+    await ensureScope(owner);
+    await ensureScope(other);
+    const task = await recordSiteTask("teemiq", owner, "wrun_f1", "login-f");
+    const otherTask = await recordSiteTask(
+      "teemiq",
+      owner,
+      "wrun_f2",
+      "login-f"
+    );
+    const pdf = new TextEncoder().encode("%PDF-1.7 test");
+    const file = (taskId: string, site: string, workspaceId: string) => ({
+      byteSize: pdf.byteLength,
+      content: pdf,
+      filename: "invoice.pdf",
+      mediaType: "application/pdf" as const,
+      sha256: "a".repeat(64),
+      site,
+      taskId,
+      workspaceId,
+    });
+    await database
+      .insert(schema.taskFiles)
+      .values([
+        file(task, "teemiq", owner.workspaceId),
+        file(task, "teemiq", owner.workspaceId),
+        file(otherTask, "teemiq", owner.workspaceId),
+      ]);
+
+    await expect(countSiteTaskFiles("teemiq", owner, task)).resolves.toBe(2);
+    await expect(countSiteTaskFiles("agents", owner, task)).resolves.toBe(0);
+    await expect(countSiteTaskFiles("teemiq", other, task)).resolves.toBe(0);
+    const empty = await recordSiteTask("teemiq", owner, "wrun_f3", "login-f");
+    await expect(countSiteTaskFiles("teemiq", owner, empty)).resolves.toBe(0);
   });
 });
 

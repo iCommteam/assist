@@ -190,8 +190,8 @@ function decodePathSegment(segment: string) {
 
 // A connected site acts as its owner, with its name recorded on the session.
 // Its credential covers exactly one route: creating a session, reading the
-// stream of one session the same site created, or answering one question in
-// that session.
+// stream of one session the same site created, answering one question in that
+// session, or cancelling its work.
 async function authenticateSite(request: Request, credential: string) {
   const { betterAuthSecret } = await getInstallationSecrets();
   const grant = verifySiteCredential(betterAuthSecret, credential);
@@ -250,6 +250,17 @@ function siteRouteSession(request: Request, grant: SiteGrant) {
     request.method === "POST" &&
     messageSession !== undefined &&
     decodePathSegment(messageSession) === grant.session
+  ) {
+    return grant.session;
+  }
+  const cancelSession = /^\/eve\/v1\/session\/([^/]+)\/cancel$/.exec(
+    pathname
+  )?.[1];
+  if (
+    grant.op === "cancel" &&
+    request.method === "POST" &&
+    cancelSession !== undefined &&
+    decodePathSegment(cancelSession) === grant.session
   ) {
     return grant.session;
   }

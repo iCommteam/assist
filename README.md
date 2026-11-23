@@ -175,10 +175,12 @@ logins can sign in at the same time. A sign-in made from the owner's chat is
 saved to the workspace profile instead, so a login's first pinned task starts
 signed out and signs in itself. Removing the login, at `/vault` or through the
 API, also deletes its profile; the API keeps a login while a task of the site
-pinned to it still runs or waits for a code. A task holds its login's profile
-while it signs in, also while it waits for a code, so run at most one task per
-`loginId` at a time: another task that must sign in to the same login
-meanwhile ends without the work.
+pinned to it still runs or waits for a code. A login runs one task at a time:
+while a task of the site pinned to it runs or waits for a code, another start
+for that `loginId` answers `409 {"error":"login_busy","taskId":"..."}` with
+the open task's id. `GET /api/site/tasks?loginId=...` lists the site's five
+newest tasks of a login with their status, so a site that lost the answer to a
+start can find the task.
 
 A saved login with a password may also hold an authenticator app's setup key:
 the vault form takes the key or the `otpauth://totp/` link a site shows during
@@ -201,53 +203,83 @@ filled, the worker may ask once more: the status turns `awaiting-input` again
 with a new `questionId` and a question that starts `The code sent before could
 not be used`. Treat each new `questionId` as a new request for a code. A code
 that does not arrive within 20 minutes ends the wait, the worker deletes the
-browser and the task finishes with a reply saying so; a site task's browsers
-idle out after 30 minutes, so they outlive the wait.
+browser and the task fails with `code_failed` or `timed_out`, never
+`completed`; a site task's browsers idle out after 30 minutes, so they outlive
+the wait.
 
-`completed` means the agent finished its turn, not that the work succeeded,
-so read the reply. A task that ends at something only a person can resolve,
-such as a CAPTCHA, a passkey or device approval, a sign-in with no pinned
-login, a page outside the login's site, or a code that did not arrive in time
-or did not work, finishes `completed` with a reply that explains it. `failed`
-covers only a task stopped at a request a site cannot answer (a tool approval,
-the $10 usage limit's continue prompt, any question other than the code), a
-cancelled task and a runtime failure, with a short error. The reply is text
-only: no invoice file comes back yet, and a link in it may need the owner's
-portal session, so a site cannot fetch it.
+A task has 45 minutes. One whose turn still runs or waits for a code after
+that, or ended later, reads `failed` with `timed_out`, and the API cancels it
+when it next reads it, lists it or starts another task for its login. A site
+stops a task itself with `POST /api/site/tasks/{taskId}/cancel`: a running or
+waiting task then reads `failed` with `cancelled` within moments; a task that
+has ended is left as it is. Cancelling does not delete the task's browser,
+which idles out after 30 minutes; while it was saving the login's sign-in, a
+next task of that login that must sign in fails until then.
+
+The agent ends every site task by calling `end_site_task` with one fixed
+result, and the status reads the last one the site's turn gave. A task reads
+`completed` when the agent finished the work, found it had nothing to fetch,
+or ended its turn without the tool; `outcome` then says `files` when the task
+saved at least one file and `nothing_found` otherwise, counted from the files
+it stored, never from what the agent wrote. No tool saves files yet, so every
+completed task reads `nothing_found` for now. `failed` carries one of these
+error codes:
+
+- `login_failed`: the website refused the saved username or password.
+- `code_failed`: a code was wrong or expired, or no code arrived in time.
+- `blocked`: the website wants something only a person can do, such as a
+  CAPTCHA, a bot check, a device approval, a passkey or a new-device email
+  link, or the task needs a sign-in it has no pinned login for.
+- `off_site`: what the task needs is on a website the login's fence does not
+  open.
+- `timed_out`: the task passed its 45 minutes, or its wait for a code ran out.
+- `usage_limit`: the task reached the $10 usage limit's continue prompt.
+- `needs_person`: the task stopped at a request a site cannot answer, such as
+  a tool approval or any question other than the code.
+- `cancelled`: the site, or the owner in the chat, cancelled the task.
+- `failed`: anything else, such as a runtime failure.
+
+Before this release `error` held a short sentence; it now holds only these
+codes. The reply is the agent's last message as plain text; do not show or
+store it as the reason, use `outcome` and `error`. A link in it may need the
+owner's portal session, so a site cannot fetch it.
 
 Every call sends `Authorization: Bearer <token>`:
 
-| Call                                  | Answer                                                                                                                                                                                           |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /api/site/ping`                  | `200 {"ok":true,"site":"teemiq"}`                                                                                                                                                                |
-| `POST /api/site/logins`               | body `{"origin","label","identifier","password","totp"}`, identifier 1 to 200 characters, password 1 to 500, `totp` optional; `201 {"login":{"loginId","label","origin","hasTotp","createdAt"}}` |
-| `GET /api/site/logins`                | `200 {"logins":[{"loginId","label","origin","hasTotp","createdAt"}]}`, the site's own logins, newest first                                                                                       |
-| `DELETE /api/site/logins/{loginId}`   | `204`, also deleting the login's browser profile; `409 {"error":"login_busy"}` while a task pinned to it is open                                                                                 |
-| `POST /api/site/tasks`                | body `{"message": "...", "loginId": "..."}`, message 1 to 8000 characters, `loginId` optional; `202 {"taskId": "..."}`                                                                           |
-| `GET /api/site/tasks/{taskId}`        | `200 {"taskId","status","reply","error","question","questionId"}`, status `running`, `completed`, `failed` or `awaiting-input`                                                                   |
-| `POST /api/site/tasks/{taskId}/input` | body `{"text": "..."}`, the one-time code, 1 to 64 characters on one line; `202 {"taskId": "..."}`                                                                                               |
+| Call                                   | Answer                                                                                                                                                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /api/site/ping`                   | `200 {"ok":true,"site":"teemiq"}`                                                                                                                                                                |
+| `POST /api/site/logins`                | body `{"origin","label","identifier","password","totp"}`, identifier 1 to 200 characters, password 1 to 500, `totp` optional; `201 {"login":{"loginId","label","origin","hasTotp","createdAt"}}` |
+| `GET /api/site/logins`                 | `200 {"logins":[{"loginId","label","origin","hasTotp","createdAt"}]}`, the site's own logins, newest first                                                                                       |
+| `DELETE /api/site/logins/{loginId}`    | `204`, also deleting the login's browser profile; `409 {"error":"login_busy"}` while a task pinned to it is open                                                                                 |
+| `POST /api/site/tasks`                 | body `{"message": "...", "loginId": "..."}`, message 1 to 8000 characters, `loginId` optional; `202 {"taskId": "..."}`; `409 {"error":"login_busy","taskId": "..."}`                             |
+| `GET /api/site/tasks?loginId=...`      | `200 {"tasks":[{"taskId","status","createdAt"}]}`, the site's tasks pinned to that login, newest first, at most 5                                                                                |
+| `GET /api/site/tasks/{taskId}`         | `200 {"taskId","status","question","questionId","outcome","error","reply"}`, status `running`, `awaiting-input`, `completed` or `failed`                                                         |
+| `POST /api/site/tasks/{taskId}/input`  | body `{"text": "..."}`, the one-time code, 1 to 64 characters on one line; `202 {"taskId": "..."}`                                                                                               |
+| `POST /api/site/tasks/{taskId}/cancel` | no body; `202 {"taskId": "..."}`, also for a task that has already ended                                                                                                                         |
 
 A missing or wrong token answers `401 {"error":"unauthorized"}`, an invalid
 body `400 {"error":"invalid_request"}` (also for a `loginId` that is not a
-login the site saved), and a task or login that is not the site's
-`404 {"error":"not_found"}`. A login whose authenticator key cannot be read
-answers `400 {"error":"invalid_totp"}` (a blank key counts as none), and one
-with a label the site already used answers `409 {"error":"duplicate_label"}`.
-An input for a task that is not `awaiting-input` answers
-`409 {"error":"not_waiting"}`, also once the code has been sent and while it
-is on its way, and for a second delivery of the same code. A site may start
-10 tasks in any 10 minutes; the next start answers
-`429 {"error":"rate_limited"}` with `Retry-After` in seconds, and the count
-resets when the service restarts. Any call can answer
-`503 {"error":"unavailable"}` while the database or the agent runtime cannot
-be reached; it is transient, so retry later. A start that answered 503 may
-still run where the site cannot read it, so a retried start can run the task
-twice. The status follows the turn the site started; a message the owner adds
-in the chat starts a later turn that does not change it. The reply is the
-agent's final message; `question` and `questionId` are set only while the
-task is `awaiting-input`, the question as one line of plain text of at most
-300 characters; a failed task carries a short error without internal details.
-Poll a running task every few seconds.
+login the site saved, and for a task list without a `loginId`), and a task or
+login that is not the site's `404 {"error":"not_found"}`. A login whose
+authenticator key cannot be read answers `400 {"error":"invalid_totp"}` (a
+blank key counts as none), and one with a label the site already used answers
+`409 {"error":"duplicate_label"}`. An input for a task that is not
+`awaiting-input` answers `409 {"error":"not_waiting"}`, also once the code has
+been sent and while it is on its way, for a second delivery of the same code,
+and past the task's 45 minutes. A site may start 10 tasks in any 10 minutes;
+the next start answers `429 {"error":"rate_limited"}` with `Retry-After` in
+seconds, and the count resets when the service restarts; a start refused as
+`login_busy` does not count. Any call can answer `503 {"error":"unavailable"}`
+while the database or the agent runtime cannot be reached, and a cancel can
+while the task has not started yet; it is transient, so retry later. A start
+that answered 503 may still run where the site cannot read it: list the
+login's tasks before starting it again. The status follows the turn the site
+started; a message the owner adds in the chat starts a later turn that does
+not change it. `question` and `questionId` are set only while the task is
+`awaiting-input`, the question as one line of plain text of at most 300
+characters; `outcome` only while it is `completed`, and `error` only while it
+is `failed`. Poll a running task every few seconds.
 
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to

@@ -84,6 +84,20 @@ describe("site channel credential", () => {
     ).toBeUndefined();
   });
 
+  it("carries a cancel grant bound to one session", () => {
+    const cancel = mintSiteCredential(secret, {
+      op: "cancel",
+      session: "wrun_1",
+      site: "teemiq",
+    });
+
+    expect(verifySiteCredential(secret, cancel)).toEqual({
+      op: "cancel",
+      session: "wrun_1",
+      site: "teemiq",
+    });
+  });
+
   it("refuses a credential signed with another secret", () => {
     const credential = mintSiteCredential(`${secret}-other`, {
       op: "create",

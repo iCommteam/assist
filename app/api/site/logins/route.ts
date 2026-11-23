@@ -11,6 +11,7 @@ import {
   type AuthenticatorKey,
 } from "@shared/vault/authenticator";
 import { serializeLoginVaultPayload } from "@shared/vault/schema";
+import { oneAtATime } from "@app/api/site/_lib/one-at-a-time";
 import { readSiteJsonBody } from "@app/api/site/_lib/request-body";
 import {
   authenticateSiteRequest,
@@ -19,6 +20,9 @@ import {
 } from "@app/api/site/_lib/site-auth";
 
 const maxBodyBytes = 16 * 1024;
+// Serializes the saves of a site in a workspace: two saves of one label at
+// once cannot both pass the label check.
+const savesInFlight = new Map<string, Promise<Response>>();
 const controlCharacter = /\p{Cc}/u;
 
 // The body carries a password and maybe an authenticator key: it is never
@@ -60,7 +64,7 @@ export async function POST(request: Request) {
   if (totp && !totp.success) return siteError(400, "invalid_totp");
 
   const { owner, site } = caller;
-  return oneSaveAtATime(`${owner.scope.workspaceId}\0${site}`, () =>
+  return oneAtATime(savesInFlight, `${owner.scope.workspaceId}\0${site}`, () =>
     saveLogin(owner.scope, site, input.data, totp?.data)
   );
 }
@@ -137,21 +141,6 @@ async function saveLogin(
       site,
     });
     return siteError(503, "unavailable");
-  }
-}
-
-// The service runs one replica, so memory serializes the saves of a site in a
-// workspace: two saves of one label at once cannot both pass the check.
-const savesInFlight = new Map<string, Promise<Response>>();
-
-async function oneSaveAtATime(key: string, save: () => Promise<Response>) {
-  const previous = savesInFlight.get(key);
-  const current = (previous ?? Promise.resolve()).then(save, save);
-  savesInFlight.set(key, current);
-  try {
-    return await current;
-  } finally {
-    if (savesInFlight.get(key) === current) savesInFlight.delete(key);
   }
 }
 

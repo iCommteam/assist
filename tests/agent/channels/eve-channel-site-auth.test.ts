@@ -48,6 +48,11 @@ const answerOwn: SiteGrant = {
   session: "wrun_own",
   site: "teemiq",
 };
+const cancelOwn: SiteGrant = {
+  op: "cancel",
+  session: "wrun_own",
+  site: "teemiq",
+};
 const sealedAnswer = {
   answers: [{ interactionId: "interaction-1", text: "assist-code.v1.sealed" }],
 };
@@ -304,6 +309,68 @@ describe("Eve channel site answer credential", () => {
   });
 });
 
+describe("Eve channel site cancel credential", () => {
+  it("admits a cancel of the site's own session as its owner", async () => {
+    const response = await cancel(
+      "wrun_own",
+      mintSiteCredential(secret, cancelOwn)
+    );
+
+    // Past authorization the route cancels through eve's runtime, which this
+    // test does not provide.
+    expect(response.status).toBe(500);
+    expect(isSiteTaskSessionMock).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      "wrun_own"
+    );
+    expect(isSessionOwnedMock).toHaveBeenCalledExactlyOnceWith(
+      owner,
+      "wrun_own"
+    );
+    expect(getAuthSessionMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a read grant", readOwn, "wrun_own"],
+    ["an answer grant", answerOwn, "wrun_own"],
+    ["a cancel grant for another session", cancelOwn, "wrun_victim"],
+  ] satisfies [string, SiteGrant, string][])(
+    "refuses %s on the cancel route",
+    async (_case, grant, sessionId) => {
+      const response = await cancel(
+        sessionId,
+        mintSiteCredential(secret, grant)
+      );
+
+      expect(response.status).toBe(403);
+      expect(isSessionOwnedMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it("refuses a cancel grant on a session the site did not create", async () => {
+    isSiteTaskSessionMock.mockResolvedValue(false);
+
+    const response = await cancel(
+      "wrun_own",
+      mintSiteCredential(secret, cancelOwn)
+    );
+
+    expect(response.status).toBe(403);
+    expect(isSessionOwnedMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a cancel grant on the stream and the message route", async () => {
+    const credential = mintSiteCredential(secret, cancelOwn);
+
+    expect((await stream("wrun_own", credential)).status).toBe(403);
+    expect(
+      (await answer("wrun_own", credential, JSON.stringify(sealedAnswer)))
+        .status
+    ).toBe(403);
+  });
+});
+
 describe("Eve channel answers from a signed-in member", () => {
   const typedCode = JSON.stringify({
     answers: [{ interactionId: "interaction-1", text: "482913" }],
@@ -358,6 +425,24 @@ async function answer(
         : { "content-type": "application/json" },
       method: "POST",
     }),
+    { ...unexpectedRouteContext(), params: { sessionId } }
+  );
+}
+
+async function cancel(sessionId: string, credential: string) {
+  const route = findRoute("POST", "/eve/v1/session/:sessionId/cancel");
+  return route.handler(
+    new Request(
+      `https://assistant.example/eve/v1/session/${sessionId}/cancel`,
+      {
+        body: JSON.stringify({ turnId: "turn_0" }),
+        headers: {
+          authorization: `Bearer ${credential}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+      }
+    ),
     { ...unexpectedRouteContext(), params: { sessionId } }
   );
 }
