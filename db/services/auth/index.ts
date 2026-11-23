@@ -68,7 +68,7 @@ async function initializeAuth() {
       autoSignIn: false,
       enabled: true,
       maxPasswordLength: 128,
-      minPasswordLength: 12,
+      minPasswordLength: 8,
       requireEmailVerification: false,
     },
     session: {

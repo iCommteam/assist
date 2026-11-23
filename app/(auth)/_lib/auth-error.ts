@@ -3,7 +3,7 @@
 const messages = new Map([
   ["INVALID_EMAIL_OR_PASSWORD", "The email or password is incorrect."],
   ["SIGN_UP_REJECTED", "This email and signup code cannot create an account."],
-  ["PASSWORD_TOO_SHORT", "Use a password of at least 12 characters."],
+  ["PASSWORD_TOO_SHORT", "Use a password of at least 8 characters."],
   ["PASSWORD_TOO_LONG", "Use a password of at most 128 characters."],
   ["INVALID_PASSWORD", "The password is incorrect."],
   ["INVALID_CODE", "That code did not work. Check your authenticator app."],

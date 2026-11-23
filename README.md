@@ -97,7 +97,7 @@ requires re-encrypting existing vault values. Application migrations live in
 
 ### Team sign-in
 
-Sign-in is an email, a password of at least 12 characters, and a required
+Sign-in is an email, a password of at least 8 characters, and a required
 authenticator-app code. Only the team may sign up or stay signed in:
 
 - `ASSIST_ALLOWED_EMAILS`: the team's emails, comma-separated and

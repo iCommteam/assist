@@ -22,6 +22,7 @@ const signupCode = vi.hoisted(() => {
       "erin@example.test",
       "frank@example.test",
       "grace@example.test",
+      "henry@example.test",
     ].join(", ")
   );
   vi.stubEnv("ASSIST_SIGNUP_CODE", code);
@@ -204,6 +205,24 @@ describe("team sign-in", () => {
     ).toMatchObject({ rows: [] });
   });
 
+  it("accepts a password of 8 characters and refuses one of 7", async () => {
+    const client = authClient();
+    const body = { email: "henry@example.test", name: "Henry", signupCode };
+
+    const short = await client.post("/sign-up/email", {
+      ...body,
+      password: "1234567",
+    });
+    expect(short.status).toBe(400);
+    expect(short.json).toMatchObject({ code: "PASSWORD_TOO_SHORT" });
+
+    const created = await client.post("/sign-up/email", {
+      ...body,
+      password: "12345678",
+    });
+    expect(created.status).toBe(200);
+  });
+
   it("gives a registered email the same answer for a wrong signup code", async () => {
     const client = authClient();
     await signUp(client, "dave@example.test");
@@ -306,6 +325,7 @@ describe("team sign-in", () => {
       "dave@example.test",
       "erin@example.test",
       "frank@example.test",
+      "henry@example.test",
     ].map((email) => z.string().parse(idFor(email)));
 
     const allowed = await allowedUserIds();

@@ -20,7 +20,7 @@ import {
 } from "@web/components/ui/field";
 import { Input } from "@web/components/ui/input";
 
-const minimumPasswordLength = 12;
+const minimumPasswordLength = 8;
 const twoFactorRedirectSchema = z.looseObject({
   twoFactorRedirect: z.literal(true),
 });
@@ -35,7 +35,7 @@ export function SignUpForm() {
       readonly signupCode: string;
     }) => {
       if (input.password.length < minimumPasswordLength) {
-        throw new Error("Use a password of at least 12 characters.");
+        throw new Error("Use a password of at least 8 characters.");
       }
       if (input.password !== input.confirmation) {
         throw new Error("The two passwords do not match.");
@@ -117,7 +117,7 @@ export function SignUpForm() {
             type="password"
           />
           <FieldDescription>
-            At least 12 characters. There is no password reset, so store it in a
+            At least 8 characters. There is no password reset, so store it in a
             password manager.
           </FieldDescription>
         </Field>
