@@ -4,12 +4,14 @@ import type {
   BrowserRetrieveResponse,
   BrowserUpdateResponse,
 } from "@onkernel/sdk/resources/browsers";
+import type { SessionContext } from "eve/context";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import {
   createBrowserSession,
   deleteBrowserSession,
   listWorkerBrowserSessions,
+  readBrowserSession,
   withBrowserProfileWriteLock,
 } from "@db/services/browsers";
 import { recordBrowserTraceDomains } from "@db/services/browser-traces";
@@ -93,7 +95,9 @@ const manageBrowsers = defineTool({
             );
             if (activeWriter) {
               throw new Error(
-                `Browser session ${activeWriter.session_id} is already saving login state for this browser profile. Retry after it finishes.`
+                site
+                  ? `Browser session ${activeWriter.session_id} is already saving login state for this browser profile. Retry after it finishes.`
+                  : `Browser session ${activeWriter.session_id} is already saving login state for this browser profile. Retry after it finishes; if the task that opened it has ended, delete it with manage_browsers first.`
               );
             }
           }
@@ -205,14 +209,15 @@ const manageBrowsers = defineTool({
       }
       case "delete": {
         const sessionId = requireSessionId(input.session_id);
-        const record = await requireOwnedBrowserSession(
+        const record = await deletableBrowserSession(
           scope,
           context.session,
-          sessionId
+          sessionId,
+          signal
         );
         await harvestBrowserTraceDomains(
           scope,
-          context.session.id,
+          record.workerSessionId ?? context.session.id,
           { createdAt: record.createdAt, sessionId: record.sessionId },
           signal
         );
@@ -304,6 +309,40 @@ function lifecycleResult(browser: KernelBrowser) {
       `Use manage_browsers with action "delete" and session_id "${value.session_id}" when finished.`,
     ],
   };
+}
+
+// A worker deletes only its own browsers, with one exception outside site
+// tasks: a sign-in browser that another worker of the workspace left saving
+// to the workspace profile, which blocks every later sign-in there until it
+// idles out. Such a browser can be deleted, never read or driven.
+async function deletableBrowserSession(
+  scope: Awaited<ReturnType<typeof requireWorkerScope>>,
+  session: Pick<SessionContext["session"], "auth" | "id">,
+  sessionId: string,
+  signal: AbortSignal | undefined
+) {
+  try {
+    return await requireOwnedBrowserSession(scope, session, sessionId);
+  } catch (error) {
+    if (siteOfSession(session.auth.initiator)) throw error;
+    const record = await readBrowserSession(scope, sessionId);
+    if (!record) throw error;
+    const [browser, profile] = await Promise.all([
+      kernel.browsers.retrieve(sessionId, {}, { signal }),
+      kernel.profiles.retrieve(
+        kernelProfileNameForWorkspace(scope.workspaceId),
+        {
+          signal,
+        }
+      ),
+    ]).catch(() => {
+      throw error;
+    });
+    if (!browser.profile_save_changes || browser.profile?.id !== profile.id) {
+      throw error;
+    }
+    return record;
+  }
 }
 
 // The Kernel profile a session's browsers keep cookies in. A site task without

@@ -18,6 +18,7 @@ const getAuthSessionMock = vi.spyOn(AuthSession, "getAuthSession");
 const isSessionOwnedMock = vi.spyOn(SessionService, "isSessionOwned");
 const resolveSiteOwnerMock = vi.spyOn(SiteService, "resolveSiteOwner");
 const isSiteTaskSessionMock = vi.spyOn(SiteService, "isSiteTaskSession");
+const isAnySiteTaskSessionMock = vi.spyOn(SiteService, "isAnySiteTaskSession");
 
 beforeEach(() => {
   vi.useFakeTimers({ now: new Date("2026-11-22T12:00:00.000Z") });
@@ -32,6 +33,7 @@ beforeEach(() => {
     scope: owner,
   });
   isSiteTaskSessionMock.mockResolvedValue(true);
+  isAnySiteTaskSessionMock.mockResolvedValue(true);
   isSessionOwnedMock.mockResolvedValue(true);
 });
 
@@ -302,15 +304,58 @@ describe("Eve channel site answer credential", () => {
   });
 });
 
-async function answer(sessionId: string, credential: string, body: string) {
+describe("Eve channel answers from a signed-in member", () => {
+  const typedCode = JSON.stringify({
+    answers: [{ interactionId: "interaction-1", text: "482913" }],
+  });
+
+  it("refuses an answer in a site task, whose question only the site answers", async () => {
+    const response = await answer("wrun_own", undefined, typedCode);
+
+    expect(response.status).toBe(403);
+    expect(isAnySiteTaskSessionMock).toHaveBeenCalledExactlyOnceWith(
+      accessScopeForUser("better-auth:member-1"),
+      "wrun_own"
+    );
+  });
+
+  it("passes an answer in any other chat on to eve", async () => {
+    isAnySiteTaskSessionMock.mockResolvedValue(false);
+
+    const response = await answer("wrun_chat", undefined, typedCode);
+
+    // Past authorization the route delivers through eve's runtime, which this
+    // test does not provide.
+    expect(response.status).toBe(500);
+  });
+
+  it("does not look up a plain message", async () => {
+    const response = await answer(
+      "wrun_own",
+      undefined,
+      JSON.stringify({ message: "Also get March." })
+    );
+
+    expect(response.status).toBe(500);
+    expect(isAnySiteTaskSessionMock).not.toHaveBeenCalled();
+  });
+});
+
+async function answer(
+  sessionId: string,
+  credential: string | undefined,
+  body: string
+) {
   const route = findRoute("POST", "/eve/v1/session/:sessionId");
   return route.handler(
     new Request(`https://assistant.example/eve/v1/session/${sessionId}`, {
       body,
-      headers: {
-        authorization: `Bearer ${credential}`,
-        "content-type": "application/json",
-      },
+      headers: credential
+        ? {
+            authorization: `Bearer ${credential}`,
+            "content-type": "application/json",
+          }
+        : { "content-type": "application/json" },
       method: "POST",
     }),
     { ...unexpectedRouteContext(), params: { sessionId } }

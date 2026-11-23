@@ -23,6 +23,7 @@ import * as schema from "@db/schema";
 import { ensureScope } from "@db/services/scope";
 import {
   findSiteTaskSession,
+  isAnySiteTaskSession,
   isSiteTaskSession,
   recordSiteTask,
   resolveSiteOwner,
@@ -134,6 +135,15 @@ describe("site tasks", () => {
     await expect(
       isSiteTaskSession("teemiq", other, "wrun_teemiq")
     ).resolves.toBe(false);
+
+    // The chat asks whether a session is any site's task in its workspace.
+    await expect(isAnySiteTaskSession(owner, "wrun_teemiq")).resolves.toBe(
+      true
+    );
+    await expect(isAnySiteTaskSession(other, "wrun_teemiq")).resolves.toBe(
+      false
+    );
+    await expect(isAnySiteTaskSession(owner, "wrun_chat")).resolves.toBe(false);
   });
 
   it("records one site per session", async () => {

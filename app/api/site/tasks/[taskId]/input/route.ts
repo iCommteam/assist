@@ -35,7 +35,38 @@ export async function POST(
   const found = await lookupSiteTask(site, owner.scope, taskId);
   if (!found.ok) return found.response;
   const { sessionId } = found.task;
+  return oneInputAtATime(sessionId, () =>
+    deliverCode(site, taskId, sessionId, input.data.text)
+  );
+}
 
+// The service runs one replica, so memory serializes the inputs of a task: a
+// retried or doubled delivery reads the question only after the first has
+// answered it, and gets 409 instead of a second answer.
+const inputsInFlight = new Map<string, Promise<Response>>();
+
+async function oneInputAtATime(
+  sessionId: string,
+  deliver: () => Promise<Response>
+) {
+  const previous = inputsInFlight.get(sessionId);
+  const current = (previous ?? Promise.resolve()).then(deliver, deliver);
+  inputsInFlight.set(sessionId, current);
+  try {
+    return await current;
+  } finally {
+    if (inputsInFlight.get(sessionId) === current) {
+      inputsInFlight.delete(sessionId);
+    }
+  }
+}
+
+async function deliverCode(
+  site: string,
+  taskId: string,
+  sessionId: string,
+  code: string
+) {
   let interactionId: string | undefined;
   try {
     interactionId = awaitedSiteCode(await readSiteTaskEvents(site, sessionId));
@@ -63,7 +94,7 @@ export async function POST(
       .respond([
         {
           interactionId,
-          text: sealSiteCode(betterAuthSecret, sessionId, input.data.text),
+          text: sealSiteCode(betterAuthSecret, sessionId, code),
         },
       ]);
   } catch (error) {

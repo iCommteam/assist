@@ -530,6 +530,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
     await expect(response.json()).resolves.toEqual({
       error: null,
       question: null,
+      questionId: null,
       reply: "pong",
       status: "completed",
       taskId,
@@ -590,12 +591,24 @@ describe("GET /api/site/tasks/{taskId}", () => {
     [
       404,
       "{}",
-      { error: null, question: null, reply: null, status: "running" },
+      {
+        error: null,
+        question: null,
+        questionId: null,
+        reply: null,
+        status: "running",
+      },
     ],
     [
       409,
       JSON.stringify({ code: "session_not_ready" }),
-      { error: null, question: null, reply: null, status: "running" },
+      {
+        error: null,
+        question: null,
+        questionId: null,
+        reply: null,
+        status: "running",
+      },
     ],
     [
       410,
@@ -603,6 +616,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
       {
         error: "The task record has expired.",
         question: null,
+        questionId: null,
         reply: null,
         status: "failed",
       },
@@ -633,6 +647,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
     await expect(starting.json()).resolves.toEqual({
       error: null,
       question: null,
+      questionId: null,
       reply: null,
       status: "running",
       taskId,
@@ -652,6 +667,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
     await expect(missing.json()).resolves.toEqual({
       error: "The task record is no longer available.",
       question: null,
+      questionId: null,
       reply: null,
       status: "failed",
       taskId,
@@ -687,6 +703,7 @@ describe("GET /api/site/tasks/{taskId} while the worker waits for a code", () =>
       error: null,
       question:
         'Enter the one-time code that login.vendor.example just sent by email for the saved login "Vendor".',
+      questionId: "interaction-1",
       reply: null,
       status: "awaiting-input",
       taskId,
@@ -754,6 +771,43 @@ describe("POST /api/site/tasks/{taskId}/input", () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({ error: "not_waiting" });
     expect(eve.respond).not.toHaveBeenCalled();
+  });
+
+  it("delivers a code sent twice at once only once", async () => {
+    // The question reads as answered once eve has the first answer.
+    eve.read.mockImplementation(async () =>
+      eve.respond.mock.calls.length > 0
+        ? awaitingCode({ answered: true })
+        : awaitingCode()
+    );
+    let accept: (() => void) | undefined;
+    eve.respond.mockImplementation(
+      async () =>
+        new Promise<undefined>((resolve) => {
+          accept = () => {
+            resolve(undefined);
+          };
+        })
+    );
+
+    const first = sendInput(
+      inputRequest(teemiqToken, JSON.stringify({ text: "482913" })),
+      params(taskId)
+    );
+    const second = sendInput(
+      inputRequest(teemiqToken, JSON.stringify({ text: "482913" })),
+      params(taskId)
+    );
+    await vi.waitFor(() => {
+      expect(accept).toBeDefined();
+    });
+    accept?.();
+
+    const statuses = (await Promise.all([first, second])).map(
+      ({ status }) => status
+    );
+    expect(statuses).toEqual([202, 409]);
+    expect(eve.respond).toHaveBeenCalledOnce();
   });
 
   it("answers 409 when eve no longer accepts the answer", async () => {

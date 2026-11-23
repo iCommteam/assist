@@ -17,6 +17,7 @@ import {
 } from "@web/components/ai-elements/question";
 import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Button } from "@web/components/ui/button";
+import { isSiteCodeQuestion } from "@shared/identity/site-code/question";
 import type { RespondToAgentInput } from "./types";
 
 export function QuestionRequest({
@@ -29,6 +30,9 @@ export function QuestionRequest({
   readonly onAnswers: RespondToAgentInput;
 }) {
   const { answer, interactionId, request } = interaction;
+  if (isSiteCodeQuestion(request)) {
+    return <SiteCodeQuestion interaction={interaction} />;
+  }
   const options = request.options ?? [];
   const selectedOption = options.find(
     (option) => option.id === answer?.optionId
@@ -88,6 +92,28 @@ export function QuestionRequest({
           <QuestionSubmit>Answer</QuestionSubmit>
         </QuestionActions>
       )}
+    </Question>
+  );
+}
+
+// A site task's one-time code question. Only the site that started the task
+// can answer it: the site API seals the code before eve sees it, and a code
+// typed here would reach the task in plain text and end it.
+function SiteCodeQuestion({
+  interaction,
+}: {
+  readonly interaction: Interaction;
+}) {
+  return (
+    <Question disabled>
+      <QuestionPrompt>{interaction.request.prompt}</QuestionPrompt>
+      <QuestionDescription>
+        {interaction.answer
+          ? "The site that started this task sent the code."
+          : interaction.status === "settled"
+            ? "No longer needs an answer."
+            : "Only the site that started this task can answer this question."}
+      </QuestionDescription>
     </Question>
   );
 }

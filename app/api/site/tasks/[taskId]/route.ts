@@ -49,6 +49,7 @@ export async function GET(
       return siteJson({
         error: null,
         question: null,
+        questionId: null,
         reply: null,
         status: "running",
         taskId,
@@ -63,5 +64,12 @@ export async function GET(
 }
 
 function failedTask(taskId: string, error: string) {
-  return { error, question: null, reply: null, status: "failed", taskId };
+  return {
+    error,
+    question: null,
+    questionId: null,
+    reply: null,
+    status: "failed",
+    taskId,
+  };
 }

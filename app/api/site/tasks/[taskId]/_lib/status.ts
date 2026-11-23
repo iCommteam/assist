@@ -29,6 +29,8 @@ const usageLimitText =
   "The task reached its usage limit, so it was stopped before it finished.";
 const needsPersonText =
   "The task stopped at a step that needs a person in iCommAssist, which a site cannot answer.";
+const repeatedCodeText =
+  "The code sent before could not be used, so a new one is needed.";
 const maxQuestionLength = 300;
 
 type SiteTaskState =
@@ -41,13 +43,15 @@ type SiteTaskState =
   | { readonly reply: string | null; readonly status: "completed" }
   | { readonly error: string; readonly status: "failed" };
 
-// A site task follows the latest turn of its session: the site's message
-// starts the first, and eve ends a turn only after every task it started has
-// finished. The root agent answers through send_message, so the reply is the
-// text it sent. The one thing a site can answer is a code question.
+// A site task is the first turn of its session: the site's message starts
+// it, an answer to its code question resumes it, and eve ends a turn only
+// after every task it started has finished. A later turn, such as one the
+// owner starts in the chat, is not the site's and never replaces its result.
+// The root agent answers through send_message, so the reply is the text it
+// sent. The one thing a site can answer is a code question.
 function siteTaskState(events: readonly ReceivedEvent[]): SiteTaskState {
   const view = foldEvents(emptySessionView(), events);
-  const task = turns(view).at(-1);
+  const [task] = turns(view);
   const ended = session(view).status === "ended";
   if (!task) return ended ? failed(failedText) : running;
   if (failure(view, task.turnId)) return failed(failedText);
@@ -74,9 +78,19 @@ function siteTaskState(events: readonly ReceivedEvent[]): SiteTaskState {
   // An answer already sent is on its way to the worker.
   const question = open.find(({ answer }) => answer === undefined);
   if (question) {
+    // The worker asks again when the website refused the last code or it
+    // could not be filled; the site must not take that for the same question.
+    const askedBefore = interactions(view).some(
+      ({ interactionId, request }) =>
+        interactionId !== question.interactionId && isSiteCodeQuestion(request)
+    );
     return {
       interactionId: question.interactionId,
-      question: plainQuestion(question.request.prompt),
+      question: plainQuestion(
+        askedBefore
+          ? `${repeatedCodeText} ${question.request.prompt}`
+          : question.request.prompt
+      ),
       status: "awaiting-input",
     };
   }
@@ -85,9 +99,12 @@ function siteTaskState(events: readonly ReceivedEvent[]): SiteTaskState {
 
 export function siteTaskStatus(events: readonly ReceivedEvent[]) {
   const state = siteTaskState(events);
+  const waiting = state.status === "awaiting-input";
   return {
     error: state.status === "failed" ? state.error : null,
-    question: state.status === "awaiting-input" ? state.question : null,
+    question: waiting ? state.question : null,
+    // Tells one question from the next, so a site can see it was asked again.
+    questionId: waiting ? state.interactionId : null,
     reply: state.status === "completed" ? state.reply : null,
     status: state.status,
   };

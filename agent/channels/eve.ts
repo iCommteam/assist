@@ -18,7 +18,11 @@ import {
 } from "@shared/identity/site-credential";
 import { getAuthSession } from "@db/services/auth/session";
 import { getInstallationSecrets } from "@db/services/installation-secrets";
-import { isSiteTaskSession, resolveSiteOwner } from "@db/services/sites";
+import {
+  isAnySiteTaskSession,
+  isSiteTaskSession,
+  resolveSiteOwner,
+} from "@db/services/sites";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { settledToolResult } from "@agent/lib/settled-tool-result";
 import { sitePrincipal } from "@agent/lib/site-principal";
@@ -42,6 +46,7 @@ const authenticate: Parameters<typeof routeAuth>[1] = [
     const { email, scope } = identity;
 
     await requireOwnedRouteSubject(scope, request);
+    await refuseSiteTaskAnswers(scope, request);
 
     return {
       attributes: {
@@ -268,6 +273,37 @@ async function requireSiteAnswer(request: Request, interactionId: string) {
   }
   if (body?.answers[0].interactionId !== interactionId) {
     throw new ForbiddenError({ message: "Session not found." });
+  }
+}
+
+const answersBodySchema = z.object({
+  answers: z.array(z.object({ interactionId: z.string() })).min(1),
+});
+
+// A site task waits only on its one-time code question, which the site
+// answers through the site API: the API seals the code before eve sees it. A
+// code typed in the chat would reach the task in plain text, end it, and stay
+// in the session's records, so a signed-in member cannot answer there.
+async function refuseSiteTaskAnswers(scope: AccessScope, request: Request) {
+  if (request.method !== "POST") return;
+  const session = /^\/eve\/v1\/session\/([^/]+)$/.exec(
+    new URL(request.url).pathname
+  )?.[1];
+  const sessionId = session ? decodePathSegment(session) : undefined;
+  if (!sessionId) return;
+  let body: unknown;
+  try {
+    body = await request.clone().json();
+  } catch {
+    return;
+  }
+  if (
+    answersBodySchema.safeParse(body).success &&
+    (await isAnySiteTaskSession(scope, sessionId))
+  ) {
+    throw new ForbiddenError({
+      message: "Only the site that started this task can answer its question.",
+    });
   }
 }
 

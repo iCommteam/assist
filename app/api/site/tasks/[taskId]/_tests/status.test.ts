@@ -61,6 +61,7 @@ describe("site task status", () => {
     expect(siteTaskStatus([])).toEqual({
       error: null,
       question: null,
+      questionId: null,
       reply: null,
       status: "running",
     });
@@ -75,6 +76,7 @@ describe("site task status", () => {
     expect(siteTaskStatus(events)).toEqual({
       error: null,
       question: null,
+      questionId: null,
       reply: null,
       status: "running",
     });
@@ -90,6 +92,7 @@ describe("site task status", () => {
     expect(siteTaskStatus(events)).toEqual({
       error: null,
       question: null,
+      questionId: null,
       reply: "pong",
       status: "completed",
     });
@@ -118,6 +121,7 @@ describe("site task status", () => {
     expect(siteTaskStatus(events)).toEqual({
       error: null,
       question: null,
+      questionId: null,
       reply: null,
       status: "completed",
     });
@@ -132,6 +136,7 @@ describe("site task status", () => {
     expect(siteTaskStatus(events)).toEqual({
       error: "The task failed before it finished.",
       question: null,
+      questionId: null,
       reply: null,
       status: "failed",
     });
@@ -157,6 +162,7 @@ describe("site task status", () => {
     expect(siteTaskStatus(events)).toEqual({
       error: "The task failed before it finished.",
       question: null,
+      questionId: null,
       reply: null,
       status: "failed",
     });
@@ -171,6 +177,7 @@ describe("site task status", () => {
     expect(siteTaskStatus(events)).toEqual({
       error: "The task was cancelled.",
       question: null,
+      questionId: null,
       reply: null,
       status: "failed",
     });
@@ -185,6 +192,7 @@ describe("site task status", () => {
     expect(siteTaskStatus(events)).toEqual({
       error: null,
       question: 'Enter the code for "Vendor".',
+      questionId: "interaction-1",
       reply: null,
       status: "awaiting-input",
     });
@@ -220,6 +228,7 @@ describe("site task status", () => {
     expect(siteTaskStatus(events)).toEqual({
       error: null,
       question: null,
+      questionId: null,
       reply: null,
       status: "running",
     });
@@ -242,6 +251,7 @@ describe("site task status", () => {
       error:
         "The task stopped at a step that needs a person in iCommAssist, which a site cannot answer.",
       question: null,
+      questionId: null,
       reply: null,
       status: "failed",
     });
@@ -268,6 +278,7 @@ describe("site task status", () => {
       error:
         "The task reached its usage limit, so it was stopped before it finished.",
       question: null,
+      questionId: null,
       reply: null,
       status: "failed",
     });
@@ -298,7 +309,38 @@ describe("site task status", () => {
     );
   });
 
-  it("follows the latest turn of the session", () => {
+  it("tells a question asked again from the first, by id and by wording", () => {
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      codeQuestion("interaction-1", "Enter the code."),
+      [
+        {
+          data: {
+            deliveryId: "delivery-2",
+            interactionId: "interaction-1",
+            responseId: "response-1",
+            value: { text: "assist-code.v1.sealed" },
+          },
+          type: "response.submitted",
+        },
+        {
+          data: { interactionId: "interaction-1", outcome: "accepted" },
+          type: "interaction.settled",
+        },
+      ],
+      codeQuestion("interaction-2", "Enter the code."),
+    ]);
+
+    expect(siteTaskStatus(events)).toMatchObject({
+      question:
+        "The code sent before could not be used, so a new one is needed. Enter the code.",
+      questionId: "interaction-2",
+      status: "awaiting-input",
+    });
+    expect(awaitedSiteCode(events)).toBe("interaction-2");
+  });
+
+  it("keeps the site's result when the owner starts another turn in the chat", () => {
     const first = [
       [turnStarted, runRequested],
       sendMessage("call-1", { kind: "message", text: "first" }),
@@ -322,9 +364,10 @@ describe("site task status", () => {
       ],
     ] satisfies Fact[][];
 
-    expect(siteTaskStatus(eventsOf([...first, ...second])).status).toBe(
-      "running"
-    );
+    expect(siteTaskStatus(eventsOf([...first, ...second]))).toMatchObject({
+      reply: "first",
+      status: "completed",
+    });
     expect(
       siteTaskStatus(
         eventsOf([
@@ -363,7 +406,8 @@ describe("site task status", () => {
     ).toEqual({
       error: null,
       question: null,
-      reply: "second",
+      questionId: null,
+      reply: "first",
       status: "completed",
     });
   });

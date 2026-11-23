@@ -6,6 +6,7 @@ import type {
   createBrowserSession,
   deleteBrowserSession,
   listWorkerBrowserSessions,
+  readBrowserSession,
   withBrowserProfileWriteLock,
 } from "@db/services/browsers";
 import type { recordBrowserTraceDomains } from "@db/services/browser-traces";
@@ -31,6 +32,7 @@ const serviceMocks = vi.hoisted(() => ({
   deleteBrowserSession: vi.fn<typeof deleteBrowserSession>(),
   harvestBrowserTraceDomains: vi.fn<typeof harvestBrowserTraceDomains>(),
   listWorkerBrowserSessions: vi.fn<typeof listWorkerBrowserSessions>(),
+  readWorkspaceBrowserSession: vi.fn<typeof readBrowserSession>(),
   recordBrowserTraceDomains: vi.fn<typeof recordBrowserTraceDomains>(),
   requireOwnedBrowserSession: vi.fn<typeof requireOwnedBrowserSession>(),
   requireWorkerScope: vi.fn<typeof requireWorkerScope>(),
@@ -41,6 +43,7 @@ vi.mock("@db/services/browsers", () => ({
   createBrowserSession: serviceMocks.createBrowserSession,
   deleteBrowserSession: serviceMocks.deleteBrowserSession,
   listWorkerBrowserSessions: serviceMocks.listWorkerBrowserSessions,
+  readBrowserSession: serviceMocks.readWorkspaceBrowserSession,
   withBrowserProfileWriteLock: serviceMocks.withBrowserProfileWriteLock,
 }));
 vi.mock("@db/services/browser-traces", () => ({
@@ -440,6 +443,63 @@ describe("Kernel browser contract", () => {
     ).toEqual([1_800, 1_800, 3_600]);
   });
 
+  it("lets an interactive worker delete a sign-in browser another worker left on the workspace profile", async () => {
+    strandedWriter({ profileId: "profile-1", saving: true });
+
+    await expect(
+      manageBrowsers.execute(
+        { action: "delete", session_id: "browser-stranded" },
+        workerContext
+      )
+    ).resolves.toBe("Browser session deleted successfully");
+
+    expect(mocks.deleteBrowser).toHaveBeenCalledExactlyOnceWith(
+      "browser-stranded",
+      expect.anything()
+    );
+    // Its visited domains stay with the worker that opened it.
+    expect(mocks.harvestBrowserTraceDomains).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      "worker-session-old",
+      expect.objectContaining({ sessionId: "browser-stranded" }),
+      expect.anything()
+    );
+  });
+
+  it.each([
+    ["read-only", { profileId: "profile-1", saving: false }],
+    [
+      "saving to another profile",
+      { profileId: "profile-login-1", saving: true },
+    ],
+  ])(
+    "refuses to delete another worker's browser that is %s",
+    async (_case, writer) => {
+      strandedWriter(writer);
+
+      await expect(
+        manageBrowsers.execute(
+          { action: "delete", session_id: "browser-stranded" },
+          workerContext
+        )
+      ).rejects.toThrow("Browser session not found.");
+      expect(mocks.deleteBrowser).not.toHaveBeenCalled();
+    }
+  );
+
+  it("never lets a site task delete another worker's browser", async () => {
+    strandedWriter({ profileId: "profile-1", saving: true });
+
+    await expect(
+      manageBrowsers.execute(
+        { action: "delete", session_id: "browser-stranded" },
+        siteWorkerContext({ id: "login-1", origin: "https://vendor.com" })
+      )
+    ).rejects.toThrow("Browser session not found.");
+    expect(serviceMocks.readWorkspaceBrowserSession).not.toHaveBeenCalled();
+    expect(mocks.deleteBrowser).not.toHaveBeenCalled();
+  });
+
   it("keeps interactive browsers on the workspace profile", async () => {
     await manageBrowsers.execute(
       { action: "create", save_changes: true },
@@ -602,6 +662,37 @@ describe("Kernel browser contract", () => {
 });
 
 // A worker of a site task, which inherits the root session's initiator.
+// A browser another worker of the workspace opened and never deleted.
+function strandedWriter({
+  profileId,
+  saving,
+}: {
+  readonly profileId: string;
+  readonly saving: boolean;
+}) {
+  mocks.readBrowserSession.mockRejectedValue(
+    new Error("Browser session not found.")
+  );
+  serviceMocks.readWorkspaceBrowserSession.mockResolvedValue({
+    createdAt: "2026-08-27T00:00:00.000Z",
+    sessionId: "browser-stranded",
+    workerSessionId: "worker-session-old",
+  });
+  mocks.retrieveBrowser.mockResolvedValue({
+    cdp_ws_url: "wss://kernel.test/cdp",
+    created_at: "2026-08-27T00:00:00.000Z",
+    headless: false,
+    memory: "2GiB",
+    profile: { created_at: "2026-08-27T00:00:00.000Z", id: profileId },
+    profile_save_changes: saving,
+    region: "us-east",
+    session_id: "browser-stranded",
+    stealth: false,
+    timeout_seconds: 3_600,
+    webdriver_ws_url: "wss://kernel.test/webdriver",
+  });
+}
+
 function siteWorkerContext(login: { id: string; origin: string } | undefined) {
   const owner = accessScopeForUser("better-auth:owner-1");
   const initiator = sitePrincipal(

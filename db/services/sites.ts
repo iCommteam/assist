@@ -85,3 +85,21 @@ export async function isSiteTaskSession(
     .limit(1);
   return task !== undefined;
 }
+
+// Whether a session is a task that any site created in this workspace.
+export async function isAnySiteTaskSession(
+  scope: AccessScope,
+  sessionId: string
+) {
+  const [task] = await db
+    .select({ id: siteTasks.id })
+    .from(siteTasks)
+    .where(
+      and(
+        eq(siteTasks.sessionId, sessionId),
+        eq(siteTasks.workspaceId, scope.workspaceId)
+      )
+    )
+    .limit(1);
+  return task !== undefined;
+}
