@@ -440,24 +440,57 @@ describe("Kernel browser contract", () => {
     ).toEqual([1_800, 1_800, 3_600]);
   });
 
-  it("keeps interactive and unpinned site browsers on the workspace profile", async () => {
+  it("keeps interactive browsers on the workspace profile", async () => {
     await manageBrowsers.execute(
       { action: "create", save_changes: true },
       workerContext
     );
+
+    const workspaceProfile = kernelProfileNameForWorkspace("workspace-1");
+    expect(mocks.retrieveProfile).toHaveBeenCalledExactlyOnceWith(
+      workspaceProfile,
+      expect.anything()
+    );
+    expect(mocks.withBrowserProfileWriteLock).toHaveBeenCalledExactlyOnceWith(
+      workspaceProfile,
+      expect.any(Function)
+    );
+    expect(mocks.createBrowser).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        profile: { id: "profile-1", save_changes: true },
+      }),
+      expect.anything()
+    );
+  });
+
+  it("gives an unpinned site task's browsers no profile at all", async () => {
     await manageBrowsers.execute(
-      { action: "create", save_changes: true },
+      { action: "create", start_url: "https://example.com/" },
       siteWorkerContext(undefined)
     );
 
-    const workspaceProfile = kernelProfileNameForWorkspace("workspace-1");
-    expect(mocks.retrieveProfile.mock.calls.map(([name]) => name)).toEqual([
-      workspaceProfile,
-      workspaceProfile,
-    ]);
-    expect(
-      mocks.withBrowserProfileWriteLock.mock.calls.map(([name]) => name)
-    ).toEqual([workspaceProfile, workspaceProfile]);
+    expect(mocks.retrieveProfile).not.toHaveBeenCalled();
+    expect(mocks.listKernelBrowsers).not.toHaveBeenCalled();
+    expect(mocks.withBrowserProfileWriteLock).not.toHaveBeenCalled();
+    expect(mocks.createBrowser).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ profile: undefined }),
+      expect.anything()
+    );
+  });
+
+  it("refuses to save sign-in state for an unpinned site task", async () => {
+    await expect(
+      manageBrowsers.execute(
+        { action: "create", save_changes: true },
+        siteWorkerContext(undefined)
+      )
+    ).rejects.toThrow(
+      'This site task is not pinned to a saved login, so its browsers keep no sign-in and cannot be created with save_changes. If the work needs a sign-in, return status "failure" saying the task has no saved login.'
+    );
+
+    expect(mocks.retrieveProfile).not.toHaveBeenCalled();
+    expect(mocks.withBrowserProfileWriteLock).not.toHaveBeenCalled();
+    expect(mocks.createBrowser).not.toHaveBeenCalled();
   });
 
   it("gives a pinned site task's browsers its login's own profile and writer lock", async () => {

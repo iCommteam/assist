@@ -42,6 +42,9 @@ const browserTimeoutCeilingSeconds = 60 * 60;
 // relayed code, whatever the model asks for.
 const siteBrowserTimeoutSeconds = 30 * 60;
 
+const unpinnedSaveRefusal =
+  'This site task is not pinned to a saved login, so its browsers keep no sign-in and cannot be created with save_changes. If the work needs a sign-in, return status "failure" saying the task has no saved login.';
+
 const inputSchema = z.object({
   action: z.enum(["create", "update", "list", "get", "delete"]),
   save_changes: z.boolean().optional(),
@@ -62,7 +65,7 @@ const inputSchema = z.object({
 
 const manageBrowsers = defineTool({
   description:
-    'Manage browser sessions backed by a persistent profile: the workspace profile, or in a site task pinned to a saved login, a profile of that login alone. Create read-only browsers by default so tasks can run in parallel. Immediately before a login, replace that task browser with one created using save_changes: true, then delete it after authentication so the session is saved. Only one profile writer may be active. Use "list" or "get" to inspect the browsers this task created.',
+    'Manage browser sessions backed by a persistent profile: the workspace profile, or in a site task pinned to a saved login, a profile of that login alone. A site task with no pin gets browsers with no profile, which cannot save a sign-in. Create read-only browsers by default so tasks can run in parallel. Immediately before a login, replace that task browser with one created using save_changes: true, then delete it after authentication so the session is saved. Only one profile writer may be active. Use "list" or "get" to inspect the browsers this task created.',
   inputSchema,
   async execute(input, context) {
     const scope = await requireWorkerScope(context);
@@ -73,13 +76,17 @@ const manageBrowsers = defineTool({
         assertWorkerNotBlocked();
         const fence = workerNavigationFence(context.session);
         if (input.start_url) assertNavigableUrl(input.start_url, fence);
-        const login = siteLoginOfSession(context.session.auth.initiator);
-        const profileName = login
-          ? kernelProfileNameForLogin(scope.workspaceId, login.id)
-          : kernelProfileNameForWorkspace(scope.workspaceId);
+        const { initiator } = context.session.auth;
+        const site = siteOfSession(initiator);
+        const profileName = browserProfileName(scope.workspaceId, initiator);
+        if (!profileName && input.save_changes) {
+          throw new Error(unpinnedSaveRefusal);
+        }
         const create = async () => {
-          const profile = await ensureProfile(profileName, signal);
-          if (input.save_changes) {
+          const profile = profileName
+            ? await ensureProfile(profileName, signal)
+            : undefined;
+          if (profile && input.save_changes) {
             const activeWriter = await findActiveProfileWriter(
               profile.id,
               signal
@@ -98,17 +105,16 @@ const manageBrowsers = defineTool({
             {
               chrome_policy: browserChromePolicy(fence),
               kiosk_mode: true,
-              profile: {
-                id: profile.id,
-                save_changes: input.save_changes ?? false,
-              },
+              profile: profile
+                ? { id: profile.id, save_changes: input.save_changes ?? false }
+                : undefined,
               start_url: input.start_url,
               stealth: false,
               telemetry: {
                 browser: { page: { enabled: true } },
                 enabled: true,
               },
-              timeout_seconds: siteOfSession(context.session.auth.initiator)
+              timeout_seconds: site
                 ? siteBrowserTimeoutSeconds
                 : (input.timeout_seconds ?? browserTimeoutFloorSeconds),
               viewport: browserViewport(input),
@@ -137,7 +143,7 @@ const manageBrowsers = defineTool({
           }
           return lifecycleResult(browser);
         };
-        return input.save_changes
+        return profileName && input.save_changes
           ? withBrowserProfileWriteLock(profileName, create)
           : create();
       }
@@ -298,6 +304,20 @@ function lifecycleResult(browser: KernelBrowser) {
       `Use manage_browsers with action "delete" and session_id "${value.session_id}" when finished.`,
     ],
   };
+}
+
+// The Kernel profile a session's browsers keep cookies in. A site task without
+// a pin gets none: the workspace profile holds the owner's own sign-ins, and a
+// page the task reaches must neither use nor change them.
+function browserProfileName(
+  workspaceId: string,
+  initiator: Parameters<typeof siteOfSession>[0]
+) {
+  const login = siteLoginOfSession(initiator);
+  if (login) return kernelProfileNameForLogin(workspaceId, login.id);
+  return siteOfSession(initiator)
+    ? undefined
+    : kernelProfileNameForWorkspace(workspaceId);
 }
 
 async function ensureProfile(name: string, signal?: AbortSignal) {

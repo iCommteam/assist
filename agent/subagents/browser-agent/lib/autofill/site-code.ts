@@ -10,10 +10,6 @@ import {
   blockReason,
   inspectBrowserPages,
 } from "@agent/subagents/browser-agent/lib/policy/page-check";
-import {
-  assertNavigableUrl,
-  siteNavigationFence,
-} from "@agent/subagents/browser-agent/lib/policy/hosts";
 import { rememberInjectedValues } from "@agent/subagents/browser-agent/lib/autofill/redaction";
 import {
   assertKernelOneTimeCodeFocus,
@@ -37,7 +33,7 @@ const notPinnedMessage =
 const blockedMessage =
   'BLOCKED: the page shows a CAPTCHA, robot check or access block, so no code was asked for. Delete the browser with manage_browsers, then return status "failure" reporting this blocker.';
 const outsideSiteMessage =
-  "The active tab is outside the pinned login's website, so no code was asked for.";
+  'The code page is not on the exact https origin the pinned login was saved with, so no code was asked for or filled. Delete the browser, then return status "failure" saying the code page is on another origin.';
 const focusMessage =
   "Focus the visible code field of the sign-in with browser_act, then call fill_code_from_site again.";
 const missingLoginMessage = "The selected vault item was not found.";
@@ -68,10 +64,10 @@ export async function prepareSiteCodeQuestion(
 ) {
   try {
     const { login, scope } = await requireCodeTask(ctx, browserSessionId);
-    const origin = await codePageOrigin(ctx, browserSessionId, login.origin);
+    await requireCodePage(ctx, browserSessionId, login.origin);
     await assertKernelOneTimeCodeFocus({
       browserSessionId,
-      expectedOrigin: origin,
+      expectedOrigin: login.origin,
       signal: ctx.abortSignal,
     });
     const item = await readVaultItem(scope, login.id);
@@ -106,11 +102,11 @@ export async function fillRelayedSiteCode(
     // Registered before the fill: a fill that fails halfway may still have
     // written the code.
     rememberInjectedValues(ctx.session.id, browserSessionId, [code]);
-    const origin = await codePageOrigin(ctx, browserSessionId, login.origin);
+    await requireCodePage(ctx, browserSessionId, login.origin);
     await fillKernelOneTimeCode({
       browserSessionId,
       code,
-      expectedOrigin: origin,
+      expectedOrigin: login.origin,
       signal: ctx.abortSignal,
     });
     return { filled: true, message: filledMessage };
@@ -134,8 +130,11 @@ async function requireCodeTask(
 }
 
 // The page check's block state lives in the worker's eve state, which a
-// workflow step cannot read, so the open tabs are checked afresh.
-async function codePageOrigin(
+// workflow step cannot read, so the open tabs are checked afresh. A relayed
+// code goes only to the login's own origin over https, as its password and
+// authenticator code do: another host under the same domain may serve pages
+// someone else wrote, and the question names the login's host.
+async function requireCodePage(
   ctx: WorkflowStepToolContext,
   browserSessionId: string,
   loginOrigin: string
@@ -148,13 +147,9 @@ async function codePageOrigin(
     browserSessionId,
     signal: ctx.abortSignal,
   });
-  try {
-    assertNavigableUrl(origin, siteNavigationFence(loginOrigin));
-  } catch {
-    // The refusal names hosts from the page; the fixed message is enough.
+  if (origin !== loginOrigin || !origin.startsWith("https://")) {
     throw new Error(outsideSiteMessage);
   }
-  return origin;
 }
 
 // Worded here, not by a model, so a page cannot word what the site shows a

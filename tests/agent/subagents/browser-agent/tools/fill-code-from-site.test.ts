@@ -79,6 +79,11 @@ const filled = {
   message:
     "The one-time code from the site was filled. Submit the code form now.",
 };
+const outsideOrigin = {
+  filled: false,
+  message:
+    'The code page is not on the exact https origin the pinned login was saved with, so no code was asked for or filled. Delete the browser, then return status "failure" saying the code page is on another origin.',
+};
 const codePage: BrowserPageState = {
   frames: [],
   status: 200,
@@ -196,19 +201,45 @@ describe("fill_code_from_site", () => {
     );
   });
 
-  it("fills a code page on another host of the login's site", async () => {
-    mocks.currentKernelPageOrigin.mockResolvedValue(
-      "https://verify.vendor.example"
-    );
+  it.each([
+    ["another host of the login's site", "https://community.vendor.example"],
+    ["the login's host over plain http", "http://login.vendor.example"],
+    ["a look-alike host", "https://login.vendor.example.evil.test"],
+  ])("asks nothing for a code page on %s", async (_case, pageOrigin) => {
+    mocks.currentKernelPageOrigin.mockResolvedValue(pageOrigin);
+    const ask = answered(sealed());
+
+    const result = await run(workerContext(ask));
+
+    expect(result).toEqual(outsideOrigin);
+    expect(ask).not.toHaveBeenCalled();
+    expect(mocks.assertFocus).not.toHaveBeenCalled();
+  });
+
+  it("fills nothing when the tab left the login's origin during the wait", async () => {
+    mocks.currentKernelPageOrigin
+      .mockResolvedValueOnce(origin)
+      .mockResolvedValue("https://help.vendor.example");
 
     const result = await run(workerContext(answered(sealed())));
 
-    expect(result).toEqual(filled);
-    expect(mocks.fill).toHaveBeenCalledWith(
-      expect.objectContaining({
-        expectedOrigin: "https://verify.vendor.example",
-      })
+    expect(result).toEqual(outsideOrigin);
+    expect(mocks.fill).not.toHaveBeenCalled();
+  });
+
+  it("refuses an http login origin even on its own page", async () => {
+    mocks.currentKernelPageOrigin.mockResolvedValue("http://intranet.example");
+    const ask = answered(sealed());
+
+    const result = await run(
+      workerContext(
+        ask,
+        siteInitiator({ id: "login-1", origin: "http://intranet.example" })
+      )
     );
+
+    expect(result).toEqual(outsideOrigin);
+    expect(ask).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -261,22 +292,6 @@ describe("fill_code_from_site", () => {
     expect(result.message).toMatch(/^BLOCKED: /u);
     expect(ask).not.toHaveBeenCalled();
     expect(mocks.assertFocus).not.toHaveBeenCalled();
-  });
-
-  it("asks nothing for a tab outside the pinned login's site", async () => {
-    mocks.currentKernelPageOrigin.mockResolvedValue(
-      "https://vendor.example.evil.test"
-    );
-    const ask = answered(sealed());
-
-    const result = await run(workerContext(ask));
-
-    expect(result).toEqual({
-      filled: false,
-      message:
-        "The active tab is outside the pinned login's website, so no code was asked for.",
-    });
-    expect(ask).not.toHaveBeenCalled();
   });
 
   it("asks only once a code field has focus", async () => {
