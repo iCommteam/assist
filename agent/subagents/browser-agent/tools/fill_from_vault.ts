@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireOwnedBrowserSession } from "@agent/subagents/browser-agent/lib/owned-browser";
 import { requireWorkerScope } from "@agent/subagents/browser-agent/lib/access";
 import { readVaultItem } from "@db/services/vault";
+import { siteLoginOfSession, siteOfSession } from "@agent/lib/site-principal";
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
 import {
   assertWorkerNotBlocked,
@@ -63,6 +64,15 @@ export default defineTool({
       input.browserSessionId
     );
     assertWorkerNotBlocked();
+    // A site task fills only the login it is pinned to, and none without a
+    // pin. Any other handle reads as missing, whether or not it exists.
+    const { initiator } = context.session.auth;
+    if (
+      siteOfSession(initiator) &&
+      siteLoginOfSession(initiator)?.id !== input.candidateId
+    ) {
+      throw new Error("The selected vault item was not found.");
+    }
     const item = await readVaultItem(scope, input.candidateId);
     if (!item) throw new Error("The selected vault item was not found.");
     if (item.kind !== "login") {

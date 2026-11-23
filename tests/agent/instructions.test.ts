@@ -15,6 +15,9 @@ import roleInstructions from "@agent/instructions/20-role";
 import siteTask from "@agent/instructions/22-site-task";
 import workerCoordination from "@agent/instructions/25-worker-coordination";
 import messageStyle from "@agent/instructions/30-message-style";
+import workerSiteLogin from "@agent/subagents/browser-agent/instructions/site-login";
+import { sitePrincipal } from "@agent/lib/site-principal";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 
 describe("agent instructions", () => {
   it.each([
@@ -177,6 +180,45 @@ describe("site task instructions", () => {
     expect(selected?.content).toContain(
       "Personal Info and workstreams are off for a site task"
     );
+    expect(selected?.content).toContain(
+      "A site task can use at most one saved login: the one the site pinned it to."
+    );
+    expect(selected?.content).not.toContain("Pinned login");
+  });
+
+  it("tells the coordinator of a pinned task its one account, site and limits", async () => {
+    const selected = await evaluateDynamic(siteTask, pinnedSiteContext());
+    expect(selected?.content).toContain("connected site `teemiq`");
+    expect(selected?.content).toContain(
+      "The site pinned this task to one saved login, for https://login.vendor.example."
+    );
+    expect(selected?.content).toContain(
+      "tell it in its assignment that the task is limited to that one account"
+    );
+    expect(selected?.content).toContain(
+      "never change account settings, passwords, email addresses, phone numbers, addresses, or payout or payment details"
+    );
+    expect(selected?.content).toContain(
+      "never submit any form other than the sign-in and the search, filter, or download"
+    );
+    expect(selected?.content).not.toContain("{{origin}}");
+  });
+
+  it("gives the browser worker of a pinned task its limits, and no one else", async () => {
+    const pinned = await evaluateDynamic(workerSiteLogin, pinnedSiteContext());
+    expect(pinned?.content).toContain(
+      "pinned to one saved login, for https://login.vendor.example"
+    );
+    expect(pinned?.content).toContain("Work only in that account.");
+    expect(pinned?.content).toContain(
+      "never submit any form other than the sign-in and the search, filter, or download"
+    );
+    expect(pinned?.content).toContain("Stop and return `failure`");
+
+    expect(await evaluateDynamic(workerSiteLogin, siteContext())).toBeNull();
+    expect(
+      await evaluateDynamic(workerSiteLogin, dynamicContext("authjs", "authjs"))
+    ).toBeNull();
   });
 
   it("keeps site sessions in interactive mode", async () => {
@@ -195,6 +237,33 @@ describe("site task instructions", () => {
     expect(await evaluateDynamic(siteTask, context)).toBeNull();
   });
 });
+
+// A later turn from the owner keeps the pin of the task's initiator.
+function pinnedSiteContext() {
+  const owner = accessScopeForUser("better-auth:owner-1");
+  const initiator = sitePrincipal(
+    {
+      login: { id: "login-1", origin: "https://login.vendor.example" },
+      op: "create",
+      site: "teemiq",
+    },
+    "owner@example.test",
+    owner
+  );
+  return dynamicContextFor({
+    auth: {
+      current: {
+        attributes: { workspaceId: owner.workspaceId },
+        authenticator: "authjs",
+        principalId: owner.userId,
+        principalType: "user",
+      },
+      initiator,
+    },
+    channel: { kind: "http", metadata: {} },
+    sessionId: "session-site",
+  });
+}
 
 function siteContext() {
   const site = {

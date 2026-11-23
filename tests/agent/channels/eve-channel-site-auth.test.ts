@@ -130,6 +130,58 @@ describe("Eve channel site credential", () => {
     expect(response.status).toBe(403);
   });
 
+  it("starts a pinned task with the pin on the session's initiator", async () => {
+    const createSession = vi.fn<
+      (input: { auth: unknown }) => Promise<{
+        deliveryId: string;
+        sessionId: string;
+      }>
+    >(async () => ({ deliveryId: "delivery-1", sessionId: "wrun_new" }));
+    const credential = mintSiteCredential(secret, {
+      login: { id: "login-1", origin: "https://login.vendor.example" },
+      op: "create",
+      site: "teemiq",
+    });
+    const route = findRoute("POST", "/eve/v1/session");
+    // eve hands its own routes the session creator under this internal key.
+    const context = Object.assign(unexpectedRouteContext(), {
+      __eveRouteSessionCreator: createSession,
+    });
+
+    const response = await route.handler(
+      new Request("https://assistant.example/eve/v1/session", {
+        body: JSON.stringify({ message: "Fetch the October invoice." }),
+        headers: {
+          authorization: `Bearer ${credential}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+      }),
+      context
+    );
+
+    expect(response.status).toBe(202);
+    expect(createSession).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        auth: {
+          attributes: {
+            conversationChannel: "eve",
+            email: "owner@example.test",
+            site: "teemiq",
+            siteLogin: "login-1",
+            siteLoginOrigin: "https://login.vendor.example",
+            workspaceId: owner.workspaceId,
+          },
+          authenticator: "assist-site",
+          principalId: owner.userId,
+          principalType: "user",
+        },
+      })
+    );
+    expect(isSiteTaskSessionMock).not.toHaveBeenCalled();
+    expect(getAuthSessionMock).not.toHaveBeenCalled();
+  });
+
   it("admits a read of the site's own session as its owner", async () => {
     const pending = stream("wrun_own", mintSiteCredential(secret, readOwn));
 

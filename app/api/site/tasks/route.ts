@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { ensureScope } from "@db/services/scope";
 import { recordSiteTask } from "@db/services/sites";
+import { readVaultLoginOrigin } from "@db/services/vault";
+import type { AccessScope } from "@shared/identity/access-scope";
+import { siteLoginPinSchema } from "@shared/identity/site-credential";
 import {
   authenticateSiteRequest,
   siteError,
@@ -10,6 +13,7 @@ import { siteEveClient } from "@app/api/site/tasks/_lib/eve";
 
 const maxBodyBytes = 64 * 1024;
 const taskInputSchema = z.object({
+  loginId: siteLoginPinSchema.shape.id.optional(),
   message: z
     .string()
     .min(1)
@@ -24,6 +28,9 @@ export async function POST(request: Request) {
   if (!input.success) return siteError(400, "invalid_request");
 
   const { owner, site } = caller;
+  const pin = await resolveLoginPin(owner.scope, site, input.data.loginId);
+  if (!pin.ok) return pin.response;
+
   const start = claimStartSlot(site);
   if (!start.ok) {
     console.warn("[site] task start rate limited", { site });
@@ -36,6 +43,7 @@ export async function POST(request: Request) {
     // otherwise create only after eve has accepted the session.
     await ensureScope(owner.scope);
     const { session } = await siteEveClient({
+      login: pin.login,
       op: "create",
       site,
     }).sessions.create({ message: input.data.message });
@@ -50,6 +58,31 @@ export async function POST(request: Request) {
     });
     return siteError(503, "unavailable");
   }
+}
+
+// A pinned task may use only that saved login, and its browser only that
+// login's site. Unknown, foreign, other-kind and unbound items get the same
+// answer, so a site learns nothing about the rest of the vault.
+async function resolveLoginPin(
+  scope: AccessScope,
+  site: string,
+  loginId: string | undefined
+) {
+  if (loginId === undefined) return { login: undefined, ok: true as const };
+  let origin: string | undefined;
+  try {
+    origin = await readVaultLoginOrigin(scope, loginId);
+  } catch (error) {
+    console.warn("[site] task login could not be read", {
+      error: error instanceof Error ? error.name : "unknown",
+      site,
+    });
+    return { ok: false as const, response: siteError(503, "unavailable") };
+  }
+  if (!origin) {
+    return { ok: false as const, response: siteError(400, "invalid_request") };
+  }
+  return { login: { id: loginId, origin }, ok: true as const };
 }
 
 // Every start spends model time and a browser, so a leaked token is capped per

@@ -20,6 +20,8 @@ import manageBrowsers, {
 } from "@agent/subagents/browser-agent/tools/manage_browsers";
 import { amazonUrlBlocklist } from "@agent/subagents/browser-agent/lib/policy/hosts";
 import { checkBrowserPages } from "@agent/subagents/browser-agent/lib/policy/page-check";
+import { sitePrincipal } from "@agent/lib/site-principal";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 
 const serviceMocks = vi.hoisted(() => ({
   createBrowserSession: vi.fn<typeof createBrowserSession>(),
@@ -221,6 +223,65 @@ describe("Kernel browser contract", () => {
     expect(mocks.createBrowser).not.toHaveBeenCalled();
   });
 
+  it("fences a pinned site task's browser to its login's site", async () => {
+    const context = siteWorkerContext({
+      id: "login-1",
+      origin: "https://login.vendor.com",
+    });
+
+    await manageBrowsers.execute(
+      { action: "create", start_url: "https://billing.vendor.com/invoices" },
+      context
+    );
+
+    expect(mocks.createBrowser).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        chrome_policy: {
+          URLAllowlist: ["vendor.com"],
+          URLBlocklist: ["*", ...amazonUrlBlocklist],
+        },
+        start_url: "https://billing.vendor.com/invoices",
+      }),
+      expect.anything()
+    );
+  });
+
+  it("refuses a pinned site task's start URL outside its site before any browser", async () => {
+    const context = siteWorkerContext({
+      id: "login-1",
+      origin: "https://login.vendor.com",
+    });
+
+    await expect(
+      manageBrowsers.execute(
+        { action: "create", start_url: "https://attacker.example/?d=x" },
+        context
+      )
+    ).rejects.toThrow(/attacker\.example is outside vendor\.com/u);
+    await expect(
+      manageBrowsers.execute(
+        { action: "create", start_url: "https://www.amazon.com/" },
+        context
+      )
+    ).rejects.toThrow(/blocked by policy for now/u);
+    expect(mocks.retrieveProfile).not.toHaveBeenCalled();
+    expect(mocks.createBrowser).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Amazon blocklist alone for an unpinned site task", async () => {
+    await manageBrowsers.execute(
+      { action: "create", start_url: "https://example.com/" },
+      siteWorkerContext(undefined)
+    );
+
+    expect(mocks.createBrowser).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        chrome_policy: { URLBlocklist: amazonUrlBlocklist },
+      }),
+      expect.anything()
+    );
+  });
+
   it("creates no browser after a block but still deletes one", async () => {
     mocks.playwright.mockResolvedValueOnce({
       result: [
@@ -364,6 +425,20 @@ describe("Kernel browser contract", () => {
     );
   });
 });
+
+// A worker of a site task, which inherits the root session's initiator.
+function siteWorkerContext(login: { id: string; origin: string } | undefined) {
+  const owner = accessScopeForUser("better-auth:owner-1");
+  const initiator = sitePrincipal(
+    { login, op: "create", site: "teemiq" },
+    "owner@example.test",
+    owner
+  );
+  return toolContextFor({
+    auth: { current: initiator, initiator },
+    sessionId: "worker-session-1",
+  });
+}
 
 function asyncItems<T>(items: readonly T[]): AsyncIterable<T> {
   return {

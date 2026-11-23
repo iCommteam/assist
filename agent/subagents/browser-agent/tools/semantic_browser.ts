@@ -16,7 +16,10 @@ import {
   redactBrowserOutput,
   releaseNavigatedDocuments,
 } from "@agent/subagents/browser-agent/lib/autofill/redaction";
-import { assertNavigableUrl } from "@agent/subagents/browser-agent/lib/policy/hosts";
+import {
+  assertNavigableUrl,
+  workerNavigationFence,
+} from "@agent/subagents/browser-agent/lib/policy/hosts";
 import {
   assertWorkerNotBlocked,
   checkBrowserPages,
@@ -72,7 +75,9 @@ async function executeSemanticTool(
   assertWorkerNotBlocked();
   if (spec.name === "browser_navigate") {
     const url = typeof toolInput.url === "string" ? toolInput.url : "";
-    if (!historyNavigations.has(url)) assertNavigableUrl(url);
+    if (!historyNavigations.has(url)) {
+      assertNavigableUrl(url, workerNavigationFence(context.session));
+    }
   }
 
   let output: LoopToolExecutionResult;

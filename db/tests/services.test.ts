@@ -233,6 +233,54 @@ describe("database services", () => {
       await vault.deleteVaultItem(bob, aliceVaultItem?.id ?? "vault-alice")
     ).toBe(false);
 
+    // A site task may be pinned only to a login bound to a website.
+    const aliceLoginId = aliceVaultItem?.id ?? "vault-alice";
+    expect(await vault.readVaultLoginOrigin(alice, aliceLoginId)).toBe(
+      "https://example.com"
+    );
+    expect(await vault.readVaultLoginOrigin(bob, aliceLoginId)).toBeUndefined();
+    expect(
+      await vault.readVaultLoginOrigin(alice, "vault-unknown")
+    ).toBeUndefined();
+    await vault.saveVaultItem(alice, {
+      account: "",
+      kind: "login",
+      label: "Legacy",
+      secret: JSON.stringify({
+        authentication: { password: "correct horse", type: "password" },
+        identifier: { type: "username", value: "alice" },
+        kind: "login",
+        version: 1,
+      }),
+    });
+    await vault.saveVaultItem(alice, {
+      account: "",
+      kind: "address",
+      label: "Home",
+      secret: JSON.stringify({
+        city: "Springfield",
+        countryCode: "US",
+        kind: "address",
+        line1: "1 Main St",
+        postalCode: "12345",
+        recipientName: "Alice",
+        region: "IL",
+        version: 1,
+      }),
+    });
+    const unbound = (await vault.listVaultItems(alice)).filter(
+      ({ label }) => label !== "Alice"
+    );
+    expect(unbound).toHaveLength(2);
+    expect(
+      await Promise.all(
+        unbound.map(({ id }) => vault.readVaultLoginOrigin(alice, id))
+      )
+    ).toEqual([undefined, undefined]);
+    await Promise.all(
+      unbound.map(({ id }) => vault.deleteVaultItem(alice, id))
+    );
+
     const sharedSecretId = "00000000-0000-4000-8000-000000000099";
     await secrets.writeEncryptedSecret(
       alice,

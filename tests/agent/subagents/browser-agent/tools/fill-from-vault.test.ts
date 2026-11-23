@@ -9,6 +9,8 @@ import type { materializeAutofillClaims } from "@agent/subagents/browser-agent/l
 import type { readVaultItem, readVaultSecret } from "@db/services/vault";
 import { resetEveState } from "@tests/helpers/eve-state";
 import { toolContextFor } from "@tests/helpers/tool-context";
+import { sitePrincipal } from "@agent/lib/site-principal";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 
 const mocks = vi.hoisted(() => ({
   currentKernelPageOrigin: vi.fn<typeof currentKernelPageOrigin>(),
@@ -60,6 +62,21 @@ import {
 
 const input = { browserSessionId: "browser-1", candidateId: "item-1" };
 const context = toolContextFor({ sessionId: "worker-1" });
+const owner = accessScopeForUser("better-auth:owner-1");
+const member = {
+  attributes: { workspaceId: owner.workspaceId },
+  authenticator: "authjs",
+  principalId: owner.userId,
+  principalType: "user",
+};
+
+function siteInitiator(login: { id: string; origin: string } | undefined) {
+  return sitePrincipal(
+    { login, op: "create", site: "teemiq" },
+    "owner@example.test",
+    owner
+  );
+}
 
 function savedItem(kind: "address" | "contact" | "login" | "payment") {
   return {
@@ -182,6 +199,60 @@ describe("fill_from_vault", () => {
     );
     await expect(fillFromVault.execute(input, context)).rejects.toThrow(
       /^The saved login could not be filled\./u
+    );
+  });
+
+  it("fills only the login a site task is pinned to, through later turns", async () => {
+    const pinned = siteInitiator({
+      id: "item-1",
+      origin: "https://login.example.com",
+    });
+    // A later turn sent by the owner keeps the site task's pin.
+    const laterTurn = toolContextFor({
+      auth: { current: member, initiator: pinned },
+      sessionId: "worker-1",
+    });
+
+    await expect(
+      fillFromVault.execute({ ...input, candidateId: "item-2" }, laterTurn)
+    ).rejects.toThrow(/^The selected vault item was not found\.$/u);
+    expect(mocks.readVaultItem).not.toHaveBeenCalled();
+
+    await expect(fillFromVault.execute(input, laterTurn)).resolves.toEqual(
+      expect.objectContaining({ success: true })
+    );
+    expect(mocks.readVaultItem).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      "item-1"
+    );
+  });
+
+  it("fills nothing in a site task without a pin", async () => {
+    const unpinned = siteInitiator(undefined);
+    const siteTask = toolContextFor({
+      auth: { current: unpinned, initiator: unpinned },
+      sessionId: "worker-1",
+    });
+
+    await expect(fillFromVault.execute(input, siteTask)).rejects.toThrow(
+      /^The selected vault item was not found\.$/u
+    );
+    expect(mocks.readVaultItem).not.toHaveBeenCalled();
+    expect(mocks.fill).not.toHaveBeenCalled();
+  });
+
+  it("still fills any saved login for a member", async () => {
+    const memberTurn = toolContextFor({
+      auth: { current: member, initiator: member },
+      sessionId: "worker-1",
+    });
+
+    await expect(
+      fillFromVault.execute({ ...input, candidateId: "item-2" }, memberTurn)
+    ).resolves.toEqual(expect.objectContaining({ success: true }));
+    expect(mocks.readVaultItem).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      "item-2"
     );
   });
 

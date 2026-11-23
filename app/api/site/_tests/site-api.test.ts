@@ -7,6 +7,7 @@ import type {
   recordSiteTask,
   resolveSiteOwner,
 } from "@db/services/sites";
+import type { readVaultLoginOrigin } from "@db/services/vault";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { verifySiteCredential } from "@shared/identity/site-credential";
 import { eventsOf } from "@tests/helpers/session-view";
@@ -24,6 +25,7 @@ const services = vi.hoisted(() => ({
   ensureScope: vi.fn<typeof ensureScope>(),
   findSiteTaskSession: vi.fn<typeof findSiteTaskSession>(),
   recordSiteTask: vi.fn<typeof recordSiteTask>(),
+  readVaultLoginOrigin: vi.fn<typeof readVaultLoginOrigin>(),
   resolveSiteOwner: vi.fn<typeof resolveSiteOwner>(),
 }));
 
@@ -54,6 +56,9 @@ vi.mock("@db/services/sites", () => ({
   findSiteTaskSession: services.findSiteTaskSession,
   recordSiteTask: services.recordSiteTask,
   resolveSiteOwner: services.resolveSiteOwner,
+}));
+vi.mock("@db/services/vault", () => ({
+  readVaultLoginOrigin: services.readVaultLoginOrigin,
 }));
 
 const { GET: ping } = await import("@app/api/site/ping/route");
@@ -96,6 +101,9 @@ beforeEach(() => {
     createdAt: new Date(),
     sessionId: "wrun_1",
   });
+  services.readVaultLoginOrigin.mockResolvedValue(
+    "https://login.vendor.example"
+  );
   eve.create.mockResolvedValue({ session: { id: "wrun_1" } });
   eve.read.mockResolvedValue([]);
 });
@@ -322,6 +330,106 @@ describe("POST /api/site/tasks", () => {
   });
 });
 
+describe("POST /api/site/tasks login pin", () => {
+  it("pins the task to a saved login of the owner's vault", async () => {
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, {
+        loginId: "login-1",
+        message: "Fetch the October invoice.",
+      })
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ taskId });
+    expect(services.readVaultLoginOrigin).toHaveBeenCalledExactlyOnceWith(
+      owner,
+      "login-1"
+    );
+    expect(eve.create).toHaveBeenCalledExactlyOnceWith({
+      message: "Fetch the October invoice.",
+    });
+    expect(await grantOfLastClient()).toEqual({
+      login: { id: "login-1", origin: "https://login.vendor.example" },
+      op: "create",
+      site: "teemiq",
+    });
+  });
+
+  it("looks nothing up for a task without a pin", async () => {
+    const response = await startTask(teemiqToken);
+
+    expect(response.status).toBe(202);
+    expect(services.readVaultLoginOrigin).not.toHaveBeenCalled();
+    expect(await grantOfLastClient()).toEqual({ op: "create", site: "teemiq" });
+  });
+
+  // The vault service answers undefined alike for an unknown id, another
+  // workspace's item, another kind and a login bound to no website.
+  it("refuses a login the owner's vault cannot fill with the plain 400, uncounted", async () => {
+    services.readVaultLoginOrigin.mockResolvedValue(undefined);
+
+    const refused = await Promise.all(
+      Array.from({ length: 11 }, () =>
+        createTask(
+          siteRequest("/tasks", teemiqToken, {
+            loginId: "login-other",
+            message: "hello",
+          })
+        )
+      )
+    );
+
+    expect(refused.map(({ status }) => status)).toEqual(
+      Array.from({ length: 11 }, () => 400)
+    );
+    await expect(refused[0]?.json()).resolves.toEqual({
+      error: "invalid_request",
+    });
+    expect(eve.create).not.toHaveBeenCalled();
+    expect(services.ensureScope).not.toHaveBeenCalled();
+    expect((await startTask(teemiqToken)).status).toBe(202);
+  });
+
+  it.each([
+    ["an empty loginId", ""],
+    ["a numeric loginId", 42],
+    ["a null loginId", null],
+    ["a loginId over 200 characters", "x".repeat(201)],
+  ])("refuses %s with 400 before any lookup", async (_case, loginId) => {
+    const response = await createTask(
+      new Request("https://assist.example/api/site/tasks", {
+        body: JSON.stringify({ loginId, message: "hello" }),
+        headers: { authorization: `Bearer ${teemiqToken}` },
+        method: "POST",
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(services.readVaultLoginOrigin).not.toHaveBeenCalled();
+    expect(eve.create).not.toHaveBeenCalled();
+  });
+
+  it("answers 503 JSON when the vault cannot be read", async () => {
+    services.readVaultLoginOrigin.mockRejectedValue(new Error("pool timeout"));
+
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, {
+        loginId: "login-1",
+        message: "hello",
+      })
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({ error: "unavailable" });
+    expect(eve.create).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith(
+      "[site] task login could not be read",
+      { error: "Error", site: "teemiq" }
+    );
+  });
+});
+
 describe("POST /api/site/tasks rate cap", () => {
   it("answers 429 with Retry-After at the eleventh start in ten minutes, before eve", async () => {
     const accepted = await startEveryMinute(10);
@@ -539,7 +647,11 @@ describe("GET /api/site/tasks/{taskId}", () => {
   });
 });
 
-function siteRequest(path: string, token: string, body?: { message: string }) {
+function siteRequest(
+  path: string,
+  token: string,
+  body?: { loginId?: string; message: string }
+) {
   return new Request(`https://assist.example/api/site${path}`, {
     ...(body
       ? { body: JSON.stringify(body), method: "POST" }

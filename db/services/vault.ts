@@ -92,6 +92,16 @@ export async function readVaultItem(scope: AccessScope, id: string) {
     .parse(rows[0] ? serializeVaultRecord(rows[0]) : undefined);
 }
 
+// The website a saved login is bound to, or undefined for anything that is not
+// a fillable login: another kind, no secret, or a legacy login with no origin.
+export async function readVaultLoginOrigin(scope: AccessScope, id: string) {
+  const item = await readVaultItem(scope, id);
+  if (item?.kind !== "login") return undefined;
+  const secret = await readVaultSecret(scope, id);
+  const login = secret ? parseLoginVaultPayload(secret) : undefined;
+  return login && "origin" in login ? login.origin : undefined;
+}
+
 export async function deleteVaultItem(scope: AccessScope, id: string) {
   const rows = await db
     .delete(vaultItems)

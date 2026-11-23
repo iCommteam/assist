@@ -20,7 +20,7 @@ import { getInstallationSecrets } from "@db/services/installation-secrets";
 import { isSiteTaskSession, resolveSiteOwner } from "@db/services/sites";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { settledToolResult } from "@agent/lib/settled-tool-result";
-import { siteAuthenticator } from "@agent/lib/site-principal";
+import { sitePrincipal } from "@agent/lib/site-principal";
 import {
   finalizeScheduledReportDelivery,
   releaseScheduledReportDelivery,
@@ -211,17 +211,7 @@ async function authenticateSite(request: Request, credential: string) {
   }
   await requireOwnedRouteSubject(owner.scope, request);
 
-  return {
-    attributes: {
-      conversationChannel: "eve",
-      email: owner.email,
-      site: grant.site,
-      workspaceId: owner.scope.workspaceId,
-    },
-    authenticator: siteAuthenticator,
-    principalId: owner.scope.userId,
-    principalType: "user",
-  };
+  return sitePrincipal(grant, owner.email, owner.scope);
 }
 
 function siteRouteSession(request: Request, grant: SiteGrant) {

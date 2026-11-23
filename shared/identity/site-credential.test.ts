@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import {
   isSiteCredential,
   mintSiteCredential,
@@ -36,6 +37,27 @@ describe("site channel credential", () => {
     });
   });
 
+  it("carries a create grant's login pin, and refuses a malformed one", () => {
+    const login = { id: "login-1", origin: "https://login.vendor.example" };
+    const pinned = mintSiteCredential(secret, {
+      login,
+      op: "create",
+      site: "teemiq",
+    });
+    const pathOrigin = mintSiteCredential(secret, {
+      login: { id: "login-1", origin: "https://login.vendor.example/billing" },
+      op: "create",
+      site: "teemiq",
+    });
+
+    expect(verifySiteCredential(secret, pinned)).toEqual({
+      login,
+      op: "create",
+      site: "teemiq",
+    });
+    expect(verifySiteCredential(secret, pathOrigin)).toBeUndefined();
+  });
+
   it("refuses a credential signed with another secret", () => {
     const credential = mintSiteCredential(`${secret}-other`, {
       op: "create",
@@ -56,6 +78,31 @@ describe("site channel credential", () => {
       Buffer.from(payload, "base64url")
         .toString("utf8")
         .replace("wrun_own", "wrun_victim"),
+      "utf8"
+    ).toString("base64url");
+
+    expect(
+      verifySiteCredential(secret, `${prefix}${forged}.${signature}`)
+    ).toBeUndefined();
+  });
+
+  it("refuses a login pin added to a credential after signing", () => {
+    const credential = mintSiteCredential(secret, {
+      op: "create",
+      site: "teemiq",
+    });
+    const [prefix, payload, signature] = splitCredential(credential);
+    const claims = z
+      .object({ exp: z.number(), grant: z.object({}).loose() })
+      .parse(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")));
+    const forged = Buffer.from(
+      JSON.stringify({
+        ...claims,
+        grant: {
+          ...claims.grant,
+          login: { id: "login-1", origin: "https://login.vendor.example" },
+        },
+      }),
       "utf8"
     ).toString("base64url");
 

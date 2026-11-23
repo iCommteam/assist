@@ -23,8 +23,9 @@ import {
   harvestBrowserTraceDomains,
 } from "@agent/subagents/browser-agent/lib/trace/domains";
 import {
-  amazonUrlBlocklist,
   assertNavigableUrl,
+  browserChromePolicy,
+  workerNavigationFence,
 } from "@agent/subagents/browser-agent/lib/policy/hosts";
 import { assertWorkerNotBlocked } from "@agent/subagents/browser-agent/lib/policy/page-check";
 import { forgetFilledBrowser } from "@agent/subagents/browser-agent/lib/autofill/redaction";
@@ -63,7 +64,8 @@ const manageBrowsers = defineTool({
     switch (input.action) {
       case "create": {
         assertWorkerNotBlocked();
-        if (input.start_url) assertNavigableUrl(input.start_url);
+        const fence = workerNavigationFence(context.session);
+        if (input.start_url) assertNavigableUrl(input.start_url, fence);
         const create = async () => {
           const profile = await ensureWorkspaceProfile(
             scope.workspaceId,
@@ -86,7 +88,7 @@ const manageBrowsers = defineTool({
           // browser, possibly a logged-in one.
           const browser = await kernel.browsers.create(
             {
-              chrome_policy: { URLBlocklist: amazonUrlBlocklist },
+              chrome_policy: browserChromePolicy(fence),
               kiosk_mode: true,
               profile: {
                 id: profile.id,

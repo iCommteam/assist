@@ -135,21 +135,29 @@ upper-case suffix that becomes the site's name:
   authenticator enrolled; otherwise every call from the site answers 403 and
   the reason goes to the server log.
 
-A site works inside its owner's personal workspace, with the owner's tools and
-vault, and each task appears in the owner's chat history. A site task neither
-reads nor changes the owner's Personal Info or workstreams, and its browser
-worker reaches only the browsers it opened. A site can read only the tasks it
-created. Every call sends
-`Authorization: Bearer <token>`:
+A site works inside its owner's personal workspace, with the owner's tools,
+and each task appears in the owner's chat history. A site task neither reads
+nor changes the owner's Personal Info or workstreams, and its browser worker
+reaches only the browsers it opened. A site can read only the tasks it
+created.
 
-| Call                           | Answer                                                                                                 |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `GET /api/site/ping`           | `200 {"ok":true,"site":"teemiq"}`                                                                      |
-| `POST /api/site/tasks`         | body `{"message": "..."}`, 1 to 8000 characters; `202 {"taskId": "..."}`                               |
-| `GET /api/site/tasks/{taskId}` | `200 {"taskId","status","reply","error"}`, status `running`, `completed`, `failed` or `awaiting-input` |
+A task may be pinned to one saved login of the owner's vault by its id,
+`loginId`. The worker then sees and fills only that login, and its browser
+opens only that login's website: the login's host and every host under the
+same registrable domain, so `login.vendor.com` also opens `vendor.com` and
+`billing.vendor.com`. A task without a pin sees no saved login.
+
+Every call sends `Authorization: Bearer <token>`:
+
+| Call                           | Answer                                                                                                                 |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/site/ping`           | `200 {"ok":true,"site":"teemiq"}`                                                                                      |
+| `POST /api/site/tasks`         | body `{"message": "...", "loginId": "..."}`, message 1 to 8000 characters, `loginId` optional; `202 {"taskId": "..."}` |
+| `GET /api/site/tasks/{taskId}` | `200 {"taskId","status","reply","error"}`, status `running`, `completed`, `failed` or `awaiting-input`                 |
 
 A missing or wrong token answers `401 {"error":"unauthorized"}`, an invalid
-body `400 {"error":"invalid_request"}`, and a task that is not the site's
+body `400 {"error":"invalid_request"}` (also for a `loginId` that is not a
+saved login bound to a website), and a task that is not the site's
 `404 {"error":"not_found"}`. A site may start 10 tasks in any 10 minutes; the
 next start answers `429 {"error":"rate_limited"}` with `Retry-After` in
 seconds, and the count resets when the service restarts. The reply is the

@@ -1,3 +1,7 @@
+import type { SessionContext } from "eve/context";
+import { parse } from "tldts";
+import { siteLoginOfSession } from "@agent/lib/site-principal";
+
 // Amazon sites stay closed to the browser worker until a live-proven
 // "Agent/iCommAssist" user agent exists. Two layers enforce it: every tool
 // that names a URL refuses an Amazon host before navigating, and every browser
@@ -78,9 +82,45 @@ export function amazonPolicyRefusal(host: string) {
   return `${host} is an Amazon site. Amazon sites, including Seller Central, Amazon Ads and Vendor Central, are blocked by policy for now, so iCommAssist cannot open them. Do not try another route to the site. Finish the parts of the assignment that do not need it, or return status "failure" with this blocker.`;
 }
 
+// A site task pinned to one saved login may open only that login's site: the
+// login's host and every host under its registrable domain. Private suffixes
+// count as public ones, so a portal on shop.myshopify.com does not open every
+// other shop there. An IP address, or a host with no registrable domain such as
+// localhost or a bare public suffix, allows only itself.
+export function siteNavigationFence(loginOrigin: string) {
+  const host = normalizedHost(new URL(loginOrigin).hostname);
+  const { domain, isIp } = parse(host, { allowPrivateDomains: true });
+  if (isIp) return { domain: host, subdomains: false, urlFilter: host };
+  if (!domain)
+    return { domain: host, subdomains: false, urlFilter: `.${host}` };
+  return { domain, subdomains: true, urlFilter: domain };
+}
+
+type SiteNavigationFence = ReturnType<typeof siteNavigationFence>;
+
+// The fence of a worker's site task, or undefined when only the Amazon block
+// applies: an interactive or scheduled session, or a site task with no pin.
+export function workerNavigationFence(
+  session: Pick<SessionContext["session"], "auth">
+) {
+  const login = siteLoginOfSession(session.auth.initiator);
+  return login ? siteNavigationFence(login.origin) : undefined;
+}
+
+// Chrome's policy for a new browser. A fenced browser blocks every URL but its
+// site's (a more specific filter wins, and a tie goes to the allowlist), so it
+// never allowlists an Amazon domain.
+export function browserChromePolicy(fence: SiteNavigationFence | undefined) {
+  if (!fence) return { URLBlocklist: amazonUrlBlocklist };
+  const blocklist = ["*", ...amazonUrlBlocklist];
+  return isAmazonHost(fence.domain)
+    ? { URLBlocklist: blocklist }
+    : { URLAllowlist: [fence.urlFilter], URLBlocklist: blocklist };
+}
+
 // Throws the policy refusal for a URL a tool is about to open. Only web pages
-// may be opened at all.
-export function assertNavigableUrl(url: string) {
+// may be opened at all, and a fenced task only its site's.
+export function assertNavigableUrl(url: string, fence?: SiteNavigationFence) {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -93,4 +133,20 @@ export function assertNavigableUrl(url: string) {
   if (isAmazonHost(parsed.hostname)) {
     throw new Error(amazonPolicyRefusal(parsed.hostname));
   }
+  if (fence && !isInsideFence(normalizedHost(parsed.hostname), fence)) {
+    throw new Error(
+      `${parsed.hostname} is outside ${fence.domain}, the only site this task may open. Do not try another route to it. Finish the parts of the assignment that stay on ${fence.domain}, or return status "failure" with this blocker.`
+    );
+  }
+}
+
+function isInsideFence(host: string, fence: SiteNavigationFence) {
+  return (
+    host === fence.domain ||
+    (fence.subdomains && host.endsWith(`.${fence.domain}`))
+  );
+}
+
+function normalizedHost(hostname: string) {
+  return hostname.trim().toLowerCase().replace(/\.+$/u, "");
 }
