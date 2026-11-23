@@ -271,8 +271,8 @@ a running task every few seconds.
 - `error`: set only while `failed`, one of these codes:
   - `login_failed`: the website refused the saved username or password.
   - `code_failed`: the website refused a relayed code or found it expired,
-    or an authenticator code could not be filled. A task that no relayed code
-    ever reached reads `timed_out` instead.
+    or an authenticator code could not be filled. A task that asked for a
+    relayed code and never got one reads `timed_out` instead.
   - `blocked`: the website wants something only a person can do, such as a
     CAPTCHA, a bot check, a device approval, a passkey or a new-device email
     link, or the task needs a sign-in it has no pinned login for.
