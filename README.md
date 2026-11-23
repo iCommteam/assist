@@ -139,64 +139,94 @@ A site works inside its owner's personal workspace, with the owner's tools,
 and each task appears in the owner's chat history. A site task neither reads
 nor changes the owner's Personal Info or workstreams, and its browser worker
 reaches only the browsers it opened. A site can read only the tasks it
-created.
+created. The owner can follow a site task in the chat but cannot answer its
+code question there; only the site can.
 
 A task may be pinned to one saved login of the owner's vault by its id,
-`loginId`. The worker then sees and fills only that login, and its browser
-opens only that login's website: the login's host and every host under the
-same registrable domain, so `login.vendor.com` also opens `vendor.com` and
-`billing.vendor.com`. A task without a pin sees no saved login.
+`loginId`. The copy button on the login's row at `/vault` copies the id.
+Removing a login and saving it again gives it a new id and a new, signed-out
+profile, so the site must switch to the new id. The worker then sees and fills
+only that login, and its browser opens only that login's site: the login's
+host and every host under the same registrable domain, so `login.vendor.com`
+also opens `vendor.com` and `billing.vendor.com`. The password, the
+authenticator code and a relayed code are filled only on the exact origin the
+login was saved with, over https for a relayed code, so save the origin of the
+sign-in form itself, such as `https://login.vendor.com`. A portal whose
+sign-in or invoices live on another registrable domain, such as an identity
+provider or a hosted billing page, cannot be used yet. A task without a pin
+sees no saved login, and its browsers keep no cookies at all.
 
 A pinned task's browsers keep their cookies in a Kernel profile of that login
 alone, so two accounts on one portal never share a session, and different
 logins can sign in at the same time. A sign-in made from the owner's chat is
 saved to the workspace profile instead, so a login's first pinned task starts
 signed out and signs in itself. Removing the login from the vault also deletes
-its profile.
+its profile. A task holds its login's profile while it signs in, also while it
+waits for a code, so run at most one task per `loginId` at a time: another
+task that must sign in to the same login meanwhile ends without the work.
 
 A saved login with a password may also hold an authenticator app's setup key:
 the vault form takes the key or the `otpauth://totp/` link a site shows during
 setup, and keeps it encrypted with the password. When a sign-in asks for the
 app's code, the worker's `fill_totp_from_vault` computes the current code on
 the server and types it into the focused code field; the model never sees the
-key or the code.
+key or the code. An authenticator code the vault cannot fill ends the task.
 
 A pinned task may pause for one thing only: a one-time code the login's
 website sent by email or text message. The worker's `fill_code_from_site`
-asks the site for it, and the task status turns `awaiting-input` with the
-question, such as `Enter the one-time code that login.vendor.com just sent by
-email for the saved login "Vendor".`. The site posts the code to the
-task's `input`; the API seals it before eve sees it, and only the worker's fill
-step opens it and types it into the focused code field, so no model, log,
-trace or eve record holds the code itself. A code that does not arrive within
-20 minutes ends the wait, the worker deletes the browser and the task finishes
-with a reply saying so; a site task's browsers idle out after 30 minutes, so
-they outlive the wait. Anything else that needs a person, such as a CAPTCHA,
-a passkey, a device approval, a tool approval or the $10 usage limit's
-continue prompt, stops the task, which then reads as `failed` with a short
-error.
+asks the site for it, and the task status turns `awaiting-input` with a
+`questionId` and the question, such as `Enter the one-time code that
+login.vendor.com just sent by email for the saved login "Vendor".`. The site
+posts the code to the task's `input`; the API seals it before eve sees it, and
+only the worker's fill step opens it and types it into the code field, one
+character per box when the field is split, so no model, log, trace or eve
+record holds the code itself. A `202` means the code reached the task, not
+that the website accepted it. When the website refuses it or it cannot be
+filled, the worker may ask once more: the status turns `awaiting-input` again
+with a new `questionId` and a question that starts `The code sent before could
+not be used`. Treat each new `questionId` as a new request for a code. A code
+that does not arrive within 20 minutes ends the wait, the worker deletes the
+browser and the task finishes with a reply saying so; a site task's browsers
+idle out after 30 minutes, so they outlive the wait.
+
+`completed` means the agent finished its turn, not that the work succeeded,
+so read the reply. A task that ends at something only a person can resolve,
+such as a CAPTCHA, a passkey or device approval, a sign-in with no pinned
+login, a page outside the login's site, or a code that did not arrive in time
+or did not work, finishes `completed` with a reply that explains it. `failed`
+covers only a task stopped at a request a site cannot answer (a tool approval,
+the $10 usage limit's continue prompt, any question other than the code), a
+cancelled task and a runtime failure, with a short error. The reply is text
+only: no invoice file comes back yet, and a link in it may need the owner's
+portal session, so a site cannot fetch it.
 
 Every call sends `Authorization: Bearer <token>`:
 
-| Call                                  | Answer                                                                                                                 |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/site/ping`                  | `200 {"ok":true,"site":"teemiq"}`                                                                                      |
-| `POST /api/site/tasks`                | body `{"message": "...", "loginId": "..."}`, message 1 to 8000 characters, `loginId` optional; `202 {"taskId": "..."}` |
-| `GET /api/site/tasks/{taskId}`        | `200 {"taskId","status","reply","error","question"}`, status `running`, `completed`, `failed` or `awaiting-input`      |
-| `POST /api/site/tasks/{taskId}/input` | body `{"text": "..."}`, the one-time code, 1 to 64 characters on one line; `202 {"taskId": "..."}`                     |
+| Call                                  | Answer                                                                                                                         |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /api/site/ping`                  | `200 {"ok":true,"site":"teemiq"}`                                                                                              |
+| `POST /api/site/tasks`                | body `{"message": "...", "loginId": "..."}`, message 1 to 8000 characters, `loginId` optional; `202 {"taskId": "..."}`         |
+| `GET /api/site/tasks/{taskId}`        | `200 {"taskId","status","reply","error","question","questionId"}`, status `running`, `completed`, `failed` or `awaiting-input` |
+| `POST /api/site/tasks/{taskId}/input` | body `{"text": "..."}`, the one-time code, 1 to 64 characters on one line; `202 {"taskId": "..."}`                             |
 
 A missing or wrong token answers `401 {"error":"unauthorized"}`, an invalid
 body `400 {"error":"invalid_request"}` (also for a `loginId` that is not a
 saved login bound to a website), and a task that is not the site's
 `404 {"error":"not_found"}`. An input for a task that is not `awaiting-input`
 answers `409 {"error":"not_waiting"}`, also once the code has been sent and
-while it is on its way. A site may start 10 tasks in any 10 minutes; the
-next start answers `429 {"error":"rate_limited"}` with `Retry-After` in
-seconds, and the count resets when the service restarts. The status follows
-the task's latest turn. The reply is the agent's final message; `question` is
-set only while the task is `awaiting-input`, as one line of plain text of at
-most 300 characters; a failed task carries a short error without internal
-details. Poll a running task every few seconds.
+while it is on its way, and for a second delivery of the same code. A site may
+start 10 tasks in any 10 minutes; the next start answers
+`429 {"error":"rate_limited"}` with `Retry-After` in seconds, and the count
+resets when the service restarts. Any call can answer
+`503 {"error":"unavailable"}` while the database or the agent runtime cannot
+be reached; it is transient, so retry later. A start that answered 503 may
+still run where the site cannot read it, so a retried start can run the task
+twice. The status follows the turn the site started; a message the owner adds
+in the chat starts a later turn that does not change it. The reply is the
+agent's final message; `question` and `questionId` are set only while the
+task is `awaiting-input`, the question as one line of plain text of at most
+300 characters; a failed task carries a short error without internal details.
+Poll a running task every few seconds.
 
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to

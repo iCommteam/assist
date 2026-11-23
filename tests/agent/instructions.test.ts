@@ -213,6 +213,13 @@ describe("site task instructions", () => {
     );
     expect(selected?.content).not.toContain("still ends the task");
     expect(selected?.content).toContain(
+      "`login.vendor.com` also opens `vendor.com` and `billing.vendor.com`"
+    );
+    expect(selected?.content).toContain(
+      "An authenticator-app code the vault cannot fill ends the task"
+    );
+    expect(selected?.content).not.toContain("and its subdomains");
+    expect(selected?.content).toContain(
       "never change account settings, passwords, email addresses, phone numbers, addresses, or payout or payment details"
     );
     expect(selected?.content).toContain(
@@ -243,6 +250,16 @@ describe("site task instructions", () => {
     expect(pinned?.content).toContain(
       "a CAPTCHA, passkey, device or push approval, or any other step for a person ends the task"
     );
+    expect(pinned?.content).toContain(
+      "Call `fill_code_from_site` only for a code the website actually sent by email or text message. An authenticator-app code that `fill_totp_from_vault` cannot fill"
+    );
+    expect(pinned?.content).toContain(
+      "the login's host and every other host under the same registrable domain"
+    );
+    expect(pinned?.content).toContain(
+      "filled only on the exact origin the login was saved with"
+    );
+    expect(pinned?.content).not.toContain("and its subdomains");
 
     expect(await evaluateDynamic(workerSiteLogin, siteContext())).toBeNull();
     expect(

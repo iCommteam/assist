@@ -2,7 +2,9 @@
 
 import {
   ArrowLeftIcon,
+  CheckIcon,
   ChevronRightIcon,
+  CopyIcon,
   Globe2Icon,
   SearchIcon,
   Trash2Icon,
@@ -230,6 +232,7 @@ function VaultItemRow({ item }: { readonly item: VaultItem }) {
           </p>
         ) : null}
       </div>
+      {item.kind === "login" ? <CopyLoginIdButton item={item} /> : null}
       <Button
         aria-label={`Remove ${item.label}`}
         disabled={remove.isPending}
@@ -243,6 +246,29 @@ function VaultItemRow({ item }: { readonly item: VaultItem }) {
         <Trash2Icon />
       </Button>
     </div>
+  );
+}
+
+// A connected site pins a task to a saved login by this ID. Removing and
+// saving the login again gives it a new ID.
+function CopyLoginIdButton({ item }: { readonly item: VaultItem }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Button
+      aria-label={`Copy the login ID of ${item.label}`}
+      onClick={() => {
+        void (async () => {
+          await navigator.clipboard.writeText(item.id);
+          setCopied(true);
+        })();
+      }}
+      size="icon-sm"
+      title={`Login ID for site tasks: ${item.id}`}
+      type="button"
+      variant="quiet"
+    >
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </Button>
   );
 }
 
