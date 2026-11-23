@@ -83,17 +83,19 @@ export async function deleteBrowserSession(
   return rows.length > 0;
 }
 
+// The key is the Kernel profile's name, so each profile has one writer while
+// browsers on different profiles may save their sign-ins at the same time.
 export async function withBrowserProfileWriteLock<T>(
-  scope: AccessScope,
+  profileName: string,
   operation: () => Promise<T>
 ) {
   return db.transaction(async (transaction) => {
     const result = await transaction.execute<{ acquired: boolean }>(
-      sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${scope.workspaceId}, 0)) AS "acquired"`
+      sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${profileName}, 0)) AS "acquired"`
     );
     if (result.rows[0]?.acquired !== true) {
       throw new Error(
-        "Another browser profile update is starting for this workspace. Retry after it finishes."
+        "Another browser is starting to save sign-ins to this browser profile. Retry after it finishes."
       );
     }
     return operation();

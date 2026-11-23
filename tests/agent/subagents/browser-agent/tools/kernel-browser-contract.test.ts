@@ -1,4 +1,5 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion -- Kernel's page type has private members beyond the AsyncIterable contract consumed by the browser tool. */
+import { NotFoundError } from "@onkernel/sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type {
@@ -15,13 +16,15 @@ import type { harvestBrowserTraceDomains } from "@agent/subagents/browser-agent/
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
 import { toolContextFor } from "@tests/helpers/tool-context";
 import { resetEveState } from "@tests/helpers/eve-state";
-import manageBrowsers, {
-  kernelProfileNameForWorkspace,
-} from "@agent/subagents/browser-agent/tools/manage_browsers";
+import manageBrowsers from "@agent/subagents/browser-agent/tools/manage_browsers";
 import { amazonUrlBlocklist } from "@agent/subagents/browser-agent/lib/policy/hosts";
 import { checkBrowserPages } from "@agent/subagents/browser-agent/lib/policy/page-check";
 import { sitePrincipal } from "@agent/lib/site-principal";
 import { accessScopeForUser } from "@shared/identity/access-scope";
+import {
+  kernelProfileNameForLogin,
+  kernelProfileNameForWorkspace,
+} from "@shared/browser/kernel-profile";
 
 const serviceMocks = vi.hoisted(() => ({
   createBrowserSession: vi.fn<typeof createBrowserSession>(),
@@ -413,15 +416,130 @@ describe("Kernel browser contract", () => {
     );
   });
 
-  it("derives opaque, stable, workspace-specific profile names", () => {
-    const workspace = "personal:+15555550123";
-    const profileName = kernelProfileNameForWorkspace(workspace);
+  it("keeps interactive and unpinned site browsers on the workspace profile", async () => {
+    await manageBrowsers.execute(
+      { action: "create", save_changes: true },
+      workerContext
+    );
+    await manageBrowsers.execute(
+      { action: "create", save_changes: true },
+      siteWorkerContext(undefined)
+    );
 
-    expect(profileName).toBe(kernelProfileNameForWorkspace(workspace));
-    expect(profileName).toMatch(/^openinstinct-[a-f0-9]{40}$/);
-    expect(profileName).not.toContain("15555550123");
-    expect(profileName).not.toBe(
-      kernelProfileNameForWorkspace("personal:+15555550124")
+    const workspaceProfile = kernelProfileNameForWorkspace("workspace-1");
+    expect(mocks.retrieveProfile.mock.calls.map(([name]) => name)).toEqual([
+      workspaceProfile,
+      workspaceProfile,
+    ]);
+    expect(
+      mocks.withBrowserProfileWriteLock.mock.calls.map(([name]) => name)
+    ).toEqual([workspaceProfile, workspaceProfile]);
+  });
+
+  it("gives a pinned site task's browsers its login's own profile and writer lock", async () => {
+    mocks.retrieveProfile.mockResolvedValue({
+      created_at: "2026-08-27T00:00:00.000Z",
+      id: "profile-login-1",
+      name: "opaque-login-profile",
+    });
+
+    await manageBrowsers.execute(
+      {
+        action: "create",
+        save_changes: true,
+        start_url: "https://vendor.com/",
+      },
+      siteWorkerContext({ id: "login-1", origin: "https://vendor.com" })
+    );
+
+    const loginProfile = kernelProfileNameForLogin("workspace-1", "login-1");
+    expect(mocks.retrieveProfile).toHaveBeenCalledExactlyOnceWith(
+      loginProfile,
+      expect.anything()
+    );
+    expect(mocks.withBrowserProfileWriteLock).toHaveBeenCalledExactlyOnceWith(
+      loginProfile,
+      expect.any(Function)
+    );
+    expect(mocks.createBrowser).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        profile: { id: "profile-login-1", save_changes: true },
+      }),
+      expect.anything()
+    );
+  });
+
+  it("creates a pinned login's profile the first time it is needed", async () => {
+    mocks.retrieveProfile.mockRejectedValueOnce(
+      new NotFoundError(404, undefined, "not found", new Headers())
+    );
+    const createProfile = vi
+      .spyOn(kernel.profiles, "create")
+      .mockResolvedValueOnce({
+        created_at: "2026-08-27T00:00:00.000Z",
+        id: "profile-login-1",
+        name: "opaque-login-profile",
+      });
+
+    await manageBrowsers.execute(
+      { action: "create", start_url: "https://vendor.com/" },
+      siteWorkerContext({ id: "login-1", origin: "https://vendor.com" })
+    );
+
+    expect(createProfile).toHaveBeenCalledExactlyOnceWith(
+      { name: kernelProfileNameForLogin("workspace-1", "login-1") },
+      expect.anything()
+    );
+    expect(mocks.createBrowser).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        profile: { id: "profile-login-1", save_changes: false },
+      }),
+      expect.anything()
+    );
+  });
+
+  it("lets one login sign in while another login's profile has a writer", async () => {
+    mocks.retrieveProfile
+      .mockResolvedValueOnce({
+        created_at: "2026-08-27T00:00:00.000Z",
+        id: "profile-login-a",
+        name: "opaque-login-a",
+      })
+      .mockResolvedValueOnce({
+        created_at: "2026-08-27T00:00:00.000Z",
+        id: "profile-login-b",
+        name: "opaque-login-b",
+      });
+    mocks.listKernelBrowsers.mockReturnValue(
+      kernelBrowserPage([
+        {
+          profile: { id: "profile-login-a" },
+          profile_save_changes: true,
+          session_id: "browser-login-a",
+        },
+      ])
+    );
+
+    await expect(
+      manageBrowsers.execute(
+        { action: "create", save_changes: true },
+        siteWorkerContext({ id: "login-a", origin: "https://vendor.com" })
+      )
+    ).rejects.toThrow(/browser-login-a.*saving login state/iu);
+    await manageBrowsers.execute(
+      { action: "create", save_changes: true },
+      siteWorkerContext({ id: "login-b", origin: "https://vendor.com" })
+    );
+
+    expect(mocks.retrieveProfile.mock.calls.map(([name]) => name)).toEqual([
+      kernelProfileNameForLogin("workspace-1", "login-a"),
+      kernelProfileNameForLogin("workspace-1", "login-b"),
+    ]);
+    expect(mocks.createBrowser).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        profile: { id: "profile-login-b", save_changes: true },
+      }),
+      expect.anything()
     );
   });
 });

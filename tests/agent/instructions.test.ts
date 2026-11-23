@@ -214,6 +214,9 @@ describe("site task instructions", () => {
       "never submit any form other than the sign-in and the search, filter, or download"
     );
     expect(pinned?.content).toContain("Stop and return `failure`");
+    expect(pinned?.content).toContain(
+      "keep the saved sign-in of that login alone, so the site may start signed out"
+    );
 
     expect(await evaluateDynamic(workerSiteLogin, siteContext())).toBeNull();
     expect(

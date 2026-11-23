@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { ConflictError, NotFoundError } from "@onkernel/sdk";
 import type {
   BrowserCreateResponse,
@@ -30,6 +29,11 @@ import {
 import { assertWorkerNotBlocked } from "@agent/subagents/browser-agent/lib/policy/page-check";
 import { forgetFilledBrowser } from "@agent/subagents/browser-agent/lib/autofill/redaction";
 import { applicationOrigin } from "@shared/environment/origin";
+import {
+  kernelProfileNameForLogin,
+  kernelProfileNameForWorkspace,
+} from "@shared/browser/kernel-profile";
+import { siteLoginOfSession } from "@agent/lib/site-principal";
 
 const browserTimeoutFloorSeconds = 15 * 60;
 // Idle timeout ceiling: a forgotten browser holding a login dies within an hour.
@@ -55,7 +59,7 @@ const inputSchema = z.object({
 
 const manageBrowsers = defineTool({
   description:
-    'Manage browser sessions backed by the workspace persistent profile. Create read-only browsers by default so tasks can run in parallel. Immediately before a login, replace that task browser with one created using save_changes: true, then delete it after authentication so the session is saved. Only one profile writer may be active. Use "list" or "get" to inspect the browsers this task created.',
+    'Manage browser sessions backed by a persistent profile: the workspace profile, or in a site task pinned to a saved login, a profile of that login alone. Create read-only browsers by default so tasks can run in parallel. Immediately before a login, replace that task browser with one created using save_changes: true, then delete it after authentication so the session is saved. Only one profile writer may be active. Use "list" or "get" to inspect the browsers this task created.',
   inputSchema,
   async execute(input, context) {
     const scope = await requireWorkerScope(context);
@@ -66,11 +70,12 @@ const manageBrowsers = defineTool({
         assertWorkerNotBlocked();
         const fence = workerNavigationFence(context.session);
         if (input.start_url) assertNavigableUrl(input.start_url, fence);
+        const login = siteLoginOfSession(context.session.auth.initiator);
+        const profileName = login
+          ? kernelProfileNameForLogin(scope.workspaceId, login.id)
+          : kernelProfileNameForWorkspace(scope.workspaceId);
         const create = async () => {
-          const profile = await ensureWorkspaceProfile(
-            scope.workspaceId,
-            signal
-          );
+          const profile = await ensureProfile(profileName, signal);
           if (input.save_changes) {
             const activeWriter = await findActiveProfileWriter(
               profile.id,
@@ -78,7 +83,7 @@ const manageBrowsers = defineTool({
             );
             if (activeWriter) {
               throw new Error(
-                `Browser session ${activeWriter.session_id} is already saving login state for this workspace. Retry after it finishes.`
+                `Browser session ${activeWriter.session_id} is already saving login state for this browser profile. Retry after it finishes.`
               );
             }
           }
@@ -129,7 +134,7 @@ const manageBrowsers = defineTool({
           return lifecycleResult(browser);
         };
         return input.save_changes
-          ? withBrowserProfileWriteLock(scope, create)
+          ? withBrowserProfileWriteLock(profileName, create)
           : create();
       }
       case "list": {
@@ -291,18 +296,7 @@ function lifecycleResult(browser: KernelBrowser) {
   };
 }
 
-export function kernelProfileNameForWorkspace(workspaceId: string) {
-  return `openinstinct-${createHash("sha256")
-    .update(`kernel-profile\0${workspaceId}`)
-    .digest("hex")
-    .slice(0, 40)}`;
-}
-
-async function ensureWorkspaceProfile(
-  workspaceId: string,
-  signal?: AbortSignal
-) {
-  const name = kernelProfileNameForWorkspace(workspaceId);
+async function ensureProfile(name: string, signal?: AbortSignal) {
   try {
     return await kernel.profiles.retrieve(name, { signal });
   } catch (error) {

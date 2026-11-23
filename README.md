@@ -147,6 +147,13 @@ opens only that login's website: the login's host and every host under the
 same registrable domain, so `login.vendor.com` also opens `vendor.com` and
 `billing.vendor.com`. A task without a pin sees no saved login.
 
+A pinned task's browsers keep their cookies in a Kernel profile of that login
+alone, so two accounts on one portal never share a session, and different
+logins can sign in at the same time. A sign-in made from the owner's chat is
+saved to the workspace profile instead, so a login's first pinned task starts
+signed out and signs in itself. Removing the login from the vault also deletes
+its profile.
+
 Every call sends `Authorization: Bearer <token>`:
 
 | Call                           | Answer                                                                                                                 |
