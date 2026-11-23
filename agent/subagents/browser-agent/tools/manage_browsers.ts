@@ -33,11 +33,14 @@ import {
   kernelProfileNameForLogin,
   kernelProfileNameForWorkspace,
 } from "@shared/browser/kernel-profile";
-import { siteLoginOfSession } from "@agent/lib/site-principal";
+import { siteLoginOfSession, siteOfSession } from "@agent/lib/site-principal";
 
 const browserTimeoutFloorSeconds = 15 * 60;
 // Idle timeout ceiling: a forgotten browser holding a login dies within an hour.
 const browserTimeoutCeilingSeconds = 60 * 60;
+// A site task's browsers outlive fill_code_from_site's 20-minute wait for a
+// relayed code, whatever the model asks for.
+const siteBrowserTimeoutSeconds = 30 * 60;
 
 const inputSchema = z.object({
   action: z.enum(["create", "update", "list", "get", "delete"]),
@@ -105,8 +108,9 @@ const manageBrowsers = defineTool({
                 browser: { page: { enabled: true } },
                 enabled: true,
               },
-              timeout_seconds:
-                input.timeout_seconds ?? browserTimeoutFloorSeconds,
+              timeout_seconds: siteOfSession(context.session.auth.initiator)
+                ? siteBrowserTimeoutSeconds
+                : (input.timeout_seconds ?? browserTimeoutFloorSeconds),
               viewport: browserViewport(input),
             },
             { maxRetries: 0, signal }

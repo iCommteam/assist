@@ -1,14 +1,14 @@
 import { ClientError } from "eve/client";
-import type { ReceivedEvent } from "eve/events";
-import { z } from "zod";
-import { findSiteTaskSession } from "@db/services/sites";
 import {
   authenticateSiteRequest,
   siteError,
   siteJson,
 } from "@app/api/site/_lib/site-auth";
-import { siteEveClient } from "@app/api/site/tasks/_lib/eve";
 import { siteTaskStatus } from "@app/api/site/tasks/[taskId]/_lib/status";
+import {
+  lookupSiteTask,
+  readSiteTaskEvents,
+} from "@app/api/site/tasks/[taskId]/_lib/task";
 
 // A session that eve has accepted but not started yet reads as one of these.
 const notReadyStatuses = new Set([404, 409, 425]);
@@ -24,40 +24,16 @@ export async function GET(
   if (!caller.ok) return caller.response;
   const { taskId } = await context.params;
   const { owner, site } = caller;
-  let task: Awaited<ReturnType<typeof findSiteTaskSession>>;
-  try {
-    task = z.uuid().safeParse(taskId).success
-      ? await findSiteTaskSession(site, owner.scope, taskId)
-      : undefined;
-  } catch (error) {
-    console.warn("[site] task lookup failed", {
-      error: error instanceof Error ? error.name : "unknown",
-      site,
-    });
-    return siteError(503, "unavailable");
-  }
-  if (!task) return siteError(404, "not_found");
-  const { sessionId } = task;
+  const found = await lookupSiteTask(site, owner.scope, taskId);
+  if (!found.ok) return found.response;
+  const { task } = found;
 
   try {
-    const events: ReceivedEvent[] = [];
-    const stream = siteEveClient({ op: "read", session: sessionId, site })
-      .sessions.attach(sessionId)
-      .stream({
-        follow: false,
-        reconnect: { maxAttempts: 2 },
-        signal: AbortSignal.timeout(20_000),
-      });
-    for await (const event of stream) events.push(event);
+    const events = await readSiteTaskEvents(site, task.sessionId);
     return siteJson({ taskId, ...siteTaskStatus(events) });
   } catch (error) {
     if (ClientError.is(error) && error.code === "session_expired") {
-      return siteJson({
-        error: "The task record has expired.",
-        reply: null,
-        status: "failed",
-        taskId,
-      });
+      return siteJson(failedTask(taskId, "The task record has expired."));
     }
     if (
       ClientError.is(error) &&
@@ -65,15 +41,18 @@ export async function GET(
       Date.now() - task.createdAt.getTime() > missingRunGraceMs
     ) {
       console.warn("[site] task run is missing", { site });
-      return siteJson({
-        error: "The task record is no longer available.",
-        reply: null,
-        status: "failed",
-        taskId,
-      });
+      return siteJson(
+        failedTask(taskId, "The task record is no longer available.")
+      );
     }
     if (ClientError.is(error) && notReadyStatuses.has(error.status)) {
-      return siteJson({ error: null, reply: null, status: "running", taskId });
+      return siteJson({
+        error: null,
+        question: null,
+        reply: null,
+        status: "running",
+        taskId,
+      });
     }
     console.warn("[site] task status unavailable", {
       error: ClientError.is(error) ? error.code : "unknown",
@@ -81,4 +60,8 @@ export async function GET(
     });
     return siteError(503, "unavailable");
   }
+}
+
+function failedTask(taskId: string, error: string) {
+  return { error, question: null, reply: null, status: "failed", taskId };
 }

@@ -12,6 +12,7 @@ const toolActivity = new Map<string, string>([
   ["browser_snapshot", "Inspecting the page"],
   ["browser_text", "Reading the page"],
   ["computer_action", "Using visual browser controls"],
+  ["fill_code_from_site", "Waiting for the one-time code from the site"],
   ["fill_from_vault", "Securely filling saved user information"],
   ["fill_totp_from_vault", "Securely filling an authenticator code"],
   ["list_vault", "Checking saved user information"],

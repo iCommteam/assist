@@ -1,5 +1,6 @@
 import { call, interaction } from "eve/events";
 import { contentText, deliveredText } from "@agent/lib/content-text";
+import { isSiteCodeQuestion } from "@shared/identity/site-code/question";
 import type { HookContext, HookEvent } from "eve/hooks";
 import { z } from "zod";
 
@@ -78,8 +79,13 @@ export function traceTimelineRows(
     }
     case "interaction.settled": {
       const opened = interaction(ctx.view, event.data.interactionId);
-      return opened?.request.kind === "sign-in"
-        ? [row("Authorization", event.data.outcome)]
+      if (opened?.request.kind === "sign-in") {
+        return [row("Authorization", event.data.outcome)];
+      }
+      // A relayed one-time code arrives sealed, but even that stays out of
+      // the trace, as does the answer to a request the view no longer holds.
+      return !opened || isSiteCodeQuestion(opened.request)
+        ? [row("Input resolved", event.data.outcome)]
         : [row("Input resolved", compactJson(event.data.response ?? null))];
     }
     case "model.settled":

@@ -58,6 +58,7 @@ describe("root and worker capability boundaries", () => {
     expect(toolFiles(workerTools)).toEqual([
       "bash.ts",
       "computer_action.ts",
+      "fill_code_from_site.ts",
       "fill_from_vault.ts",
       "fill_totp_from_vault.ts",
       "list_vault.ts",
@@ -173,6 +174,17 @@ describe("root and worker capability boundaries", () => {
         'from "../lib/autofill/native"'
       );
     }
+    // The only worker tool that asks anyone anything. Its workflow body may
+    // not reach a Node.js module, so its steps load the browser and vault code.
+    const codeTool = readFileSync(
+      `${workerTools}/fill_code_from_site.ts`,
+      "utf8"
+    );
+    expect(codeTool).toContain("defineWorkflowTool(");
+    expect(codeTool).not.toMatch(/from "@(?:db|agent)\//u);
+    expect(codeTool).toContain(
+      'await import("@agent/subagents/browser-agent/lib/autofill/site-code")'
+    );
   });
 
   it("requires structured completion for initial and resumed worker calls", () => {

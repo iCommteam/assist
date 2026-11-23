@@ -183,6 +183,16 @@ describe("site task instructions", () => {
     expect(selected?.content).toContain(
       "A site task can use at most one saved login: the one the site pinned it to."
     );
+    expect(selected?.content).toContain(
+      "A site task may pause only for a one-time code that the pinned login's website sent by email or text message: the browser worker asks the site for it with `fill_code_from_site`"
+    );
+    expect(selected?.content).toContain("Never ask for a code yourself");
+    expect(selected?.content).toContain(
+      "never cancel a worker while it waits for one"
+    );
+    expect(selected?.content).toContain(
+      "such as a sign-in with no saved login, a CAPTCHA or bot check, a passkey, a device or push approval, a browser handoff, or a purchase decision, ends the task"
+    );
     expect(selected?.content).not.toContain("Pinned login");
   });
 
@@ -198,6 +208,10 @@ describe("site task instructions", () => {
     expect(selected?.content).toContain(
       "tell the worker to fill it with `fill_totp_from_vault`"
     );
+    expect(selected?.content).toContain(
+      "tell the worker to focus the code field and call `fill_code_from_site`, which asks the site for the code and fills it; it is the only question this task may ask."
+    );
+    expect(selected?.content).not.toContain("still ends the task");
     expect(selected?.content).toContain(
       "never change account settings, passwords, email addresses, phone numbers, addresses, or payout or payment details"
     );
@@ -222,6 +236,12 @@ describe("site task instructions", () => {
     );
     expect(pinned?.content).toContain(
       "When the sign-in asks for an authenticator-app code, fill it with `fill_totp_from_vault`"
+    );
+    expect(pinned?.content).toContain(
+      "When it sends a code by email or text message, keep the browser on the code page, focus the code field, and call `fill_code_from_site` with `sentBy`"
+    );
+    expect(pinned?.content).toContain(
+      "a CAPTCHA, passkey, device or push approval, or any other step for a person ends the task"
     );
 
     expect(await evaluateDynamic(workerSiteLogin, siteContext())).toBeNull();

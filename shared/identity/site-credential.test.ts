@@ -58,6 +58,32 @@ describe("site channel credential", () => {
     expect(verifySiteCredential(secret, pathOrigin)).toBeUndefined();
   });
 
+  it("binds an answer grant to one question of one session", () => {
+    const answer = mintSiteCredential(secret, {
+      interaction: "interaction-1",
+      op: "answer",
+      session: "wrun_1",
+      site: "teemiq",
+    });
+    const [prefix, payload, signature] = splitCredential(answer);
+    const unbound = Buffer.from(
+      Buffer.from(payload, "base64url")
+        .toString("utf8")
+        .replace('"interaction":"interaction-1",', ""),
+      "utf8"
+    ).toString("base64url");
+
+    expect(verifySiteCredential(secret, answer)).toEqual({
+      interaction: "interaction-1",
+      op: "answer",
+      session: "wrun_1",
+      site: "teemiq",
+    });
+    expect(
+      verifySiteCredential(secret, `${prefix}${unbound}.${signature}`)
+    ).toBeUndefined();
+  });
+
   it("refuses a credential signed with another secret", () => {
     const credential = mintSiteCredential(`${secret}-other`, {
       op: "create",

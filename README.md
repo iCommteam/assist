@@ -159,23 +159,43 @@ the vault form takes the key or the `otpauth://totp/` link a site shows during
 setup, and keeps it encrypted with the password. When a sign-in asks for the
 app's code, the worker's `fill_totp_from_vault` computes the current code on
 the server and types it into the focused code field; the model never sees the
-key or the code. A code sent by email or text message still ends a site task.
+key or the code.
+
+A pinned task may pause for one thing only: a one-time code the login's
+website sent by email or text message. The worker's `fill_code_from_site`
+asks the site for it, and the task status turns `awaiting-input` with the
+question, such as `Enter the one-time code that login.vendor.com just sent by
+email for the saved login "Vendor".`. The site posts the code to the
+task's `input`; the API seals it before eve sees it, and only the worker's fill
+step opens it and types it into the focused code field, so no model, log,
+trace or eve record holds the code itself. A code that does not arrive within
+20 minutes ends the wait, the worker deletes the browser and the task finishes
+with a reply saying so; a site task's browsers idle out after 30 minutes, so
+they outlive the wait. Anything else that needs a person, such as a CAPTCHA,
+a passkey, a device approval, a tool approval or the $10 usage limit's
+continue prompt, stops the task, which then reads as `failed` with a short
+error.
 
 Every call sends `Authorization: Bearer <token>`:
 
-| Call                           | Answer                                                                                                                 |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/site/ping`           | `200 {"ok":true,"site":"teemiq"}`                                                                                      |
-| `POST /api/site/tasks`         | body `{"message": "...", "loginId": "..."}`, message 1 to 8000 characters, `loginId` optional; `202 {"taskId": "..."}` |
-| `GET /api/site/tasks/{taskId}` | `200 {"taskId","status","reply","error"}`, status `running`, `completed`, `failed` or `awaiting-input`                 |
+| Call                                  | Answer                                                                                                                 |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/site/ping`                  | `200 {"ok":true,"site":"teemiq"}`                                                                                      |
+| `POST /api/site/tasks`                | body `{"message": "...", "loginId": "..."}`, message 1 to 8000 characters, `loginId` optional; `202 {"taskId": "..."}` |
+| `GET /api/site/tasks/{taskId}`        | `200 {"taskId","status","reply","error","question"}`, status `running`, `completed`, `failed` or `awaiting-input`      |
+| `POST /api/site/tasks/{taskId}/input` | body `{"text": "..."}`, the one-time code, 1 to 64 characters on one line; `202 {"taskId": "..."}`                     |
 
 A missing or wrong token answers `401 {"error":"unauthorized"}`, an invalid
 body `400 {"error":"invalid_request"}` (also for a `loginId` that is not a
 saved login bound to a website), and a task that is not the site's
-`404 {"error":"not_found"}`. A site may start 10 tasks in any 10 minutes; the
+`404 {"error":"not_found"}`. An input for a task that is not `awaiting-input`
+answers `409 {"error":"not_waiting"}`, also once the code has been sent and
+while it is on its way. A site may start 10 tasks in any 10 minutes; the
 next start answers `429 {"error":"rate_limited"}` with `Retry-After` in
-seconds, and the count resets when the service restarts. The reply is the
-agent's final message; a failed task carries a short error without internal
+seconds, and the count resets when the service restarts. The status follows
+the task's latest turn. The reply is the agent's final message; `question` is
+set only while the task is `awaiting-input`, as one line of plain text of at
+most 300 characters; a failed task carries a short error without internal
 details. Poll a running task every few seconds.
 
 The database also stores `workstreams`: goals, decisions, observations, and

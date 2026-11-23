@@ -7,6 +7,7 @@ import { loginOriginSchema } from "@shared/vault/schema";
 // server-only BETTER_AUTH_SECRET, so neither a browser nor a site can mint one,
 // and it is bound to one site, one operation and, for a read, one session. A
 // create may pin the task to one saved login, whose origin the API resolved.
+// An answer is bound to one open question of one session.
 const credentialPrefix = "assist-site.v1.";
 const credentialLifetimeMs = 60_000;
 const clockSkewMs = 5_000;
@@ -25,6 +26,12 @@ const siteGrantSchema = z.discriminatedUnion("op", [
   }),
   z.strictObject({
     op: z.literal("read"),
+    session: z.string().min(1).max(512),
+    site: z.string().min(1),
+  }),
+  z.strictObject({
+    interaction: z.string().min(1).max(512),
+    op: z.literal("answer"),
     session: z.string().min(1).max(512),
     site: z.string().min(1),
   }),

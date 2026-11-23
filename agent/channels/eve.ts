@@ -1,4 +1,5 @@
 import { eveChannel } from "eve/channels/eve";
+import { z } from "zod";
 import {
   extractBearerToken,
   ForbiddenError,
@@ -183,8 +184,9 @@ function decodePathSegment(segment: string) {
 }
 
 // A connected site acts as its owner, with its name recorded on the session.
-// Its credential covers exactly one route: creating a session, or reading the
-// stream of one session the same site created.
+// Its credential covers exactly one route: creating a session, reading the
+// stream of one session the same site created, or answering one question in
+// that session.
 async function authenticateSite(request: Request, credential: string) {
   const { betterAuthSecret } = await getInstallationSecrets();
   const grant = verifySiteCredential(betterAuthSecret, credential);
@@ -195,6 +197,9 @@ async function authenticateSite(request: Request, credential: string) {
     });
   }
   const sessionId = siteRouteSession(request, grant);
+  if (grant.op === "answer") {
+    await requireSiteAnswer(request, grant.interaction);
+  }
   const owner = await resolveSiteOwner(grant.site);
   if (!owner.ok) {
     console.warn("[site] eve call refused", {
@@ -234,7 +239,36 @@ function siteRouteSession(request: Request, grant: SiteGrant) {
   ) {
     return grant.session;
   }
+  const messageSession = /^\/eve\/v1\/session\/([^/]+)$/.exec(pathname)?.[1];
+  if (
+    grant.op === "answer" &&
+    request.method === "POST" &&
+    messageSession !== undefined &&
+    decodePathSegment(messageSession) === grant.session
+  ) {
+    return grant.session;
+  }
   throw new ForbiddenError({ message: "Session not found." });
+}
+
+const siteAnswerSchema = z.strictObject({
+  answers: z.tuple([
+    z.strictObject({ interactionId: z.string(), text: z.string() }),
+  ]),
+});
+
+// The session route also takes messages, which would start a turn the model
+// reads. An answer credential may send only its one text answer.
+async function requireSiteAnswer(request: Request, interactionId: string) {
+  let body: z.infer<typeof siteAnswerSchema> | undefined;
+  try {
+    body = siteAnswerSchema.parse(await request.clone().json());
+  } catch {
+    body = undefined;
+  }
+  if (body?.answers[0].interactionId !== interactionId) {
+    throw new ForbiddenError({ message: "Session not found." });
+  }
 }
 
 async function requestIdentityFromRequest(request: Request) {

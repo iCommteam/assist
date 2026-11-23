@@ -416,6 +416,30 @@ describe("Kernel browser contract", () => {
     );
   });
 
+  it("keeps a site task's browsers alive for 30 minutes, whatever the model asks", async () => {
+    await manageBrowsers.execute(
+      { action: "create", timeout_seconds: 900 },
+      siteWorkerContext(undefined)
+    );
+    await manageBrowsers.execute(
+      {
+        action: "create",
+        start_url: "https://vendor.com/",
+        timeout_seconds: 3_600,
+      },
+      siteWorkerContext({ id: "login-1", origin: "https://vendor.com" })
+    );
+    await manageBrowsers.execute(
+      { action: "create", timeout_seconds: 3_600 },
+      workerContext
+    );
+
+    // Outlives fill_code_from_site's 20-minute wait for a relayed code.
+    expect(
+      mocks.createBrowser.mock.calls.map(([params]) => params?.timeout_seconds)
+    ).toEqual([1_800, 1_800, 3_600]);
+  });
+
   it("keeps interactive and unpinned site browsers on the workspace profile", async () => {
     await manageBrowsers.execute(
       { action: "create", save_changes: true },

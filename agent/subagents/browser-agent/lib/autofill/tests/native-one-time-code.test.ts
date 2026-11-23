@@ -1,7 +1,7 @@
 import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { fillKernelOneTimeCode } from "../native";
+import { assertKernelOneTimeCodeFocus, fillKernelOneTimeCode } from "../native";
 import {
   frameOriginExpression,
   nativeLoginControlInspectionExpression,
@@ -159,6 +159,12 @@ const fill = () =>
     expectedOrigin: "https://login.vendor.example",
   });
 
+const probe = () =>
+  assertKernelOneTimeCodeFocus({
+    browserSessionId: "browser-1",
+    expectedOrigin: "https://login.vendor.example",
+  });
+
 function filledFunctions() {
   return commands.filter(({ method }) => method === "Runtime.callFunctionOn");
 }
@@ -216,5 +222,29 @@ describe("native one-time code injection", () => {
     );
     expect(filledFunctions()).toEqual([]);
     expect(inputs.map(({ value }) => value)).toEqual(["", ""]);
+  });
+
+  it("checks the focused code field without writing into it", async () => {
+    await expect(probe()).resolves.toBeUndefined();
+    expect(filledFunctions()).toEqual([]);
+    expect(inputs.map(({ value }) => value)).toEqual(["", ""]);
+  });
+
+  it("refuses what the fill refuses: another field, or another origin", async () => {
+    controls = [
+      control({ focused: true, index: 0, name: "password", type: "password" }),
+    ];
+    await expect(probe()).rejects.toThrow(
+      "Focus the visible authenticator code field of the sign-in and retry."
+    );
+
+    controls = [
+      control({ autocomplete: "one-time-code", focused: true, index: 1 }),
+    ];
+    pageOrigin = "https://evil.example";
+    await expect(probe()).rejects.toThrow(
+      "The active tab no longer matches the approved origin."
+    );
+    expect(filledFunctions()).toEqual([]);
   });
 });

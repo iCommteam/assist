@@ -1,5 +1,5 @@
 import type * as EveClient from "eve/client";
-import type { ReceivedEvent } from "eve/events";
+import type { Fact, ReceivedEvent } from "eve/events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ensureScope } from "@db/services/scope";
 import type {
@@ -10,6 +10,7 @@ import type {
 import type { readVaultLoginOrigin } from "@db/services/vault";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { verifySiteCredential } from "@shared/identity/site-credential";
+import { openSiteCode } from "@shared/identity/site-code/seal";
 import { eventsOf } from "@tests/helpers/session-view";
 
 const eve = vi.hoisted(() => ({
@@ -20,6 +21,13 @@ const eve = vi.hoisted(() => ({
       (input: { message: string }) => Promise<{ session: { id: string } }>
     >(),
   read: vi.fn<(sessionId: string) => Promise<ReceivedEvent[]>>(),
+  respond:
+    vi.fn<
+      (
+        sessionId: string,
+        answers: readonly { interactionId: string; text?: string }[]
+      ) => Promise<undefined>
+    >(),
 }));
 const services = vi.hoisted(() => ({
   ensureScope: vi.fn<typeof ensureScope>(),
@@ -34,6 +42,9 @@ vi.mock("eve/client", async (importOriginal) => {
   class FakeClient {
     readonly sessions = {
       attach: (sessionId: string) => ({
+        respond: async (
+          answers: readonly { interactionId: string; text?: string }[]
+        ) => eve.respond(sessionId, answers),
         async *stream() {
           yield* await eve.read(sessionId);
         },
@@ -64,6 +75,8 @@ vi.mock("@db/services/vault", () => ({
 const { GET: ping } = await import("@app/api/site/ping/route");
 const { POST: createTask } = await import("@app/api/site/tasks/route");
 const { GET: readTask } = await import("@app/api/site/tasks/[taskId]/route");
+const { POST: sendInput } =
+  await import("@app/api/site/tasks/[taskId]/input/route");
 const { ClientError } = await import("eve/client");
 
 const teemiqToken = "teemiq-test-token-0123456789abcdef";
@@ -91,6 +104,7 @@ beforeEach(() => {
   eve.baseUrls.length = 0;
   for (const [name, value] of siteVariables) vi.stubEnv(name, value);
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  vi.spyOn(console, "info").mockImplementation(() => undefined);
   services.resolveSiteOwner.mockResolvedValue({
     email: "owner@example.test",
     ok: true,
@@ -106,6 +120,7 @@ beforeEach(() => {
   );
   eve.create.mockResolvedValue({ session: { id: "wrun_1" } });
   eve.read.mockResolvedValue([]);
+  eve.respond.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -514,6 +529,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       error: null,
+      question: null,
       reply: "pong",
       status: "completed",
       taskId,
@@ -571,16 +587,25 @@ describe("GET /api/site/tasks/{taskId}", () => {
 
   it.each([
     // A task created just now whose run eve has not stored yet.
-    [404, "{}", { error: null, reply: null, status: "running" }],
+    [
+      404,
+      "{}",
+      { error: null, question: null, reply: null, status: "running" },
+    ],
     [
       409,
       JSON.stringify({ code: "session_not_ready" }),
-      { error: null, reply: null, status: "running" },
+      { error: null, question: null, reply: null, status: "running" },
     ],
     [
       410,
       JSON.stringify({ code: "session_expired" }),
-      { error: "The task record has expired.", reply: null, status: "failed" },
+      {
+        error: "The task record has expired.",
+        question: null,
+        reply: null,
+        status: "failed",
+      },
     ],
   ])("maps an eve %i to a task status", async (status, body, expected) => {
     eve.read.mockRejectedValue(new ClientError(status, body));
@@ -607,6 +632,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
     );
     await expect(starting.json()).resolves.toEqual({
       error: null,
+      question: null,
       reply: null,
       status: "running",
       taskId,
@@ -625,6 +651,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
     expect(missing.status).toBe(200);
     await expect(missing.json()).resolves.toEqual({
       error: "The task record is no longer available.",
+      question: null,
       reply: null,
       status: "failed",
       taskId,
@@ -647,6 +674,223 @@ describe("GET /api/site/tasks/{taskId}", () => {
   });
 });
 
+describe("GET /api/site/tasks/{taskId} while the worker waits for a code", () => {
+  it("awaits input with the worker's question", async () => {
+    eve.read.mockResolvedValue(awaitingCode());
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      error: null,
+      question:
+        'Enter the one-time code that login.vendor.example just sent by email for the saved login "Vendor".',
+      reply: null,
+      status: "awaiting-input",
+      taskId,
+    });
+  });
+});
+
+describe("POST /api/site/tasks/{taskId}/input", () => {
+  it("seals the code and answers the worker's open question", async () => {
+    eve.read.mockResolvedValue(awaitingCode());
+
+    const response = await sendInput(
+      inputRequest(teemiqToken, JSON.stringify({ text: " 482913 " })),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({ taskId });
+    expect(services.findSiteTaskSession).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      taskId
+    );
+    expect(eve.read).toHaveBeenCalledExactlyOnceWith("wrun_1");
+    expect(eve.respond).toHaveBeenCalledOnce();
+    const [sessionId, answers] = eve.respond.mock.calls[0] ?? [];
+    expect(sessionId).toBe("wrun_1");
+    expect(answers?.map(({ interactionId }) => interactionId)).toEqual([
+      "interaction-1",
+    ]);
+    expect(answers?.[0]?.text?.startsWith("assist-code.v1.")).toBe(true);
+    expect(JSON.stringify(answers)).not.toContain("482913");
+    expect(openSiteCode(authSecret, "wrun_1", answers?.[0]?.text ?? "")).toBe(
+      "482913"
+    );
+    expect(await grantOfLastClient()).toEqual({
+      interaction: "interaction-1",
+      op: "answer",
+      session: "wrun_1",
+      site: "teemiq",
+    });
+  });
+
+  it.each([
+    ["has not asked yet", () => runningTask()],
+    ["has completed", () => completedPong()],
+    ["has already been sent the code", () => awaitingCode({ answered: true })],
+    ["waits on a question that is not a code", () => awaitingQuestion()],
+    ["has not started in eve yet", () => new ClientError(404, "{}")],
+    [
+      "has expired in eve",
+      () => new ClientError(410, JSON.stringify({ code: "session_expired" })),
+    ],
+  ])("answers 409 not_waiting for a task that %s", async (_case, state) => {
+    const events = state();
+    if (events instanceof Error) eve.read.mockRejectedValue(events);
+    else eve.read.mockResolvedValue(events);
+
+    const response = await sendInput(
+      inputRequest(teemiqToken, JSON.stringify({ text: "482913" })),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "not_waiting" });
+    expect(eve.respond).not.toHaveBeenCalled();
+  });
+
+  it("answers 409 when eve no longer accepts the answer", async () => {
+    eve.read.mockResolvedValue(awaitingCode());
+    eve.respond.mockRejectedValue(
+      new ClientError(409, JSON.stringify({ code: "session_not_active" }))
+    );
+
+    const response = await sendInput(
+      inputRequest(teemiqToken, JSON.stringify({ text: "482913" })),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "not_waiting" });
+  });
+
+  it("answers 404 for another site's task, without reading eve", async () => {
+    services.findSiteTaskSession.mockResolvedValue(undefined);
+
+    const response = await sendInput(
+      inputRequest(agentsToken, JSON.stringify({ text: "482913" })),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "not_found" });
+    expect(services.findSiteTaskSession).toHaveBeenCalledExactlyOnceWith(
+      "agents",
+      owner,
+      taskId
+    );
+    expect(eve.read).not.toHaveBeenCalled();
+    expect(eve.respond).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 for an id that is not a task id, without a lookup", async () => {
+    const response = await sendInput(
+      inputRequest(teemiqToken, JSON.stringify({ text: "482913" }), "wrun_1"),
+      params("wrun_1")
+    );
+
+    expect(response.status).toBe(404);
+    expect(services.findSiteTaskSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no body", undefined],
+    ["an empty code", JSON.stringify({ text: "" })],
+    ["a blank code", JSON.stringify({ text: "   " })],
+    ["a code over 64 characters", JSON.stringify({ text: "1".repeat(65) })],
+    ["a code over two lines", JSON.stringify({ text: "4829\n13" })],
+    ["a number", JSON.stringify({ text: 482_913 })],
+    ["a message instead of a code", JSON.stringify({ message: "482913" })],
+    ["a body that is not JSON", "482913"],
+  ])("refuses %s with 400 before any lookup", async (_case, body) => {
+    const response = await sendInput(
+      inputRequest(teemiqToken, body),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "invalid_request",
+    });
+    expect(services.findSiteTaskSession).not.toHaveBeenCalled();
+    expect(eve.respond).not.toHaveBeenCalled();
+  });
+
+  it("refuses a missing token with 401", async () => {
+    const response = await sendInput(
+      new Request(`https://assist.example/api/site/tasks/${taskId}/input`, {
+        body: JSON.stringify({ text: "482913" }),
+        method: "POST",
+      }),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(401);
+    expect(services.findSiteTaskSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps the code out of every log line, also when delivery fails", async () => {
+    eve.read.mockResolvedValue(awaitingCode());
+    eve.respond.mockRejectedValueOnce(
+      new ClientError(500, JSON.stringify({ error: "could not use 482913" }))
+    );
+
+    const failed = await sendInput(
+      inputRequest(teemiqToken, JSON.stringify({ text: "482913" })),
+      params(taskId)
+    );
+    const delivered = await sendInput(
+      inputRequest(teemiqToken, JSON.stringify({ text: "482913" })),
+      params(taskId)
+    );
+
+    expect(failed.status).toBe(503);
+    await expect(failed.json()).resolves.toEqual({ error: "unavailable" });
+    expect(delivered.status).toBe(202);
+    expect(console.warn).toHaveBeenCalledWith(
+      "[site] task input could not be delivered",
+      { error: "http_error", site: "teemiq" }
+    );
+    expect(console.info).toHaveBeenCalledWith("[site] task input delivered", {
+      site: "teemiq",
+    });
+    const logged = JSON.stringify([
+      vi.mocked(console.warn).mock.calls,
+      vi.mocked(console.info).mock.calls,
+    ]);
+    expect(logged).not.toContain("482913");
+    expect(logged).not.toContain("assist-code");
+  });
+
+  it("answers 503 when eve cannot be read", async () => {
+    eve.read.mockRejectedValue(new ClientError(500, "{}"));
+
+    const response = await sendInput(
+      inputRequest(teemiqToken, JSON.stringify({ text: "482913" })),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(503);
+    expect(eve.respond).not.toHaveBeenCalled();
+  });
+});
+
+function inputRequest(token: string, body: string | undefined, id = taskId) {
+  const init: RequestInit = {
+    headers: { authorization: `Bearer ${token}` },
+    method: "POST",
+  };
+  if (body !== undefined) init.body = body;
+  return new Request(`https://assist.example/api/site/tasks/${id}/input`, init);
+}
+
 function siteRequest(
   path: string,
   token: string,
@@ -664,13 +908,89 @@ function params(id: string) {
   return { params: Promise.resolve({ taskId: id }) };
 }
 
+const authSecret = "test-auth-secret-0123456789abcdefghijklmnop";
+
 async function grantOfLastClient() {
   const bearer = eve.bearers.at(-1);
   if (!bearer) throw new Error("No eve client was created.");
-  return verifySiteCredential(
-    "test-auth-secret-0123456789abcdefghijklmnop",
-    await bearer()
-  );
+  return verifySiteCredential(authSecret, await bearer());
+}
+
+const turnStartedFacts: Fact[] = [
+  {
+    data: { cause: { deliveryId: "d-1" }, follows: null, turnId: "turn_0" },
+    type: "turn.started",
+  },
+  {
+    data: { owner: { turnId: "turn_0" }, runId: "run-1" },
+    scope: { runId: "run-1", turnId: "turn_0" },
+    type: "model.requested",
+  },
+];
+
+function runningTask() {
+  return eventsOf([turnStartedFacts]);
+}
+
+function questionFacts(
+  request: Extract<Fact, { type: "interaction.opened" }>["data"]["request"]
+): Fact[] {
+  return [
+    {
+      data: {
+        interactionId: "interaction-1",
+        request,
+        subject: { turnId: "turn_0" },
+      },
+      scope: { turnId: "turn_0" },
+      type: "interaction.opened",
+    },
+    {
+      data: {
+        awaiting: [{ interactionId: "interaction-1" }],
+        turnId: "turn_0",
+      },
+      scope: { turnId: "turn_0" },
+      type: "turn.paused",
+    },
+  ];
+}
+
+// The browser worker's code question, relayed to the root session.
+function awaitingCode({ answered = false } = {}) {
+  return eventsOf([
+    turnStartedFacts,
+    questionFacts({
+      allowFreeform: true,
+      display: "text",
+      kind: "question",
+      prompt:
+        'Enter the one-time code that login.vendor.example just sent by email for the saved login "Vendor".',
+      title: "One-time code",
+    }),
+    ...(answered
+      ? [
+          [
+            {
+              data: {
+                deliveryId: "d-2",
+                interactionId: "interaction-1",
+                responseId: "response-1",
+                value: { text: "assist-code.v1.sealed" },
+              },
+              type: "response.submitted",
+            } satisfies Fact,
+          ],
+        ]
+      : []),
+  ]);
+}
+
+function awaitingQuestion() {
+  return eventsOf([
+    turnStartedFacts,
+    questionFacts({ kind: "question", prompt: "Which store should I check?" }),
+  ]);
 }
 
 function completedPong() {

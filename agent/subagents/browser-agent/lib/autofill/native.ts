@@ -1038,23 +1038,12 @@ export async function fillKernelOneTimeCode({
     browserSessionId,
     signal,
     async ({ connection, origin, sessionId }) => {
-      if (origin !== expectedOrigin) {
-        throw new Error(
-          "The active tab no longer matches the approved origin."
-        );
-      }
-      const controls = await inspectNativeLoginControls(
+      const focused = await focusedOneTimeCodeControl(
         connection,
         sessionId,
-        expectedOrigin,
-        (descriptor) => descriptor
+        origin,
+        expectedOrigin
       );
-      const focused = controls.find((control) => control.focused);
-      if (!focused || !isOneTimeCodeControl(focused)) {
-        throw new Error(
-          "Focus the visible authenticator code field of the sign-in and retry."
-        );
-      }
       if (
         !(await fillNativeLoginControl(
           connection,
@@ -1069,6 +1058,56 @@ export async function fillKernelOneTimeCode({
       }
     }
   );
+}
+
+// Checks, without filling it, that the focused field asks for a one-time code
+// in a document served from the expected origin, with the same messages as
+// fillKernelOneTimeCode.
+export async function assertKernelOneTimeCodeFocus({
+  browserSessionId,
+  expectedOrigin,
+  signal,
+}: {
+  readonly browserSessionId: string;
+  readonly expectedOrigin: string;
+  readonly signal?: AbortSignal;
+}) {
+  await withKernelPage(
+    browserSessionId,
+    signal,
+    async ({ connection, origin, sessionId }) => {
+      await focusedOneTimeCodeControl(
+        connection,
+        sessionId,
+        origin,
+        expectedOrigin
+      );
+    }
+  );
+}
+
+async function focusedOneTimeCodeControl(
+  connection: CdpConnection,
+  sessionId: readonly string[],
+  origin: string,
+  expectedOrigin: string
+) {
+  if (origin !== expectedOrigin) {
+    throw new Error("The active tab no longer matches the approved origin.");
+  }
+  const controls = await inspectNativeLoginControls(
+    connection,
+    sessionId,
+    expectedOrigin,
+    (descriptor) => descriptor
+  );
+  const focused = controls.find((control) => control.focused);
+  if (!focused || !isOneTimeCodeControl(focused)) {
+    throw new Error(
+      "Focus the visible authenticator code field of the sign-in and retry."
+    );
+  }
+  return focused;
 }
 
 export function buildNativeAutofillPayload(

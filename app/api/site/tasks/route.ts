@@ -9,6 +9,7 @@ import {
   siteError,
   siteJson,
 } from "@app/api/site/_lib/site-auth";
+import { readSiteJsonBody } from "@app/api/site/tasks/_lib/request-body";
 import { siteEveClient } from "@app/api/site/tasks/_lib/eve";
 
 const maxBodyBytes = 64 * 1024;
@@ -24,7 +25,9 @@ const taskInputSchema = z.object({
 export async function POST(request: Request) {
   const caller = await authenticateSiteRequest(request);
   if (!caller.ok) return caller.response;
-  const input = taskInputSchema.safeParse(await readJsonBody(request));
+  const input = taskInputSchema.safeParse(
+    await readSiteJsonBody(request, maxBodyBytes)
+  );
   if (!input.success) return siteError(400, "invalid_request");
 
   const { owner, site } = caller;
@@ -127,18 +130,5 @@ async function recordStartedTask(
     if (attempt >= recordAttempts) throw error;
     await new Promise((resolve) => setTimeout(resolve, recordRetryDelayMs));
     return recordStartedTask(record, attempt + 1);
-  }
-}
-
-async function readJsonBody(request: Request) {
-  if (Number(request.headers.get("content-length") ?? 0) > maxBodyBytes) {
-    return undefined;
-  }
-  const text = await request.text();
-  if (text.length > maxBodyBytes) return undefined;
-  try {
-    return z.json().parse(JSON.parse(text));
-  } catch {
-    return undefined;
   }
 }
