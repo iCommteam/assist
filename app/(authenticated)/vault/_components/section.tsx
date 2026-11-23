@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { type ReactNode, useState } from "react";
+import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
 import {
   Dialog,
@@ -225,7 +226,12 @@ function VaultItemRow({ item }: { readonly item: VaultItem }) {
     <div className="flex min-w-0 items-center gap-3 py-3">
       <VaultItemIcon />
       <div className="min-w-0 flex-1">
-        <p className="truncate type-label">{item.label}</p>
+        <div className="flex min-w-0 items-center gap-2">
+          <p className="truncate type-label">{item.label}</p>
+          {item.site ? (
+            <Badge variant="outline">{`Saved by ${item.site}`}</Badge>
+          ) : null}
+        </div>
         {item.account ? (
           <p className="type-supporting-body truncate text-muted-foreground">
             {item.account}

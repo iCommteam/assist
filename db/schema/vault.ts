@@ -19,6 +19,9 @@ export const vaultItems = pgTable(
     kind: text("kind", { enum: vaultItemKinds }).notNull(),
     label: text("label").notNull(),
     account: text("account").notNull(),
+    // The connected site that saved this login through the site API, or null
+    // for an item the owner saved in iCommAssist. A site sees only its own.
+    site: text("site"),
     createdAt: timestamp("created_at", {
       mode: "date",
       precision: 3,
@@ -47,6 +50,11 @@ export const vaultItems = pgTable(
     index("vault_items_workspace_updated_idx").on(
       table.workspaceId,
       table.updatedAt.desc().nullsFirst()
+    ),
+    index("vault_items_workspace_site_idx").on(
+      table.workspaceId,
+      table.site,
+      table.createdAt.desc()
     ),
   ]
 );

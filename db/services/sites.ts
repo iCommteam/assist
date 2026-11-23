@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { db, siteTasks, user } from "@db";
 import { siteOwnerEmail } from "@shared/environment/sites";
 import {
@@ -35,14 +35,46 @@ export async function resolveSiteOwner(site: string) {
 export async function recordSiteTask(
   site: string,
   scope: AccessScope,
-  sessionId: string
+  sessionId: string,
+  loginId: string | undefined
 ) {
   const [task] = await db
     .insert(siteTasks)
-    .values({ sessionId, site, workspaceId: scope.workspaceId })
+    .values({
+      loginId: loginId ?? null,
+      sessionId,
+      site,
+      workspaceId: scope.workspaceId,
+    })
     .returning({ id: siteTasks.id });
   if (!task) throw new Error("The site task was not recorded.");
   return task.id;
+}
+
+// The tasks this site pinned to a login in this workspace since a time,
+// newest first.
+export async function listSiteTasksOfLogin(
+  site: string,
+  scope: AccessScope,
+  loginId: string,
+  since: Date
+) {
+  return db
+    .select({
+      createdAt: siteTasks.createdAt,
+      id: siteTasks.id,
+      sessionId: siteTasks.sessionId,
+    })
+    .from(siteTasks)
+    .where(
+      and(
+        eq(siteTasks.site, site),
+        eq(siteTasks.loginId, loginId),
+        eq(siteTasks.workspaceId, scope.workspaceId),
+        gte(siteTasks.createdAt, since)
+      )
+    )
+    .orderBy(desc(siteTasks.createdAt));
 }
 
 // The session and creation time of a task this site created in this

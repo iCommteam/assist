@@ -164,6 +164,7 @@ beforeEach(() => {
     id: "login-1",
     kind: "login",
     label: "Vendor",
+    site: null,
     updatedAt: "2026-11-23T00:00:00.000Z",
   });
 });

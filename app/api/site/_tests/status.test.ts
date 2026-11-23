@@ -1,9 +1,6 @@
 import type { Fact } from "eve/events";
 import { describe, expect, it } from "vitest";
-import {
-  awaitedSiteCode,
-  siteTaskStatus,
-} from "@app/api/site/tasks/[taskId]/_lib/status";
+import { awaitedSiteCode, siteTaskStatus } from "@app/api/site/_lib/status";
 import { eventsOf } from "@tests/helpers/session-view";
 
 const turnStarted: Fact = {

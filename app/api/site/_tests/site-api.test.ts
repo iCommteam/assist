@@ -4,10 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ensureScope } from "@db/services/scope";
 import type {
   findSiteTaskSession,
+  listSiteTasksOfLogin,
   recordSiteTask,
   resolveSiteOwner,
 } from "@db/services/sites";
-import type { readVaultLoginOrigin } from "@db/services/vault";
+import type { readSiteLoginOrigin } from "@db/services/vault";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { verifySiteCredential } from "@shared/identity/site-credential";
 import { openSiteCode } from "@shared/identity/site-code/seal";
@@ -32,8 +33,9 @@ const eve = vi.hoisted(() => ({
 const services = vi.hoisted(() => ({
   ensureScope: vi.fn<typeof ensureScope>(),
   findSiteTaskSession: vi.fn<typeof findSiteTaskSession>(),
+  listSiteTasksOfLogin: vi.fn<typeof listSiteTasksOfLogin>(),
   recordSiteTask: vi.fn<typeof recordSiteTask>(),
-  readVaultLoginOrigin: vi.fn<typeof readVaultLoginOrigin>(),
+  readSiteLoginOrigin: vi.fn<typeof readSiteLoginOrigin>(),
   resolveSiteOwner: vi.fn<typeof resolveSiteOwner>(),
 }));
 
@@ -65,11 +67,12 @@ vi.mock("eve/client", async (importOriginal) => {
 vi.mock("@db/services/scope", () => ({ ensureScope: services.ensureScope }));
 vi.mock("@db/services/sites", () => ({
   findSiteTaskSession: services.findSiteTaskSession,
+  listSiteTasksOfLogin: services.listSiteTasksOfLogin,
   recordSiteTask: services.recordSiteTask,
   resolveSiteOwner: services.resolveSiteOwner,
 }));
 vi.mock("@db/services/vault", () => ({
-  readVaultLoginOrigin: services.readVaultLoginOrigin,
+  readSiteLoginOrigin: services.readSiteLoginOrigin,
 }));
 
 const { GET: ping } = await import("@app/api/site/ping/route");
@@ -115,7 +118,7 @@ beforeEach(() => {
     createdAt: new Date(),
     sessionId: "wrun_1",
   });
-  services.readVaultLoginOrigin.mockResolvedValue(
+  services.readSiteLoginOrigin.mockResolvedValue(
     "https://login.vendor.example"
   );
   eve.create.mockResolvedValue({ session: { id: "wrun_1" } });
@@ -247,7 +250,8 @@ describe("POST /api/site/tasks", () => {
     expect(services.recordSiteTask).toHaveBeenCalledExactlyOnceWith(
       "teemiq",
       owner,
-      "wrun_1"
+      "wrun_1",
+      undefined
     );
     expect(eve.baseUrls).toEqual(["http://127.0.0.1:4274"]);
     expect(await grantOfLastClient()).toEqual({ op: "create", site: "teemiq" });
@@ -356,13 +360,20 @@ describe("POST /api/site/tasks login pin", () => {
 
     expect(response.status).toBe(202);
     await expect(response.json()).resolves.toEqual({ taskId });
-    expect(services.readVaultLoginOrigin).toHaveBeenCalledExactlyOnceWith(
+    expect(services.readSiteLoginOrigin).toHaveBeenCalledExactlyOnceWith(
       owner,
+      "teemiq",
       "login-1"
     );
     expect(eve.create).toHaveBeenCalledExactlyOnceWith({
       message: "Fetch the October invoice.",
     });
+    expect(services.recordSiteTask).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      "wrun_1",
+      "login-1"
+    );
     expect(await grantOfLastClient()).toEqual({
       login: { id: "login-1", origin: "https://login.vendor.example" },
       op: "create",
@@ -374,14 +385,15 @@ describe("POST /api/site/tasks login pin", () => {
     const response = await startTask(teemiqToken);
 
     expect(response.status).toBe(202);
-    expect(services.readVaultLoginOrigin).not.toHaveBeenCalled();
+    expect(services.readSiteLoginOrigin).not.toHaveBeenCalled();
     expect(await grantOfLastClient()).toEqual({ op: "create", site: "teemiq" });
   });
 
-  // The vault service answers undefined alike for an unknown id, another
-  // workspace's item, another kind and a login bound to no website.
-  it("refuses a login the owner's vault cannot fill with the plain 400, uncounted", async () => {
-    services.readVaultLoginOrigin.mockResolvedValue(undefined);
+  // The vault service answers undefined alike for an unknown id, the owner's
+  // own login, another site's, another workspace's item, another kind and a
+  // login bound to no website; db/tests/sites.test.ts proves which.
+  it("refuses a login the site did not save with the plain 400, uncounted", async () => {
+    services.readSiteLoginOrigin.mockResolvedValue(undefined);
 
     const refused = await Promise.all(
       Array.from({ length: 11 }, () =>
@@ -420,12 +432,12 @@ describe("POST /api/site/tasks login pin", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(services.readVaultLoginOrigin).not.toHaveBeenCalled();
+    expect(services.readSiteLoginOrigin).not.toHaveBeenCalled();
     expect(eve.create).not.toHaveBeenCalled();
   });
 
   it("answers 503 JSON when the vault cannot be read", async () => {
-    services.readVaultLoginOrigin.mockRejectedValue(new Error("pool timeout"));
+    services.readSiteLoginOrigin.mockRejectedValue(new Error("pool timeout"));
 
     const response = await createTask(
       siteRequest("/tasks", teemiqToken, {

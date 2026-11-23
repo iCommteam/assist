@@ -35,6 +35,7 @@ function savedItem(id: string, kind: "login" | "payment") {
     id,
     kind,
     label: `Saved ${id}`,
+    site: null,
     updatedAt: "2026-11-22T00:00:00.000Z",
   };
 }

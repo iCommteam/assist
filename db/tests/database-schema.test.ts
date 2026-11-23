@@ -17,6 +17,7 @@ import {
   session,
   settings,
   siteTasks,
+  taskFiles,
   twoFactor,
   user,
   userProfiles,
@@ -36,6 +37,7 @@ describe("database schema", () => {
         settings,
         agentSessions,
         siteTasks,
+        taskFiles,
         browserImageArtifacts,
         browserSessions,
         browserTraces,
@@ -58,6 +60,7 @@ describe("database schema", () => {
       "settings",
       "agent_sessions",
       "site_tasks",
+      "task_files",
       "browser_image_artifacts",
       "browser_sessions",
       "browser_traces",
@@ -126,6 +129,10 @@ describe("database schema", () => {
     expect(browserImageArtifacts.id.getSQLType()).toBe("uuid");
     expect(encryptedSecrets.id.getSQLType()).toBe("text");
     expect(vaultItems.id.getSQLType()).toBe("text");
+    expect(taskFiles.content.getSQLType()).toBe("bytea");
+    expect(taskFiles.expiresAt.getSQLType()).toBe(
+      "timestamp (3) with time zone"
+    );
   });
 
   it("anchors session creators to a membership in the same workspace", () => {
@@ -162,6 +169,8 @@ describe("database schema", () => {
       settings,
       chats,
       encryptedSecrets,
+      siteTasks,
+      taskFiles,
     ]) {
       expect(
         getTableConfig(table).foreignKeys.some((foreignKey) =>

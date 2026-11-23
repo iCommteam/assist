@@ -1,15 +1,20 @@
+import type { z } from "zod";
 import { resolveSiteOwner } from "@db/services/sites";
 import { siteForToken } from "@shared/environment/sites";
 
 const noStore = { "cache-control": "no-store" };
 
-// Every site API body is a flat JSON object of strings, booleans and nulls.
+// Every site API body is a JSON object; times travel as ISO strings.
 export function siteJson(
-  body: Readonly<Record<string, string | boolean | null>>,
+  body: Readonly<Record<string, z.core.util.JSONType>>,
   status = 200,
   headers: Readonly<Record<string, string>> = {}
 ) {
   return Response.json(body, { headers: { ...headers, ...noStore }, status });
+}
+
+export function siteNoContent() {
+  return new Response(null, { headers: noStore, status: 204 });
 }
 
 export function siteError(

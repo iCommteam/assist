@@ -4,7 +4,7 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   loginAccountHint,
@@ -30,6 +30,7 @@ const vaultRecordSchema = z.object({
   id: z.string(),
   kind: vaultItemKindSchema,
   label: z.string(),
+  site: z.string().nullable(),
   updatedAt: z.string(),
 });
 
@@ -41,6 +42,7 @@ const selection = {
   id: vaultItems.id,
   kind: vaultItems.kind,
   label: vaultItems.label,
+  site: vaultItems.site,
   updatedAt: vaultItems.updatedAt,
 };
 
@@ -92,14 +94,100 @@ export async function readVaultItem(scope: AccessScope, id: string) {
     .parse(rows[0] ? serializeVaultRecord(rows[0]) : undefined);
 }
 
-// The website a saved login is bound to, or undefined for anything that is not
-// a fillable login: another kind, no secret, or a legacy login with no origin.
-export async function readVaultLoginOrigin(scope: AccessScope, id: string) {
-  const item = await readVaultItem(scope, id);
-  if (item?.kind !== "login") return undefined;
+// A connected site reaches only the logins it saved itself, through these
+// queries alone: every one names the site, so the owner's own items and other
+// sites' read as unknown.
+const siteLoginFilter = (scope: AccessScope, site: string) =>
+  and(
+    eq(vaultItems.workspaceId, scope.workspaceId),
+    eq(vaultItems.site, site),
+    eq(vaultItems.kind, "login")
+  );
+
+// The website a login this site saved is bound to, or undefined for any other
+// id.
+export async function readSiteLoginOrigin(
+  scope: AccessScope,
+  site: string,
+  id: string
+) {
+  const [item] = await db
+    .select({ id: vaultItems.id })
+    .from(vaultItems)
+    .where(and(siteLoginFilter(scope, site), eq(vaultItems.id, id)))
+    .limit(1);
+  return item ? (await readBoundLogin(scope, item.id))?.origin : undefined;
+}
+
+// What a site may know of the logins it saved, newest first: never the
+// identifier, the password or the authenticator key.
+export async function listSiteLogins(scope: AccessScope, site: string) {
+  const rows = await db
+    .select({
+      createdAt: vaultItems.createdAt,
+      id: vaultItems.id,
+      label: vaultItems.label,
+    })
+    .from(vaultItems)
+    .where(siteLoginFilter(scope, site))
+    .orderBy(desc(vaultItems.createdAt));
+  const logins = await Promise.all(
+    rows.map(async ({ createdAt, id, label }) => {
+      const login = await readBoundLogin(scope, id);
+      if (!login) return [];
+      return [
+        {
+          createdAt: createdAt.toISOString(),
+          hasTotp:
+            login.authentication.type === "password" &&
+            login.authentication.totp !== undefined,
+          id,
+          label,
+          origin: login.origin,
+        },
+      ];
+    })
+  );
+  return logins.flat();
+}
+
+// Labels are unique per site, compared without case.
+export async function isSiteLoginLabelTaken(
+  scope: AccessScope,
+  site: string,
+  label: string
+) {
+  const [item] = await db
+    .select({ id: vaultItems.id })
+    .from(vaultItems)
+    .where(
+      and(
+        siteLoginFilter(scope, site),
+        sql`lower(${vaultItems.label}) = lower(${label})`
+      )
+    )
+    .limit(1);
+  return item !== undefined;
+}
+
+export async function deleteSiteLogin(
+  scope: AccessScope,
+  site: string,
+  id: string
+) {
+  const rows = await db
+    .delete(vaultItems)
+    .where(and(siteLoginFilter(scope, site), eq(vaultItems.id, id)))
+    .returning({ id: vaultItems.id });
+  if (rows.length === 0) return false;
+  await deleteEncryptedSecret(scope, id);
+  return true;
+}
+
+async function readBoundLogin(scope: AccessScope, id: string) {
   const secret = await readVaultSecret(scope, id);
   const login = secret ? parseLoginVaultPayload(secret) : undefined;
-  return login && "origin" in login ? login.origin : undefined;
+  return login && "origin" in login ? login : undefined;
 }
 
 export async function deleteVaultItem(scope: AccessScope, id: string) {
@@ -118,6 +206,23 @@ export async function saveVaultItem(
   scope: AccessScope,
   input: VaultCreateItem
 ) {
+  await insertVaultItem(scope, input, null);
+}
+
+// A login a connected site saved through the site API, marked with that site.
+export async function saveSiteLogin(
+  scope: AccessScope,
+  site: string,
+  input: VaultCreateItem
+) {
+  return insertVaultItem(scope, input, site);
+}
+
+async function insertVaultItem(
+  scope: AccessScope,
+  input: VaultCreateItem,
+  site: string | null
+) {
   await ensureScope(scope);
   const id = randomUUID();
   const now = new Date().toISOString();
@@ -130,12 +235,14 @@ export async function saveVaultItem(
       id,
       kind: input.kind,
       label: input.label,
+      site,
       updatedAt: now,
     });
   } catch (error) {
     await deleteEncryptedSecret(scope, id);
     throw error;
   }
+  return { createdAt: now, id };
 }
 
 export async function readVaultSecret(scope: AccessScope, id: string) {

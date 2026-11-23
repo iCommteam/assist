@@ -21,11 +21,15 @@ vi.mock("@web/trpc/client", () => ({
 
 import { VaultItemList } from "./section";
 
-function item(overrides: Pick<VaultItem, "id" | "kind" | "label">): VaultItem {
+function item(
+  overrides: Pick<VaultItem, "id" | "kind" | "label"> &
+    Partial<Pick<VaultItem, "site">>
+): VaultItem {
   return {
     account: "",
     createdAt: "2026-11-23T00:00:00.000Z",
     hasSecret: true,
+    site: null,
     updatedAt: "2026-11-23T00:00:00.000Z",
     ...overrides,
   };
@@ -52,5 +56,27 @@ describe("vault item list", () => {
     );
     expect(html).not.toContain("Copy the login ID of Home");
     expect(html).not.toContain("address-1");
+  });
+
+  it("shows which site saved a login, and nothing for the owner's own", () => {
+    const html = renderToStaticMarkup(
+      createElement(VaultItemList, {
+        items: [
+          item({
+            id: "login-site",
+            kind: "login",
+            label: "Vendor (Vadim)",
+            site: "teemiq",
+          }),
+          item({ id: "login-own", kind: "login", label: "GitHub" }),
+        ],
+      })
+    );
+
+    expect(html.match(/Saved by /gu)).toHaveLength(1);
+    expect(html).toContain("Saved by teemiq");
+    expect(html.indexOf("Saved by")).toBeLessThan(html.indexOf("GitHub"));
+    expect(html).toContain('aria-label="Remove Vendor (Vadim)"');
+    expect(html).toContain('aria-label="Copy the login ID of Vendor (Vadim)"');
   });
 });

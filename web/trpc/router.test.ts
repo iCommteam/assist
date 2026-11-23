@@ -176,6 +176,7 @@ function vaultItem(kind: "address" | "login") {
     id: `${kind}-1`,
     kind,
     label: "Vendor portal",
+    site: null,
     updatedAt: "2026-11-23T00:00:00.000Z",
   };
 }

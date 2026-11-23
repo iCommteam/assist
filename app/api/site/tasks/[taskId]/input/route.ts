@@ -7,13 +7,10 @@ import {
   siteError,
   siteJson,
 } from "@app/api/site/_lib/site-auth";
-import { readSiteJsonBody } from "@app/api/site/tasks/_lib/request-body";
-import { siteEveClient } from "@app/api/site/tasks/_lib/eve";
-import { awaitedSiteCode } from "@app/api/site/tasks/[taskId]/_lib/status";
-import {
-  lookupSiteTask,
-  readSiteTaskEvents,
-} from "@app/api/site/tasks/[taskId]/_lib/task";
+import { readSiteJsonBody } from "@app/api/site/_lib/request-body";
+import { siteEveClient } from "@app/api/site/_lib/eve";
+import { awaitedSiteCode } from "@app/api/site/_lib/status";
+import { lookupSiteTask, readSiteTaskEvents } from "@app/api/site/_lib/task";
 
 const maxBodyBytes = 4 * 1024;
 const inputSchema = z.object({ text: siteCodeSchema });

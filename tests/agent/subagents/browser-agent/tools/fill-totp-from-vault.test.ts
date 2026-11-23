@@ -92,6 +92,7 @@ function savedItem(kind: "login" | "payment") {
     id: "item-1",
     kind,
     label: "Vendor",
+    site: null,
     updatedAt: "2026-11-22T00:00:00.000Z",
   };
 }

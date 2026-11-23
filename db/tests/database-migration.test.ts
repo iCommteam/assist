@@ -45,6 +45,7 @@ describe("database migrations", () => {
     await applyMigration(database, "0014_chief_tigra.sql");
     await applyMigration(database, "0015_wet_joseph.sql");
     await applyMigration(database, "0016_fair_psylocke.sql");
+    await applyMigration(database, "0017_parallel_hulk.sql");
 
     const tables = await database.query<{ count: number }>(
       `SELECT count(*)::int AS count
@@ -59,6 +60,7 @@ describe("database migrations", () => {
            'user_profiles',
            'agent_sessions',
            'site_tasks',
+           'task_files',
            'browser_image_artifacts',
            'browser_sessions',
            'browser_traces',
@@ -77,7 +79,7 @@ describe("database migrations", () => {
     );
     const pendingConstraints = await pendingConstraintCount(database);
 
-    expect(tables.rows[0]?.count).toBe(22);
+    expect(tables.rows[0]?.count).toBe(23);
     expect(pendingConstraints).toBe(0);
     await expect(
       database.query("SELECT id FROM vault_items WHERE id = 'contact-1'")
@@ -124,6 +126,77 @@ describe("database migrations", () => {
       { twoFactorEnabled: false, twoFactorVerified: false },
     ]);
   }, 15_000);
+
+  it("adds site logins, task pins and task files without touching existing rows", async () => {
+    const database = createDatabase();
+    const journal = z
+      .object({ entries: z.array(z.object({ tag: z.string() })) })
+      .parse(
+        JSON.parse(
+          await readFile(
+            new URL("../migrations/meta/_journal.json", import.meta.url),
+            "utf8"
+          )
+        )
+      );
+    const tags = journal.entries.map(({ tag }) => tag);
+    const siteMigration = tags.indexOf("0017_parallel_hulk");
+    /* oxlint-disable eslint/no-await-in-loop -- Migrations must execute in journal order. */
+    for (const tag of tags.slice(0, siteMigration)) {
+      await applyMigration(database, `${tag}.sql`);
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+    await database.exec(`
+      INSERT INTO workspaces (id) VALUES ('workspace-1');
+      INSERT INTO vault_items (id, workspace_id, kind, label, account)
+      VALUES ('login-1', 'workspace-1', 'login', 'Vendor', '');
+      INSERT INTO site_tasks (id, site, workspace_id, session_id)
+      VALUES ('00000000-0000-4000-8000-000000000001', 'teemiq', 'workspace-1', 'wrun_1');
+    `);
+
+    await applyMigration(database, "0017_parallel_hulk.sql");
+
+    const existing = await database.query(`
+      SELECT vault_items.site, site_tasks.login_id
+      FROM vault_items, site_tasks
+    `);
+    expect(existing.rows).toEqual([{ login_id: null, site: null }]);
+
+    const pdf = "decode('255044462d312e37', 'hex')";
+    const sha256 = "0".repeat(64);
+    const insertFile = (values: string) =>
+      database.exec(`
+        INSERT INTO task_files (site, workspace_id, task_id, filename, media_type, byte_size, sha256, content)
+        VALUES ${values}
+      `);
+    const task =
+      "'teemiq', 'workspace-1', '00000000-0000-4000-8000-000000000001'";
+    await insertFile(
+      `(${task}, 'invoice.pdf', 'application/pdf', 8, '${sha256}', ${pdf})`
+    );
+    const saved = await database.query<{ days: number }>(`
+      SELECT extract(epoch FROM expires_at - created_at)::int / 86400 AS days
+      FROM task_files
+    `);
+    expect(saved.rows).toEqual([{ days: 7 }]);
+
+    for (const refused of [
+      `(${task}, 'a.png', 'image/png', 8, '${sha256}', ${pdf})`,
+      `(${task}, 'a.pdf', 'application/pdf', 9, '${sha256}', ${pdf})`,
+      `(${task}, 'a.pdf', 'application/pdf', 20971521, '${sha256}', ${pdf})`,
+      `(${task}, 'a.pdf', 'application/pdf', 8, '${"A".repeat(64)}', ${pdf})`,
+      `('teemiq', 'workspace-1', '00000000-0000-4000-8000-000000000002', 'a.pdf', 'application/pdf', 8, '${sha256}', ${pdf})`,
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each refused row is its own statement.
+      await expect(insertFile(refused)).rejects.toThrow(/constraint/u);
+    }
+
+    await database.exec("DELETE FROM site_tasks");
+    const left = await database.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM task_files"
+    );
+    expect(left.rows[0]?.count).toBe(0);
+  }, 30_000);
 
   it("reconciles the pre-merge reply-anchor migration", async () => {
     const database = createDatabase();

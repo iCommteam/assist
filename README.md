@@ -142,8 +142,20 @@ reaches only the browsers it opened. A site can read only the tasks it
 created. The owner can follow a site task in the chat but cannot answer its
 code question there; only the site can.
 
-A task may be pinned to one saved login of the owner's vault by its id,
-`loginId`. The copy button on the login's row at `/vault` copies the id.
+A site saves the logins its tasks use through the API. `POST /api/site/logins`
+keeps the sign-in page's origin, a label, the username or email, the password
+and, optionally, an authenticator setup key in the owner's vault, encrypted
+like any saved login and marked with the site that saved it; `/vault` shows
+that site beside the login. The username, password and key are never returned,
+logged or shown to the model. The origin is the `https:` URL of the sign-in
+page, such as `https://login.vendor.com/sign-in`, of which only the origin is
+kept; an IP address, `localhost`, a single-label host or a port is refused. A
+label has 1 to 60 characters, and a site cannot save two logins whose labels
+differ only in case.
+
+A task may be pinned to one of those logins by its id, `loginId`. A site sees,
+pins and removes only the logins it saved itself, never the owner's own or
+another site's. The copy button on a login's row at `/vault` copies its id.
 Removing a login and saving it again gives it a new id and a new, signed-out
 profile, so the site must switch to the new id. The worker then sees and fills
 only that login, and its browser opens only that login's site: the login's
@@ -160,10 +172,12 @@ A pinned task's browsers keep their cookies in a Kernel profile of that login
 alone, so two accounts on one portal never share a session, and different
 logins can sign in at the same time. A sign-in made from the owner's chat is
 saved to the workspace profile instead, so a login's first pinned task starts
-signed out and signs in itself. Removing the login from the vault also deletes
-its profile. A task holds its login's profile while it signs in, also while it
-waits for a code, so run at most one task per `loginId` at a time: another
-task that must sign in to the same login meanwhile ends without the work.
+signed out and signs in itself. Removing the login, at `/vault` or through the
+API, also deletes its profile; the API keeps a login while a task of the site
+pinned to it still runs or waits for a code. A task holds its login's profile
+while it signs in, also while it waits for a code, so run at most one task per
+`loginId` at a time: another task that must sign in to the same login
+meanwhile ends without the work.
 
 A saved login with a password may also hold an authenticator app's setup key:
 the vault form takes the key or the `otpauth://totp/` link a site shows during
@@ -202,20 +216,26 @@ portal session, so a site cannot fetch it.
 
 Every call sends `Authorization: Bearer <token>`:
 
-| Call                                  | Answer                                                                                                                         |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /api/site/ping`                  | `200 {"ok":true,"site":"teemiq"}`                                                                                              |
-| `POST /api/site/tasks`                | body `{"message": "...", "loginId": "..."}`, message 1 to 8000 characters, `loginId` optional; `202 {"taskId": "..."}`         |
-| `GET /api/site/tasks/{taskId}`        | `200 {"taskId","status","reply","error","question","questionId"}`, status `running`, `completed`, `failed` or `awaiting-input` |
-| `POST /api/site/tasks/{taskId}/input` | body `{"text": "..."}`, the one-time code, 1 to 64 characters on one line; `202 {"taskId": "..."}`                             |
+| Call                                  | Answer                                                                                                                                                                                           |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /api/site/ping`                  | `200 {"ok":true,"site":"teemiq"}`                                                                                                                                                                |
+| `POST /api/site/logins`               | body `{"origin","label","identifier","password","totp"}`, identifier 1 to 200 characters, password 1 to 500, `totp` optional; `201 {"login":{"loginId","label","origin","hasTotp","createdAt"}}` |
+| `GET /api/site/logins`                | `200 {"logins":[{"loginId","label","origin","hasTotp","createdAt"}]}`, the site's own logins, newest first                                                                                       |
+| `DELETE /api/site/logins/{loginId}`   | `204`, also deleting the login's browser profile; `409 {"error":"login_busy"}` while a task pinned to it is open                                                                                 |
+| `POST /api/site/tasks`                | body `{"message": "...", "loginId": "..."}`, message 1 to 8000 characters, `loginId` optional; `202 {"taskId": "..."}`                                                                           |
+| `GET /api/site/tasks/{taskId}`        | `200 {"taskId","status","reply","error","question","questionId"}`, status `running`, `completed`, `failed` or `awaiting-input`                                                                   |
+| `POST /api/site/tasks/{taskId}/input` | body `{"text": "..."}`, the one-time code, 1 to 64 characters on one line; `202 {"taskId": "..."}`                                                                                               |
 
 A missing or wrong token answers `401 {"error":"unauthorized"}`, an invalid
 body `400 {"error":"invalid_request"}` (also for a `loginId` that is not a
-saved login bound to a website), and a task that is not the site's
-`404 {"error":"not_found"}`. An input for a task that is not `awaiting-input`
-answers `409 {"error":"not_waiting"}`, also once the code has been sent and
-while it is on its way, and for a second delivery of the same code. A site may
-start 10 tasks in any 10 minutes; the next start answers
+login the site saved), and a task or login that is not the site's
+`404 {"error":"not_found"}`. A login whose authenticator key cannot be read
+answers `400 {"error":"invalid_totp"}` (a blank key counts as none), and one
+with a label the site already used answers `409 {"error":"duplicate_label"}`.
+An input for a task that is not `awaiting-input` answers
+`409 {"error":"not_waiting"}`, also once the code has been sent and while it
+is on its way, and for a second delivery of the same code. A site may start
+10 tasks in any 10 minutes; the next start answers
 `429 {"error":"rate_limited"}` with `Retry-After` in seconds, and the count
 resets when the service restarts. Any call can answer
 `503 {"error":"unavailable"}` while the database or the agent runtime cannot

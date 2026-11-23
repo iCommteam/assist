@@ -28,6 +28,7 @@ const vaultItemSchema = z.object({
   id: z.string(),
   kind: vaultItemKindSchema,
   label: z.string(),
+  site: z.string().nullable(),
   updatedAt: z.string(),
 });
 

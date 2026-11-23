@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ensureScope } from "@db/services/scope";
 import { recordSiteTask } from "@db/services/sites";
-import { readVaultLoginOrigin } from "@db/services/vault";
+import { readSiteLoginOrigin } from "@db/services/vault";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { siteLoginPinSchema } from "@shared/identity/site-credential";
 import {
@@ -9,8 +9,8 @@ import {
   siteError,
   siteJson,
 } from "@app/api/site/_lib/site-auth";
-import { readSiteJsonBody } from "@app/api/site/tasks/_lib/request-body";
-import { siteEveClient } from "@app/api/site/tasks/_lib/eve";
+import { readSiteJsonBody } from "@app/api/site/_lib/request-body";
+import { siteEveClient } from "@app/api/site/_lib/eve";
 
 const maxBodyBytes = 64 * 1024;
 const taskInputSchema = z.object({
@@ -51,7 +51,7 @@ export async function POST(request: Request) {
       site,
     }).sessions.create({ message: input.data.message });
     const taskId = await recordStartedTask(() =>
-      recordSiteTask(site, owner.scope, session.id)
+      recordSiteTask(site, owner.scope, session.id, pin.login?.id)
     );
     return siteJson({ taskId }, 202);
   } catch (error) {
@@ -64,8 +64,9 @@ export async function POST(request: Request) {
 }
 
 // A pinned task may use only that saved login, and its browser only that
-// login's site. Unknown, foreign, other-kind and unbound items get the same
-// answer, so a site learns nothing about the rest of the vault.
+// login's site. A site pins only a login it saved itself: the owner's own
+// items, other sites' and unknown ids get the same answer, so a site learns
+// nothing about the rest of the vault.
 async function resolveLoginPin(
   scope: AccessScope,
   site: string,
@@ -74,7 +75,7 @@ async function resolveLoginPin(
   if (loginId === undefined) return { login: undefined, ok: true as const };
   let origin: string | undefined;
   try {
-    origin = await readVaultLoginOrigin(scope, loginId);
+    origin = await readSiteLoginOrigin(scope, site, loginId);
   } catch (error) {
     console.warn("[site] task login could not be read", {
       error: error instanceof Error ? error.name : "unknown",

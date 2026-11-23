@@ -29,6 +29,7 @@ describe("database services", () => {
     await applySchemaAdoptionMigration(client);
     await applyNativeTypesMigration(client);
     await applyChatChannelMigration(client);
+    await applySiteMigrations(client);
 
     const pgliteDatabase = drizzle(client, { schema });
     // SAFETY: PGlite implements the query-builder surface exercised by these services despite using a different Drizzle driver.
@@ -233,15 +234,41 @@ describe("database services", () => {
       await vault.deleteVaultItem(bob, aliceVaultItem?.id ?? "vault-alice")
     ).toBe(false);
 
-    // A site task may be pinned only to a login bound to a website.
+    // A site task may be pinned only to a login that site saved, bound to a
+    // website; the owner's own logins carry no site.
     const aliceLoginId = aliceVaultItem?.id ?? "vault-alice";
-    expect(await vault.readVaultLoginOrigin(alice, aliceLoginId)).toBe(
-      "https://example.com"
-    );
-    expect(await vault.readVaultLoginOrigin(bob, aliceLoginId)).toBeUndefined();
+    expect(aliceVaultItem?.site).toBeNull();
     expect(
-      await vault.readVaultLoginOrigin(alice, "vault-unknown")
+      await vault.readSiteLoginOrigin(alice, "teemiq", aliceLoginId)
     ).toBeUndefined();
+    const siteLogin = await vault.saveSiteLogin(alice, "teemiq", {
+      account: "",
+      kind: "login",
+      label: "Vendor",
+      secret: serializeLoginVaultPayload({
+        authentication: { password: "correct horse", type: "password" },
+        identifier: { type: "email", value: "alice@example.com" },
+        kind: "login",
+        origin: "https://login.vendor.example",
+        version: 2,
+      }),
+    });
+    expect(await vault.readSiteLoginOrigin(alice, "teemiq", siteLogin.id)).toBe(
+      "https://login.vendor.example"
+    );
+    expect(
+      await vault.readSiteLoginOrigin(alice, "agents", siteLogin.id)
+    ).toBeUndefined();
+    expect(
+      await vault.readSiteLoginOrigin(bob, "teemiq", siteLogin.id)
+    ).toBeUndefined();
+    expect(
+      await vault.readSiteLoginOrigin(alice, "teemiq", "vault-unknown")
+    ).toBeUndefined();
+    expect(await vault.readVaultItem(alice, siteLogin.id)).toMatchObject({
+      site: "teemiq",
+    });
+    await vault.deleteVaultItem(alice, siteLogin.id);
     await vault.saveVaultItem(alice, {
       account: "",
       kind: "login",
@@ -274,7 +301,7 @@ describe("database services", () => {
     expect(unbound).toHaveLength(2);
     expect(
       await Promise.all(
-        unbound.map(({ id }) => vault.readVaultLoginOrigin(alice, id))
+        unbound.map(({ id }) => vault.readSiteLoginOrigin(alice, "teemiq", id))
       )
     ).toEqual([undefined, undefined]);
     await Promise.all(
@@ -374,6 +401,20 @@ async function applyNativeTypesMigration(database: PGlite) {
   /* oxlint-disable eslint/no-await-in-loop -- SQL migration statements must execute in file order. */
   for (const statement of migration.split("--> statement-breakpoint")) {
     if (statement.trim()) await database.exec(statement);
+  }
+  /* oxlint-enable eslint/no-await-in-loop */
+}
+
+async function applySiteMigrations(database: PGlite) {
+  /* oxlint-disable eslint/no-await-in-loop -- Migrations and their statements must execute in order. */
+  for (const name of ["0016_fair_psylocke.sql", "0017_parallel_hulk.sql"]) {
+    const migration = await readFile(
+      new URL(`../migrations/${name}`, import.meta.url),
+      "utf8"
+    );
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) await database.exec(statement);
+    }
   }
   /* oxlint-enable eslint/no-await-in-loop */
 }

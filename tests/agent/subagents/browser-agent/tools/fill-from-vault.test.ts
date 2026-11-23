@@ -86,6 +86,7 @@ function savedItem(kind: "address" | "contact" | "login" | "payment") {
     id: "item-1",
     kind,
     label: "Saved",
+    site: null,
     updatedAt: "2026-11-22T00:00:00.000Z",
   };
 }
