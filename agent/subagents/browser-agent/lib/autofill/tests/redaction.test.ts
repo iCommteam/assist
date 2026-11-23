@@ -4,11 +4,14 @@ import type { BrowserPageState } from "@agent/subagents/browser-agent/lib/policy
 import {
   forgetFilledBrowser,
   forgetInjectedValues,
+  markCodeFilledBrowser,
   recordFilledDocuments,
   redactBrowserOutput,
   redactWorkerOutput,
   releaseNavigatedDocuments,
+  rememberInjectedCode,
   rememberInjectedValues,
+  showsFilledCode,
 } from "../redaction";
 
 vi.mock("eve/context", () => import("@tests/helpers/eve-state"));
@@ -185,5 +188,60 @@ describe("vault value redaction", () => {
     });
     forgetFilledBrowser("browser-1");
     expect(redactWorkerOutput("worker-1", 'value="mugs"')).toBe('value="mugs"');
+  });
+
+  it("hides a one-time code that a widget shows one character per slot", () => {
+    rememberInjectedCode("worker-1", "browser-1", "482913");
+    const slots = [
+      '  textbox "Verification code" [ref=e4]',
+      '  StaticText "4"',
+      '  StaticText "8"',
+      '  StaticText "2"',
+      '  StaticText "-"',
+      '  StaticText "9"',
+      '  StaticText "1"',
+      '  StaticText "3"',
+      '  button "Verify" [ref=e5]',
+    ].join("\n");
+
+    const redacted = redactBrowserOutput("worker-1", "browser-1", slots);
+
+    expect(redacted).toBe(
+      '  textbox "Verification code" [ref=e4]\n  StaticText "[vault value hidden]"\n  button "Verify" [ref=e5]'
+    );
+    expect(
+      redactBrowserOutput("worker-1", "browser-1", "Code: 4 8 2 9 1 3.")
+    ).toBe("Code: [vault value hidden].");
+    // Trace rows carry the snapshot JSON-escaped once more.
+    expect(
+      redactWorkerOutput("worker-1", JSON.stringify({ text: slots }))
+    ).not.toMatch(/4.*8.*2.*9.*1.*3/su);
+  });
+
+  it("leaves refs and other figures alone when they do not spell the code", () => {
+    rememberInjectedCode("worker-1", "browser-1", "482913");
+    const page =
+      '  button "Page 4" [ref=e8]\n  StaticText "Invoice 2913, due 8 Dec"\n  link "Download" [ref=e9]';
+
+    expect(redactBrowserOutput("worker-1", "browser-1", page)).toBe(page);
+  });
+
+  it("marks a browser that shows a filled code until its document is gone", () => {
+    markCodeFilledBrowser("browser-1");
+    expect(showsFilledCode("browser-1")).toBe(true);
+    expect(showsFilledCode("browser-2")).toBe(false);
+
+    recordFilledDocuments("browser-1", openDocuments(1_000));
+    releaseNavigatedDocuments("browser-1", openDocuments(1_000));
+    expect(showsFilledCode("browser-1")).toBe(true);
+    releaseNavigatedDocuments("browser-1", openDocuments(2_000));
+    expect(showsFilledCode("browser-1")).toBe(false);
+
+    // A later password fill is not a code fill.
+    rememberInjectedValues("worker-1", "browser-1", [password]);
+    expect(showsFilledCode("browser-1")).toBe(false);
+    markCodeFilledBrowser("browser-1");
+    forgetFilledBrowser("browser-1");
+    expect(showsFilledCode("browser-1")).toBe(false);
   });
 });

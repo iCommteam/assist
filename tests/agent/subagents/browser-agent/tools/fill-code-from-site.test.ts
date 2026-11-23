@@ -381,5 +381,50 @@ describe("fill_code_from_site", () => {
     expect(redactBrowserOutput("worker-1", "browser-1", code)).toBe(
       "[vault value hidden]"
     );
+    expect(redactBrowserOutput("worker-1", "browser-1", "4 8 2 9 1 3")).toBe(
+      "[vault value hidden]"
+    );
+  });
+
+  it("lets the fill find the code field again after the wait", async () => {
+    await run(workerContext(answered(sealed())));
+
+    expect(mocks.assertFocus).toHaveBeenCalledWith(
+      expect.not.objectContaining({ refocus: true })
+    );
+    expect(mocks.fill).toHaveBeenCalledWith(
+      expect.objectContaining({ refocus: true })
+    );
+  });
+
+  it("keeps the code for one more try when the code page changed during the wait", async () => {
+    mocks.fill.mockRejectedValue(
+      new Error(
+        "Focus the visible authenticator code field of the sign-in and retry."
+      )
+    );
+
+    const result = await run(workerContext(answered(sealed())));
+
+    expect(result).toEqual({
+      filled: false,
+      message:
+        'The code page no longer shows a code field, so the code that arrived was not filled. If the page still asks for a code, focus its code field and call fill_code_from_site once more; otherwise delete the browser and return status "failure" saying the code page changed while the code was on its way.',
+    });
+  });
+
+  it.each([
+    "The code field did not keep the code that was filled.",
+    "The code field has a different number of boxes than the code has characters.",
+  ])("ends the task instead of asking again when %s", async (refusal) => {
+    mocks.fill.mockRejectedValue(new Error(refusal));
+
+    const result = await run(workerContext(answered(sealed())));
+
+    expect(result).toEqual({
+      filled: false,
+      message:
+        'The code field did not take the code, so it was not used. Asking again would fail the same way: delete the browser, then return status "failure" saying the code field did not accept the code.',
+    });
   });
 });

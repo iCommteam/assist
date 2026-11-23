@@ -12,11 +12,21 @@ import type { BrowserPageState } from "@agent/subagents/browser-agent/lib/policy
 // are still known. A restart therefore fails closed.
 
 const injectedValues = new Map<string, Set<string>>();
+// One-time codes, also hidden when a page shows them split, one character per
+// box or slot: the snapshot then lists each character on its own line.
+const injectedCodes = new Map<string, Set<string>>();
 
 // Browser session ID -> performance.timeOrigin of each document open when the
 // fill ran, or null when that is unknown (strip until the browser is deleted).
 const filledDocuments = defineState<Record<string, readonly number[] | null>>(
   "worker.vault-fill.documents",
+  () => ({})
+);
+// Browsers whose filled documents include a one-time code. A code widget may
+// draw the code outside any input, where no mask reaches, so screenshots of
+// those documents are withheld until they are gone.
+const codeDocuments = defineState<Record<string, true>>(
+  "worker.vault-fill.code-documents",
   () => ({})
 );
 
@@ -40,10 +50,50 @@ export function rememberInjectedValues(
     if (trimmed.length >= minimumRedactedLength) known.add(trimmed);
   }
   injectedValues.set(workerSessionId, known);
+  markFilledBrowser(browserSessionId);
+}
+
+export function rememberInjectedCode(
+  workerSessionId: string,
+  browserSessionId: string,
+  code: string
+) {
+  rememberInjectedValues(workerSessionId, browserSessionId, [code]);
+  const trimmed = code.trim();
+  if (trimmed.length >= minimumRedactedLength) {
+    const known = injectedCodes.get(workerSessionId) ?? new Set<string>();
+    known.add(trimmed);
+    injectedCodes.set(workerSessionId, known);
+  }
+  markCodeFilledBrowser(browserSessionId);
+}
+
+// Marks a browser as showing a filled one-time code, also where the code
+// itself is not at hand, such as after a fill in a workflow step.
+export function markCodeFilledBrowser(browserSessionId: string) {
+  markFilledBrowser(browserSessionId);
+  codeDocuments.update((current) => ({
+    ...current,
+    [browserSessionId]: true,
+  }));
+}
+
+function markFilledBrowser(browserSessionId: string) {
   filledDocuments.update((current) => ({
     ...current,
     [browserSessionId]: null,
   }));
+}
+
+export const codeScreenshotWithheld =
+  "The screenshot was withheld because the page holds a filled one-time code. Use browser_snapshot until the page changes.";
+
+// Whether a document a one-time code was filled into may still be open.
+export function showsFilledCode(browserSessionId: string) {
+  return (
+    browserSessionId in codeDocuments.get() &&
+    browserSessionId in filledDocuments.get()
+  );
 }
 
 export function recordFilledDocuments(
@@ -82,10 +132,15 @@ export function forgetFilledBrowser(browserSessionId: string) {
     const { [browserSessionId]: _removed, ...remaining } = current;
     return remaining;
   });
+  codeDocuments.update((current) => {
+    const { [browserSessionId]: _removed, ...remaining } = current;
+    return remaining;
+  });
 }
 
 export function forgetInjectedValues(workerSessionId: string) {
   injectedValues.delete(workerSessionId);
+  injectedCodes.delete(workerSessionId);
 }
 
 // Redacts a worker tool result for one browser. Image data is left alone.
@@ -127,7 +182,81 @@ function redact(workerSessionId: string, text: string, stripRendered: boolean) {
       );
     }
   }
+  for (const code of injectedCodes.get(workerSessionId) ?? []) {
+    result = redactSplitCode(result, code);
+  }
   return result;
+}
+
+const maxSplitGap = 80;
+const splitSeparatorWords = ["StaticText", "generic"];
+
+// Hides a code whose characters appear in order with only separators between
+// them: whitespace, punctuation, escapes such as \n, a bracketed annotation
+// such as [cursor:pointer], or the snapshot's role name for a bare text line.
+// A linear scan rather than a regular expression, so a long page cannot make
+// it backtrack.
+function redactSplitCode(text: string, code: string) {
+  const characters = code.split("");
+  let result = "";
+  let copied = 0;
+  let start = 0;
+  while (start < text.length) {
+    const end = splitCodeEnd(text, start, characters);
+    if (end === undefined) {
+      start += 1;
+      continue;
+    }
+    result += `${text.slice(copied, start)}${hiddenText}`;
+    copied = end;
+    start = end;
+  }
+  return copied === 0 ? text : `${result}${text.slice(copied)}`;
+}
+
+// The end of the split code that starts at `start`, or undefined.
+function splitCodeEnd(
+  text: string,
+  start: number,
+  characters: readonly string[]
+) {
+  let position = start;
+  for (const [index, character] of characters.entries()) {
+    const gapStart = position;
+    while (!sameText(text, position, character)) {
+      const next = index === 0 ? undefined : afterSeparator(text, position);
+      if (next === undefined || next - gapStart > maxSplitGap) return undefined;
+      position = next;
+    }
+    position += character.length;
+  }
+  return position;
+}
+
+function sameText(text: string, position: number, expected: string) {
+  return (
+    text.slice(position, position + expected.length).toLowerCase() ===
+    expected.toLowerCase()
+  );
+}
+
+function afterSeparator(text: string, position: number) {
+  const character = text[position];
+  if (character === undefined) return undefined;
+  for (const word of splitSeparatorWords) {
+    if (sameText(text, position, word)) return position + word.length;
+  }
+  if (character === "\\" && /[nrt]/u.test(text[position + 1] ?? "")) {
+    return position + 2;
+  }
+  if (character === "[") {
+    const close = text.indexOf("]", position);
+    const annotation = close === -1 ? "" : text.slice(position, close);
+    if (close !== -1 && close - position <= 40 && !annotation.includes("\n")) {
+      return close + 1;
+    }
+  }
+  return /[\p{L}\p{N}]/u.test(character) ? undefined : position + 1;
 }
 
 /* oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- Browser Loop results carry arbitrary vendor JSON, so redaction walks every string in it. */

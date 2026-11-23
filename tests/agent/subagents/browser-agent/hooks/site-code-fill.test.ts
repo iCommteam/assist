@@ -5,6 +5,7 @@ import { traceTimelineRows } from "@agent/subagents/browser-agent/lib/trace/time
 import {
   forgetFilledBrowser,
   redactBrowserOutput,
+  showsFilledCode,
 } from "@agent/subagents/browser-agent/lib/autofill/redaction";
 import { hookContextFor } from "@tests/helpers/hook-context";
 import { resetEveState } from "@tests/helpers/eve-state";
@@ -68,6 +69,7 @@ describe("site code fill hook", () => {
     expect(
       redactBrowserOutput("worker-1", "browser-1", 'textbox value="482913"')
     ).toBe('textbox value="[hidden]"');
+    expect(showsFilledCode("browser-1")).toBe(true);
   });
 
   it("marks nothing when no code was filled", async () => {
@@ -81,6 +83,7 @@ describe("site code fill hook", () => {
     expect(
       redactBrowserOutput("worker-1", "browser-1", 'textbox value="mugs"')
     ).toBe('textbox value="mugs"');
+    expect(showsFilledCode("browser-1")).toBe(false);
   });
 });
 

@@ -6,6 +6,10 @@ import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
 import { resetEveState } from "@tests/helpers/eve-state";
 import { toolContextFor } from "@tests/helpers/tool-context";
 import computerAction from "@agent/subagents/browser-agent/tools/computer_action";
+import {
+  markCodeFilledBrowser,
+  recordFilledDocuments,
+} from "@agent/subagents/browser-agent/lib/autofill/redaction";
 
 vi.mock("eve/context", () => import("@tests/helpers/eve-state"));
 
@@ -185,5 +189,30 @@ describe("worker browser tools", () => {
       )
     ).rejects.toThrow(/already stopped at a block/u);
     expect(mocks.captureScreenshot).toHaveBeenCalledOnce();
+  });
+
+  it("withholds screenshots while the page holds a filled one-time code", async () => {
+    markCodeFilledBrowser("browser-1");
+    recordFilledDocuments("browser-1", [clearPage]);
+    const screenshot = {
+      actions: [{ type: "screenshot" as const }],
+      session_id: "browser-1",
+    };
+
+    const withheld = await computerAction.execute(screenshot, toolContextFor());
+
+    expect(withheld).toEqual({
+      message:
+        "Executed 1 computer action. The screenshot was withheld because the page holds a filled one-time code. Use browser_snapshot until the page changes.",
+    });
+
+    // Once the code page is replaced, screenshots come back.
+    mocks.captureScreenshot.mockResolvedValueOnce(new Response("png-bytes"));
+    mocks.playwright.mockResolvedValue({
+      result: [{ ...clearPage, timeOrigin: 2_000 }],
+      success: true,
+    });
+    const shown = await computerAction.execute(screenshot, toolContextFor());
+    expect(shown).toMatchObject({ mimeType: "image/png" });
   });
 });

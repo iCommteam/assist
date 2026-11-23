@@ -10,7 +10,7 @@ import {
   blockReason,
   inspectBrowserPages,
 } from "@agent/subagents/browser-agent/lib/policy/page-check";
-import { rememberInjectedValues } from "@agent/subagents/browser-agent/lib/autofill/redaction";
+import { rememberInjectedCode } from "@agent/subagents/browser-agent/lib/autofill/redaction";
 import {
   assertKernelOneTimeCodeFocus,
   currentKernelPageOrigin,
@@ -36,6 +36,10 @@ const outsideSiteMessage =
   'The code page is not on the exact https origin the pinned login was saved with, so no code was asked for or filled. Delete the browser, then return status "failure" saying the code page is on another origin.';
 const focusMessage =
   "Focus the visible code field of the sign-in with browser_act, then call fill_code_from_site again.";
+const codePageChangedMessage =
+  'The code page no longer shows a code field, so the code that arrived was not filled. If the page still asks for a code, focus its code field and call fill_code_from_site once more; otherwise delete the browser and return status "failure" saying the code page changed while the code was on its way.';
+const codeNotTakenMessage =
+  'The code field did not take the code, so it was not used. Asking again would fail the same way: delete the browser, then return status "failure" saying the code field did not accept the code.';
 const missingLoginMessage = "The selected vault item was not found.";
 const unknownFailureMessage =
   'The code could not be handled. Focus the code field and call fill_code_from_site once more; if it fails again, delete the browser and return status "failure".';
@@ -51,6 +55,10 @@ const fixedMessages = new Set([
 const focusRefusals = new Set([
   "Focus the visible authenticator code field of the sign-in and retry.",
   "The active tab no longer matches the approved origin.",
+]);
+const notTakenRefusals = new Set([
+  "The code field did not keep the code that was filled.",
+  "The code field has a different number of boxes than the code has characters.",
 ]);
 
 type SentBy = "email" | "text";
@@ -101,19 +109,22 @@ export async function fillRelayedSiteCode(
     if (!code) return { filled: false, message: unreadableMessage };
     // Registered before the fill: a fill that fails halfway may still have
     // written the code.
-    rememberInjectedValues(ctx.session.id, browserSessionId, [code]);
+    rememberInjectedCode(ctx.session.id, browserSessionId, code);
     await requireCodePage(ctx, browserSessionId, login.origin);
+    // The page may have moved focus during the wait; the code it sent is
+    // still good for its one code field.
     await fillKernelOneTimeCode({
       browserSessionId,
       code,
       expectedOrigin: login.origin,
+      refocus: true,
       signal: ctx.abortSignal,
     });
     return { filled: true, message: filledMessage };
   } catch (error) {
     return {
       filled: false,
-      message: refusalOf(error instanceof Error ? error : undefined),
+      message: refusalOf(error instanceof Error ? error : undefined, "fill"),
     };
   }
 }
@@ -164,11 +175,14 @@ function codeQuestion(loginOrigin: string, label: string, sentBy: SentBy) {
 }
 
 // Kernel answers 404 for a browser that idled out or was deleted.
-function refusalOf(error: Error | undefined) {
+function refusalOf(error: Error | undefined, step: "ask" | "fill" = "ask") {
   if (error instanceof NotFoundError) return browserGoneMessage;
   const message = error?.message ?? "";
   if (fixedMessages.has(message)) return message;
-  if (focusRefusals.has(message)) return focusMessage;
+  if (focusRefusals.has(message)) {
+    return step === "fill" ? codePageChangedMessage : focusMessage;
+  }
+  if (notTakenRefusals.has(message)) return codeNotTakenMessage;
   if (message.startsWith("This browser no longer exists")) {
     return browserGoneMessage;
   }

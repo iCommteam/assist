@@ -13,8 +13,10 @@ import {
 import { requireWorkerScope } from "@agent/subagents/browser-agent/lib/access";
 import { requireOwnedBrowserSession } from "@agent/subagents/browser-agent/lib/owned-browser";
 import {
+  codeScreenshotWithheld,
   redactBrowserOutput,
   releaseNavigatedDocuments,
+  showsFilledCode,
 } from "@agent/subagents/browser-agent/lib/autofill/redaction";
 import {
   assertNavigableUrl,
@@ -107,7 +109,16 @@ async function executeSemanticTool(
     } satisfies LoopToolExecutionResult;
   }
   releaseNavigatedDocuments(sessionId, check.pages);
-  return redactBrowserOutput(context.session.id, sessionId, output);
+  const redacted = redactBrowserOutput(context.session.id, sessionId, output);
+  if (!showsFilledCode(sessionId)) return redacted;
+  return {
+    ...redacted,
+    content: redacted.content.map((part) =>
+      part.type === "image"
+        ? { text: codeScreenshotWithheld, type: "text" as const }
+        : part
+    ),
+  } satisfies LoopToolExecutionResult;
 }
 
 function boundedToolInput(spec: LoopToolSpec, input: Record<string, unknown>) {

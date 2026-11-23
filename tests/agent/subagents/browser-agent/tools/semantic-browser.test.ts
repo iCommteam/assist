@@ -53,6 +53,7 @@ vi.mock("@agent/subagents/browser-agent/lib/semantic-loop", async () => ({
 import semanticBrowser from "@agent/subagents/browser-agent/tools/semantic_browser";
 import {
   forgetInjectedValues,
+  markCodeFilledBrowser,
   rememberInjectedValues,
 } from "@agent/subagents/browser-agent/lib/autofill/redaction";
 
@@ -227,5 +228,27 @@ describe("semantic browser tools", () => {
     await expect(call("browser_snapshot", {})).rejects.toThrow(
       "fill failed near [vault value hidden]"
     );
+  });
+
+  it("replaces page images with a note while the page holds a filled code", async () => {
+    markCodeFilledBrowser("browser-1");
+    mocks.executeBrowserLoopTool.mockResolvedValueOnce({
+      content: [
+        { text: "snapshot", type: "text" },
+        { data: "cG5n", mimeType: "image/png", type: "image" },
+      ],
+      details: { statusText: "ok" },
+    });
+
+    expect(await call("browser_snapshot", {})).toEqual({
+      content: [
+        { text: "snapshot", type: "text" },
+        {
+          text: "The screenshot was withheld because the page holds a filled one-time code. Use browser_snapshot until the page changes.",
+          type: "text",
+        },
+      ],
+      details: { statusText: "ok" },
+    });
   });
 });

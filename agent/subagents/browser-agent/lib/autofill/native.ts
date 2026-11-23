@@ -8,6 +8,9 @@ import {
   nativeLoginAutofillTokens,
   nativeLoginControlInspectionExpression,
   nativeLoginFillFunctionDeclaration,
+  nativeOneTimeCodeCheckFunctionDeclaration,
+  nativeOneTimeCodeFillFunctionDeclaration,
+  oneTimeCodeBoxes,
   selectNativeLoginFills,
   type NativeLoginControlDescriptor,
 } from "./login";
@@ -86,6 +89,7 @@ const loginControlDescriptorsSchema = z.array(
     formIndex: z.number().int().nonnegative().nullable(),
     index: z.number().int().nonnegative(),
     label: z.string(),
+    maxLength: z.number().int().optional(),
     name: z.string(),
     type: z.string(),
   })
@@ -984,7 +988,8 @@ async function fillNativeLoginControl(
     readonly sessionId: string;
   },
   value: string,
-  expectedOrigin: string
+  expectedOrigin: string,
+  functionDeclaration = nativeLoginFillFunctionDeclaration
 ) {
   const evaluated = evaluatedObjectSchema.parse(
     await connection.send(
@@ -1006,7 +1011,7 @@ async function fillNativeLoginControl(
         {
           arguments: [{ value }, { value: expectedOrigin }],
           awaitPromise: false,
-          functionDeclaration: nativeLoginFillFunctionDeclaration,
+          functionDeclaration,
           objectId,
           returnByValue: true,
         },
@@ -1021,41 +1026,80 @@ async function fillNativeLoginControl(
   }
 }
 
+const codeNotAcceptedMessage =
+  "The code field did not keep the code that was filled.";
+const codeBoxesMessage =
+  "The code field has a different number of boxes than the code has characters.";
+
 // Fills a one-time code into the focused code field of a document served from
 // the saved login's origin, marked like a login value for screenshot masking.
+// A field split into one box per character gets one character per box. The
+// fill counts only when every box kept what it was given. With `refocus`, a
+// page that moved focus off its only code field still gets the code there.
 export async function fillKernelOneTimeCode({
   browserSessionId,
   code,
   expectedOrigin,
+  refocus = false,
   signal,
 }: {
   readonly browserSessionId: string;
   readonly code: string;
   readonly expectedOrigin: string;
+  readonly refocus?: boolean;
   readonly signal?: AbortSignal;
 }) {
   await withKernelPage(
     browserSessionId,
     signal,
     async ({ connection, origin, sessionId }) => {
-      const focused = await focusedOneTimeCodeControl(
+      const { controls, field } = await oneTimeCodeField(
         connection,
         sessionId,
         origin,
-        expectedOrigin
+        expectedOrigin,
+        refocus
       );
-      if (
-        !(await fillNativeLoginControl(
-          connection,
-          focused,
-          code,
-          expectedOrigin
-        ))
-      ) {
-        throw new Error(
-          "The code field rejected secure autofill or is not served from the saved origin."
-        );
+      const boxes = oneTimeCodeBoxes(controls, field);
+      const characters = code.split("");
+      if (boxes && boxes.length !== characters.length) {
+        throw new Error(codeBoxesMessage);
       }
+      const fills = boxes
+        ? boxes.map((box, index) => ({
+            control: box,
+            value: characters[index] ?? "",
+          }))
+        : [{ control: field, value: code }];
+      /* oxlint-disable eslint/no-await-in-loop -- Boxes are filled in page order, as typing would, so a page that moves focus box by box keeps up. */
+      for (const { control, value } of fills) {
+        if (
+          !(await fillNativeLoginControl(
+            connection,
+            control,
+            value,
+            expectedOrigin,
+            nativeOneTimeCodeFillFunctionDeclaration
+          ))
+        ) {
+          throw new Error(codeNotAcceptedMessage);
+        }
+      }
+      // A page may clear or move a box while the next one is filled.
+      for (const { control, value } of fills) {
+        if (
+          !(await fillNativeLoginControl(
+            connection,
+            control,
+            value,
+            expectedOrigin,
+            nativeOneTimeCodeCheckFunctionDeclaration
+          ))
+        ) {
+          throw new Error(codeNotAcceptedMessage);
+        }
+      }
+      /* oxlint-enable eslint/no-await-in-loop */
     }
   );
 }
@@ -1076,21 +1120,23 @@ export async function assertKernelOneTimeCodeFocus({
     browserSessionId,
     signal,
     async ({ connection, origin, sessionId }) => {
-      await focusedOneTimeCodeControl(
+      await oneTimeCodeField(
         connection,
         sessionId,
         origin,
-        expectedOrigin
+        expectedOrigin,
+        false
       );
     }
   );
 }
 
-async function focusedOneTimeCodeControl(
+async function oneTimeCodeField(
   connection: CdpConnection,
   sessionId: readonly string[],
   origin: string,
-  expectedOrigin: string
+  expectedOrigin: string,
+  refocus: boolean
 ) {
   if (origin !== expectedOrigin) {
     throw new Error("The active tab no longer matches the approved origin.");
@@ -1102,12 +1148,25 @@ async function focusedOneTimeCodeControl(
     (descriptor) => descriptor
   );
   const focused = controls.find((control) => control.focused);
-  if (!focused || !isOneTimeCodeControl(focused)) {
-    throw new Error(
-      "Focus the visible authenticator code field of the sign-in and retry."
-    );
+  if (focused && isOneTimeCodeControl(focused)) {
+    return { controls, field: focused };
   }
-  return focused;
+  if (refocus) {
+    // The document's only code field, or the first box of its only split one.
+    const fields = controls.filter((control) => isOneTimeCodeControl(control));
+    const [first] = fields;
+    const boxes = first ? oneTimeCodeBoxes(controls, first) : undefined;
+    if (
+      first &&
+      (fields.length === 1 ||
+        fields.every((control) => boxes?.includes(control)))
+    ) {
+      return { controls, field: boxes?.[0] ?? first };
+    }
+  }
+  throw new Error(
+    "Focus the visible authenticator code field of the sign-in and retry."
+  );
 }
 
 export function buildNativeAutofillPayload(

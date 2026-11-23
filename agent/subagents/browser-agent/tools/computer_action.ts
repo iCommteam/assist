@@ -9,7 +9,11 @@ import {
   assertWorkerNotBlocked,
   checkBrowserPages,
 } from "@agent/subagents/browser-agent/lib/policy/page-check";
-import { releaseNavigatedDocuments } from "@agent/subagents/browser-agent/lib/autofill/redaction";
+import {
+  codeScreenshotWithheld,
+  releaseNavigatedDocuments,
+  showsFilledCode,
+} from "@agent/subagents/browser-agent/lib/autofill/redaction";
 
 // Input is sent at machine speed: no per-keystroke or drag delays, no smooth
 // (human-like) mouse paths, and no clipboard. A sleep is only a short wait.
@@ -179,10 +183,18 @@ export default defineTool({
       return outputSchema.parse({ message: check.message });
     }
     releaseNavigatedDocuments(input.session_id, check.pages);
+    const executed = `Executed ${String(input.actions.length)} computer action${input.actions.length === 1 ? "" : "s"}.`;
+    // A code widget can draw a filled code where the vault mask cannot reach.
+    if (screenshotBase64 && showsFilledCode(input.session_id)) {
+      return outputSchema.parse({
+        data: data.length > 0 ? data : undefined,
+        message: `${executed} ${codeScreenshotWithheld}`,
+      });
+    }
 
     return outputSchema.parse({
       data: data.length > 0 ? data : undefined,
-      message: `Executed ${String(input.actions.length)} computer action${input.actions.length === 1 ? "" : "s"}.`,
+      message: executed,
       mimeType: screenshotBase64 ? "image/png" : undefined,
       screenshotBase64,
     });

@@ -10,7 +10,7 @@ import {
 } from "@agent/subagents/browser-agent/lib/policy/page-check";
 import {
   recordFilledDocuments,
-  rememberInjectedValues,
+  rememberInjectedCode,
 } from "@agent/subagents/browser-agent/lib/autofill/redaction";
 import {
   currentKernelPageOrigin,
@@ -37,7 +37,8 @@ const safeFillMessages = new Set([
   "Focus the visible authenticator code field of the sign-in and retry.",
   "No active browser tab was found.",
   "The active tab no longer matches the approved origin.",
-  "The code field rejected secure autofill or is not served from the saved origin.",
+  "The code field did not keep the code that was filled.",
+  "The code field has a different number of boxes than the code has characters.",
   "The selected vault item has no secret.",
   "The selected vault item was not found.",
   "This saved login has no authenticator setup key.",
@@ -89,9 +90,7 @@ export default defineTool({
       );
       // Registered before the fill: a fill that fails halfway may still have
       // written the code.
-      rememberInjectedValues(context.session.id, input.browserSessionId, [
-        code,
-      ]);
+      rememberInjectedCode(context.session.id, input.browserSessionId, code);
       await fillKernelOneTimeCode({
         browserSessionId: input.browserSessionId,
         code,

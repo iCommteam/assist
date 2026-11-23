@@ -13,6 +13,8 @@ export interface NativeLoginControlDescriptor {
   readonly formIndex: number | null;
   readonly index: number;
   readonly label: string;
+  // The input's maxLength: -1 when it sets none.
+  readonly maxLength?: number;
   readonly name: string;
   readonly type: string;
 }
@@ -122,6 +124,28 @@ export function isOneTimeCodeControl(descriptor: NativeLoginControlDescriptor) {
   );
 }
 
+// The boxes of a code field split into one box per character: the focused
+// one-character box and every other one in its form and document, in page
+// order. Undefined for a code field that takes the whole code.
+export function oneTimeCodeBoxes<
+  T extends NativeLoginControlDescriptor & {
+    readonly executionContextId: number;
+    readonly sessionId: string;
+  },
+>(controls: readonly T[], focused: T) {
+  if (focused.maxLength !== 1) return undefined;
+  return controls
+    .filter(
+      (control) =>
+        control.sessionId === focused.sessionId &&
+        control.executionContextId === focused.executionContextId &&
+        control.formIndex === focused.formIndex &&
+        control.maxLength === 1 &&
+        oneTimeCodeInputTypes.has(control.type)
+    )
+    .toSorted((left, right) => left.index - right.index);
+}
+
 export function selectNativeLoginFills<T extends ClassifiedNativeLoginControl>(
   controls: readonly T[],
   claims: readonly Pick<AutofillClaim, "token" | "value">[]
@@ -183,6 +207,7 @@ export const nativeLoginControlInspectionExpression = `(() => {
         element.getAttribute("placeholder") || "",
         element.getAttribute("title") || "",
       ].join(" "),
+      maxLength: element.maxLength,
       name: [element.name, element.id].join(" "),
       type: element.type || "",
     }];
@@ -205,6 +230,33 @@ export const nativeLoginFillFunctionDeclaration = `function(value, expectedOrigi
   this.dispatchEvent(new InputEvent("input", { bubbles: true, data: value, inputType: "insertText" }));
   this.dispatchEvent(new Event("change", { bubbles: true }));
   return this.value.length > 0;
+}`;
+
+// A code field may show the code spaced, grouped or upper-cased.
+const keptCodeExpression = `this.value.replace(/[\\s-]+/gu, "").toLowerCase() === value.replace(/[\\s-]+/gu, "").toLowerCase()`;
+
+// The same fill for a one-time code, or one character of it, which succeeds
+// only when the field kept that value: a field that drops or trims part of a
+// code must not read as filled.
+export const nativeOneTimeCodeFillFunctionDeclaration = `function(value, expectedOrigin) {
+  if (self.origin !== expectedOrigin) return false;
+  if (!(this instanceof HTMLInputElement)) return false;
+  this.dataset.vaultSecret = "true";
+  this.click();
+  this.focus();
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (!setter) return false;
+  setter.call(this, value);
+  this.dispatchEvent(new InputEvent("input", { bubbles: true, data: value, inputType: "insertText" }));
+  this.dispatchEvent(new Event("change", { bubbles: true }));
+  return ${keptCodeExpression};
+}`;
+
+// Whether a filled code field still holds its value once every box is filled.
+export const nativeOneTimeCodeCheckFunctionDeclaration = `function(value, expectedOrigin) {
+  if (self.origin !== expectedOrigin) return false;
+  if (!(this instanceof HTMLInputElement)) return false;
+  return ${keptCodeExpression};
 }`;
 
 function compareLoginControls(
