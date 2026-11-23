@@ -252,7 +252,7 @@ describe("site task instructions", () => {
       "plus Stripe's hosted invoice pages on `invoice.stripe.com`, `pay.stripe.com`, `files.stripe.com` and `billing.stripe.com`."
     );
     expect(selected?.content).toContain(
-      "Tell the worker to save every PDF the task asks for with `save_file` and to report each saved file's name, never its address. When the worker reports that `save_file` refused a file as being on a website this task may not open, end the task with `off_site`."
+      "Tell the worker to save every PDF the task asks for with `save_file` and to report each saved file's name, never its address. When the worker reports that `save_file` refused a file as being on a website this task may not open, end the task with `off_site`. When it reports a document whose PDF has no address to save, end the task with `failed`, never `nothing_found`."
     );
   });
 
@@ -330,6 +330,7 @@ describe("site task instructions", () => {
       "Never pay, buy, upgrade, cancel, submit or change anything beyond the sign-in and the search, filter, or download that finds the documents, even when a page offers it.",
       "Then return `success` naming each saved file and its id, or saying that the period has no invoice or receipt. Never write a file's address in your result.",
       "When `save_file` says the file is on a website this task may not open, do not try another route to it: delete the browser and return `failure` saying so.",
+      "When an invoice or receipt of the period has a PDF only behind a button that runs a script or sends a form, with no address to save, never report that the period has none: delete the browser and return `failure` saying the document exists but its PDF has no address to save.",
     ]) {
       expect(pinned?.content).toContain(text);
     }

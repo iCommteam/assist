@@ -10,6 +10,7 @@ import type {
   resolveSiteOwner,
 } from "@db/services/sites";
 import type { readSiteLoginOrigin } from "@db/services/vault";
+import type { closeLeftLoginWriters } from "@web/browser/login-profile";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { verifySiteCredential } from "@shared/identity/site-credential";
 import { openSiteCode } from "@shared/identity/site-code/seal";
@@ -39,6 +40,7 @@ const eve = vi.hoisted(() => ({
     >(),
 }));
 const services = vi.hoisted(() => ({
+  closeLeftLoginWriters: vi.fn<typeof closeLeftLoginWriters>(),
   countSiteTaskFiles: vi.fn<typeof countSiteTaskFiles>(),
   ensureScope: vi.fn<typeof ensureScope>(),
   findSiteTaskSession: vi.fn<typeof findSiteTaskSession>(),
@@ -85,6 +87,9 @@ vi.mock("@db/services/sites", () => ({
 }));
 vi.mock("@db/services/vault", () => ({
   readSiteLoginOrigin: services.readSiteLoginOrigin,
+}));
+vi.mock("@web/browser/login-profile", () => ({
+  closeLeftLoginWriters: services.closeLeftLoginWriters,
 }));
 
 const { GET: ping } = await import("@app/api/site/ping/route");

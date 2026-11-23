@@ -346,6 +346,47 @@ describe("a completed task's outcome", () => {
   });
 });
 
+describe("a failed task's files", () => {
+  it("still lists and downloads what it saved before it failed, though its outcome is null", async () => {
+    const { taskId, files } = await taskWithFiles("wrun_failed", [
+      ["September.pdf", invoice],
+    ]);
+    eve.read.mockResolvedValue(
+      eventsOf(
+        [
+          [turnStarted],
+          [
+            {
+              data: { outcome: "cancelled", turnId: "turn_0" },
+              scope: { turnId: "turn_0" },
+              type: "turn.settled",
+            },
+          ],
+        ],
+        new Date().toISOString()
+      )
+    );
+
+    const status = await call(readTask(request(teemiqToken), task(taskId)));
+    await expect(status.json()).resolves.toMatchObject({
+      error: "cancelled",
+      outcome: null,
+      status: "failed",
+    });
+    const listed = await call(listFiles(request(teemiqToken), task(taskId)));
+    await expect(listed.json()).resolves.toMatchObject({
+      files: [{ fileId: files[0], filename: "September.pdf" }],
+    });
+    const downloaded = await call(
+      downloadFile(request(teemiqToken), file(taskId, files[0] ?? ""))
+    );
+    expect(downloaded.status).toBe(200);
+    expect(Buffer.from(await downloaded.arrayBuffer()).equals(invoice)).toBe(
+      true
+    );
+  });
+});
+
 async function call(answer: Promise<Response>) {
   const response = await answer;
   answers.push(response);

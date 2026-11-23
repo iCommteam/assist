@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ensureScope } from "@db/services/scope";
 import { recordSiteTask } from "@db/services/sites";
 import { readSiteLoginOrigin } from "@db/services/vault";
+import { closeLeftLoginWriters } from "@web/browser/login-profile";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { siteLoginPinSchema } from "@shared/identity/site-credential";
 import {
@@ -47,6 +48,7 @@ export async function POST(request: Request) {
     if (open.taskId) {
       return siteJson({ error: "login_busy", taskId: open.taskId }, 409);
     }
+    await closeLeftLoginWriters(owner.scope, loginId);
     return startTask(owner.scope, site, message, pin.login);
   });
 }

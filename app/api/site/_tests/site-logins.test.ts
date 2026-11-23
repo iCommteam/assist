@@ -37,12 +37,36 @@ const eve = vi.hoisted(() => ({
   read: vi.fn<(sessionId: string) => Promise<ReceivedEvent[]>>(),
 }));
 const kernel = vi.hoisted(() => ({
+  deleteBrowser:
+    vi.fn<
+      (
+        sessionId: string,
+        options: { readonly signal: AbortSignal }
+      ) => Promise<void>
+    >(),
   deleteProfile:
     vi.fn<
       (
         idOrName: string,
         options: { readonly signal: AbortSignal }
       ) => Promise<void>
+    >(),
+  listBrowsers: vi.fn<
+    (
+      query: { readonly query: string; readonly status: string },
+      options: { readonly signal: AbortSignal }
+    ) => AsyncIterable<{
+      readonly profile?: { readonly id: string };
+      readonly profile_save_changes?: boolean;
+      readonly session_id: string;
+    }>
+  >(),
+  retrieveProfile:
+    vi.fn<
+      (
+        idOrName: string,
+        options: { readonly signal: AbortSignal }
+      ) => Promise<{ readonly id: string }>
     >(),
 }));
 
@@ -69,7 +93,11 @@ vi.mock("eve/client", async (importOriginal) => {
 vi.mock("@onkernel/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof KernelSdk>()),
   default: class {
-    profiles = { delete: kernel.deleteProfile };
+    browsers = { deleteByID: kernel.deleteBrowser, list: kernel.listBrowsers };
+    profiles = {
+      delete: kernel.deleteProfile,
+      retrieve: kernel.retrieveProfile,
+    };
   },
 }));
 
@@ -97,6 +125,8 @@ const { DELETE: removeLogin } =
   await import("@app/api/site/logins/[loginId]/route");
 const { GET: listTasks, POST: createTask } =
   await import("@app/api/site/tasks/route");
+const { POST: cancelTask } =
+  await import("@app/api/site/tasks/[taskId]/cancel/route");
 const { ClientError } = await import("eve/client");
 
 const client = new PGlite();
@@ -147,6 +177,9 @@ beforeEach(async () => {
   eve.read.mockResolvedValue(completedTask());
   eve.cancel.mockResolvedValue(undefined);
   kernel.deleteProfile.mockResolvedValue();
+  kernel.deleteBrowser.mockResolvedValue();
+  kernel.listBrowsers.mockImplementation(() => browsersOf([]));
+  kernel.retrieveProfile.mockResolvedValue({ id: "profile-login" });
   await database.delete(schema.siteTasks);
   await database.delete(schema.vaultItems);
 });
@@ -691,6 +724,81 @@ describe("one open task per saved login", () => {
     expect(eve.create).toHaveBeenCalledTimes(2);
   });
 
+  it("closes the sign-in browser a task cancelled during its code wait left, before the login's next task starts", async () => {
+    const { loginId } = await saveLogin(teemiqToken, validLogin({}));
+    eve.create
+      .mockResolvedValueOnce({ session: { id: "wrun_first" } })
+      .mockResolvedValueOnce({ session: { id: "wrun_next" } });
+    const first = await call(createTask(taskRequest(teemiqToken, loginId)));
+    const { taskId } = z.object({ taskId: z.uuid() }).parse(await first.json());
+    eve.read.mockResolvedValue(awaitingCode());
+    const cancelled = await call(
+      cancelTask(
+        new Request(`https://assist.example/api/site/tasks/${taskId}/cancel`, {
+          headers: { authorization: `Bearer ${teemiqToken}` },
+          method: "POST",
+        }),
+        { params: Promise.resolve({ taskId }) }
+      )
+    );
+    expect(cancelled.status).toBe(202);
+    expect(eve.cancel).toHaveBeenCalledExactlyOnceWith("wrun_first", "turn_0");
+    // Its worker was saving the login's sign-in when it was stopped.
+    kernel.listBrowsers.mockImplementation(() =>
+      browsersOf([
+        {
+          profile: { id: "profile-login" },
+          profile_save_changes: true,
+          session_id: "browser-writer",
+        },
+        {
+          profile: { id: "profile-login" },
+          profile_save_changes: false,
+          session_id: "browser-reader",
+        },
+        {
+          profile: { id: "profile-other" },
+          profile_save_changes: true,
+          session_id: "browser-other",
+        },
+      ])
+    );
+    eve.read.mockResolvedValue(cancelledTask());
+
+    const next = await call(createTask(taskRequest(teemiqToken, loginId)));
+
+    expect(next.status).toBe(202);
+    expect(kernel.retrieveProfile).toHaveBeenLastCalledWith(
+      kernelProfileNameForLogin(owner.workspaceId, loginId),
+      expect.anything()
+    );
+    expect(kernel.listBrowsers).toHaveBeenLastCalledWith(
+      { query: "profile-login", status: "active" },
+      expect.anything()
+    );
+    expect(kernel.deleteBrowser).toHaveBeenCalledExactlyOnceWith(
+      "browser-writer",
+      expect.anything()
+    );
+    const [closedAt = 0] = kernel.deleteBrowser.mock.invocationCallOrder;
+    expect(closedAt).toBeLessThan(eve.create.mock.invocationCallOrder[1] ?? 0);
+  });
+
+  it("leaves the login's browsers alone while its task is open, and starts when Kernel cannot say", async () => {
+    const { loginId } = await saveLogin(teemiqToken, validLogin({}));
+    kernel.retrieveProfile.mockRejectedValue(new Error("Kernel unavailable"));
+    const first = await call(createTask(taskRequest(teemiqToken, loginId)));
+    expect(first.status).toBe(202);
+    expect(kernel.retrieveProfile).toHaveBeenCalledOnce();
+    eve.read.mockResolvedValue(awaitingCode());
+
+    const busy = await call(createTask(taskRequest(teemiqToken, loginId)));
+
+    expect(busy.status).toBe(409);
+    expect(kernel.retrieveProfile).toHaveBeenCalledOnce();
+    expect(kernel.deleteBrowser).not.toHaveBeenCalled();
+  });
+
   it("lists only this site's tasks pinned to the login, newest first", async () => {
     const { loginId } = await saveLogin(teemiqToken, validLogin({}));
     const older = await recordSiteTask("teemiq", owner, "wrun_a", loginId);
@@ -908,6 +1016,29 @@ function awaitingCode() {
       },
     ],
   ]);
+}
+
+function cancelledTask() {
+  return eventsOf([
+    [turnStarted],
+    [
+      {
+        data: { outcome: "cancelled", turnId: "turn_0" },
+        scope: { turnId: "turn_0" },
+        type: "turn.settled",
+      },
+    ],
+  ]);
+}
+
+async function* browsersOf(
+  browsers: readonly {
+    readonly profile?: { readonly id: string };
+    readonly profile_save_changes?: boolean;
+    readonly session_id: string;
+  }[]
+) {
+  yield* browsers;
 }
 
 function completedTask() {

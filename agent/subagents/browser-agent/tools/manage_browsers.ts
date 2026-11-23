@@ -15,6 +15,7 @@ import {
   withBrowserProfileWriteLock,
 } from "@db/services/browsers";
 import { recordBrowserTraceDomains } from "@db/services/browser-traces";
+import { isSiteTaskSession } from "@db/services/sites";
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
 import { requireWorkerScope } from "@agent/subagents/browser-agent/lib/access";
 import { disposeBrowserLoopSession } from "../lib/semantic-loop";
@@ -44,6 +45,8 @@ const browserTimeoutCeilingSeconds = 60 * 60;
 // relayed code, whatever the model asks for.
 const siteBrowserTimeoutSeconds = 30 * 60;
 
+const unrecordedSiteTaskRefusal =
+  'This site task is not recorded as one the site started, so its browsers cannot use the saved login. Wait a few seconds and retry once; if it is refused again, return status "failure" saying the site task could not be confirmed.';
 const unpinnedSaveRefusal =
   'This site task is not pinned to a saved login, so its browsers keep no sign-in and cannot be created with save_changes. If the work needs a sign-in, return status "failure" saying the task has no saved login.';
 
@@ -83,6 +86,19 @@ const manageBrowsers = defineTool({
         const profileName = browserProfileName(scope.workspaceId, initiator);
         if (!profileName && input.save_changes) {
           throw new Error(unpinnedSaveRefusal);
+        }
+        // A start whose task row was never written still runs in eve, where
+        // the site can neither read nor stop it, so it keeps off the login.
+        const rootSessionId = context.session.parent?.rootSessionId;
+        if (
+          site &&
+          siteLoginOfSession(initiator) &&
+          !(
+            rootSessionId &&
+            (await isSiteTaskSession(site, scope, rootSessionId))
+          )
+        ) {
+          throw new Error(unrecordedSiteTaskRefusal);
         }
         const create = async () => {
           const profile = profileName

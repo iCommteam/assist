@@ -10,6 +10,7 @@ import type {
   withBrowserProfileWriteLock,
 } from "@db/services/browsers";
 import type { recordBrowserTraceDomains } from "@db/services/browser-traces";
+import type { isSiteTaskSession } from "@db/services/sites";
 import type { requireWorkerScope } from "@agent/subagents/browser-agent/lib/access";
 import type { requireOwnedBrowserSession } from "@agent/subagents/browser-agent/lib/owned-browser";
 import type * as TraceDomainsModule from "@agent/subagents/browser-agent/lib/trace/domains";
@@ -31,6 +32,7 @@ const serviceMocks = vi.hoisted(() => ({
   createBrowserSession: vi.fn<typeof createBrowserSession>(),
   deleteBrowserSession: vi.fn<typeof deleteBrowserSession>(),
   harvestBrowserTraceDomains: vi.fn<typeof harvestBrowserTraceDomains>(),
+  isSiteTaskSession: vi.fn<typeof isSiteTaskSession>(),
   listWorkerBrowserSessions: vi.fn<typeof listWorkerBrowserSessions>(),
   readWorkspaceBrowserSession: vi.fn<typeof readBrowserSession>(),
   recordBrowserTraceDomains: vi.fn<typeof recordBrowserTraceDomains>(),
@@ -48,6 +50,9 @@ vi.mock("@db/services/browsers", () => ({
 }));
 vi.mock("@db/services/browser-traces", () => ({
   recordBrowserTraceDomains: serviceMocks.recordBrowserTraceDomains,
+}));
+vi.mock("@db/services/sites", () => ({
+  isSiteTaskSession: serviceMocks.isSiteTaskSession,
 }));
 vi.mock("@agent/subagents/browser-agent/lib/access", () => ({
   requireWorkerScope: serviceMocks.requireWorkerScope,
@@ -71,6 +76,7 @@ const mocks = {
   deleteBrowser: vi.spyOn(kernel.browsers, "deleteByID"),
   deleteBrowserSession: serviceMocks.deleteBrowserSession,
   harvestBrowserTraceDomains: serviceMocks.harvestBrowserTraceDomains,
+  isSiteTaskSession: serviceMocks.isSiteTaskSession,
   listWorkerBrowserSessions: serviceMocks.listWorkerBrowserSessions,
   listKernelBrowsers: vi.spyOn(kernel.browsers, "list"),
   playwright: vi.spyOn(kernel.browsers.playwright, "execute"),
@@ -123,6 +129,7 @@ beforeEach(() => {
     workerSessionId: "worker-session-1",
   });
   mocks.recordBrowserTraceDomains.mockResolvedValue();
+  mocks.isSiteTaskSession.mockResolvedValue(true);
   mocks.withBrowserProfileWriteLock.mockImplementation(
     async (_scope, operation) => operation()
   );
@@ -592,6 +599,30 @@ describe("Kernel browser contract", () => {
     );
   });
 
+  it("keeps a pinned site session whose task was never recorded off the login's profile", async () => {
+    mocks.isSiteTaskSession.mockResolvedValue(false);
+
+    for (const save_changes of [true, false]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each browser is refused on its own.
+      await expect(
+        manageBrowsers.execute(
+          { action: "create", save_changes },
+          siteWorkerContext({ id: "login-1", origin: "https://vendor.com" })
+        )
+      ).rejects.toThrow(
+        'This site task is not recorded as one the site started, so its browsers cannot use the saved login. Wait a few seconds and retry once; if it is refused again, return status "failure" saying the site task could not be confirmed.'
+      );
+    }
+
+    expect(mocks.isSiteTaskSession).toHaveBeenCalledWith(
+      "teemiq",
+      { userId: "user-1", workspaceId: "workspace-1" },
+      "wrun_site_task"
+    );
+    expect(mocks.retrieveProfile).not.toHaveBeenCalled();
+    expect(mocks.createBrowser).not.toHaveBeenCalled();
+  });
+
   it("creates a pinned login's profile the first time it is needed", async () => {
     mocks.retrieveProfile.mockRejectedValueOnce(
       new NotFoundError(404, undefined, "not found", new Headers())
@@ -708,6 +739,7 @@ function siteWorkerContext(login: { id: string; origin: string } | undefined) {
   );
   return toolContextFor({
     auth: { current: initiator, initiator },
+    parentSessionId: "wrun_site_task",
     sessionId: "worker-session-1",
   });
 }

@@ -164,19 +164,27 @@ function turnState(
 // The agent ends a site task with the end tool, and its last result decides
 // a failure. A turn that ends without the tool completes. When the last code
 // question ended without the code reaching the worker, the worker's wait ran
-// out, so the task fails whatever result the agent gave other than a failure.
+// out, so the task reads timed_out, also when the agent called that
+// code_failed; another failure the agent chose, such as blocked, stands.
 function completedState(
   view: SessionView,
   events: readonly ReceivedEvent[],
   turnId: string
 ): SiteTaskState {
-  const reply = sentText(view, events, turnId);
+  const reply = lastSentText(view, events, turnId);
   const result = endResult(view, events, turnId);
-  if (result !== undefined && result !== "done" && result !== "nothing_found") {
-    return { error: result, reply, status: "failed" };
-  }
-  if (lastCodeWentUnused(view, turnId)) {
+  const failedWith =
+    result === undefined || result === "done" || result === "nothing_found"
+      ? undefined
+      : result;
+  if (
+    (failedWith === undefined || failedWith === "code_failed") &&
+    lastCodeWentUnused(view, turnId)
+  ) {
     return { error: "timed_out", reply, status: "failed" };
+  }
+  if (failedWith !== undefined) {
+    return { error: failedWith, reply, status: "failed" };
   }
   return { reply, status: "completed" };
 }
@@ -236,9 +244,10 @@ function plainQuestion(prompt: string) {
     : line;
 }
 
-// The stream carries each settled output in full; the folded view withholds
-// large values, so the messages are read from the events themselves.
-function sentText(
+// The turn's last message. The stream carries each settled output in full;
+// the folded view withholds large values, so the messages are read from the
+// events themselves.
+function lastSentText(
   view: SessionView,
   events: readonly ReceivedEvent[],
   turnId: string
@@ -261,7 +270,7 @@ function sentText(
       ];
     })
     .filter((text) => text.length > 0);
-  return texts.length > 0 ? texts.join("\n\n") : null;
+  return texts.at(-1) ?? null;
 }
 
 function timedOut(state: SiteTaskState): SiteTaskState {

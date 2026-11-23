@@ -500,10 +500,11 @@ describe("saving site task files", () => {
         .from(schema.taskFiles)
         .where(eq(schema.taskFiles.taskId, task));
 
-    await purgeExpiredTaskFiles();
+    await expect(purgeExpiredTaskFiles()).resolves.toBe(100);
     expect(await remaining()).toHaveLength(2);
-    await purgeExpiredTaskFiles();
+    await expect(purgeExpiredTaskFiles()).resolves.toBe(1);
     expect(await remaining()).toEqual([{ filename: "kept.pdf" }]);
+    await expect(purgeExpiredTaskFiles()).resolves.toBe(0);
   });
 });
 

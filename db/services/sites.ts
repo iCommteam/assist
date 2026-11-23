@@ -109,17 +109,22 @@ function isKept() {
   return gt(taskFiles.expiresAt, sql`now()`);
 }
 
+// Deletes a batch of expired files and returns how many it deleted.
 export async function purgeExpiredTaskFiles() {
-  await db.delete(taskFiles).where(
-    inArray(
-      taskFiles.id,
-      db
-        .select({ id: taskFiles.id })
-        .from(taskFiles)
-        .where(lte(taskFiles.expiresAt, sql`now()`))
-        .limit(purgeBatchSize)
+  const deleted = await db
+    .delete(taskFiles)
+    .where(
+      inArray(
+        taskFiles.id,
+        db
+          .select({ id: taskFiles.id })
+          .from(taskFiles)
+          .where(lte(taskFiles.expiresAt, sql`now()`))
+          .limit(purgeBatchSize)
+      )
     )
-  );
+    .returning({ id: taskFiles.id });
+  return deleted.length;
 }
 
 // The task a site session may still save files to: one this site created in

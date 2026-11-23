@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { NotFoundError } from "@onkernel/sdk";
-import type { BrowserCurlResponse } from "@onkernel/sdk/resources/browsers";
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import {
@@ -8,6 +7,7 @@ import {
   saveSiteTaskFile,
   siteTaskFileRoom,
 } from "@db/services/sites";
+import { CdpConnection } from "@agent/subagents/browser-agent/lib/cdp";
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
 import { requireWorkerScope } from "@agent/subagents/browser-agent/lib/access";
 import { requireOwnedBrowserSession } from "@agent/subagents/browser-agent/lib/owned-browser";
@@ -22,8 +22,7 @@ import { assertWorkerNotBlocked } from "@agent/subagents/browser-agent/lib/polic
 import { siteLoginOfSession, siteOfSession } from "@agent/lib/site-principal";
 
 const maxFileBytes = 20 * 1024 * 1024;
-// The base64 text of the largest file, with room for line breaks.
-const maxEncodedLength = Math.ceil(maxFileBytes / 3) * 4 + 4096;
+const readChunkBytes = 1024 * 1024;
 const maxFilenameLength = 200;
 const maxRedirects = 5;
 const downloadTimeoutMs = 60_000;
@@ -93,19 +92,16 @@ const saveFile = defineTool({
       if (room !== "open") {
         throw new SaveRefusal(room === "full" ? fullMessage : closedMessage);
       }
-      const fetched = await fetchFile(
+      const fetched = await downloadFile(
         input.browserSessionId,
         url,
         fence,
-        context.abortSignal,
-        maxRedirects
+        context.abortSignal
       );
-      const content = pdfContent(fetched.response);
+      const content = pdfContent(fetched.content);
       const filename = cleanFilename(
         input.filename ??
-          dispositionFilename(
-            header(fetched.response, "content-disposition")
-          ) ??
+          dispositionFilename(fetched.disposition) ??
           urlFilename(fetched.url)
       );
       await purgeExpiredTaskFiles();
@@ -168,56 +164,323 @@ function fileUrl(address: string, fence: SiteFence, base?: URL) {
   return url;
 }
 
-// Fetched through the browser itself, so the request carries its sign-in. A
-// redirect is followed only while it stays inside the fence.
-async function fetchFile(
+const createdTargetSchema = z.object({ targetId: z.string().min(1) });
+const attachedTargetSchema = z.object({ sessionId: z.string().min(1) });
+const navigatedSchema = z.object({ errorText: z.string().optional() });
+const pausedRequestSchema = z.object({
+  request: z.object({ url: z.string() }),
+  requestId: z.string().min(1),
+  responseErrorReason: z.string().optional(),
+  responseHeaders: z
+    .array(z.object({ name: z.string(), value: z.string() }))
+    .optional(),
+  responseStatusCode: z.number().int().optional(),
+});
+const bodyStreamSchema = z.object({ stream: z.string().min(1) });
+const bodyChunkSchema = z.object({
+  base64Encoded: z.boolean().optional(),
+  data: z.string(),
+  eof: z.boolean(),
+});
+
+interface DownloadedFile {
+  readonly content: Buffer;
+  readonly disposition: string | undefined;
+  readonly url: URL;
+}
+
+// Fetched by a navigation in a background tab of the signed-in browser, so the
+// request carries its sign-in and Chrome's URL policy applies to every hop.
+// Chromium follows redirects on its own, so every hop also pauses before it is
+// sent and goes on only once it is checked against the fence here. The bytes
+// come from the final answer itself, read no further than the size cap.
+async function downloadFile(
   browserSessionId: string,
   url: URL,
   fence: SiteFence,
-  signal: AbortSignal | undefined,
-  redirectsLeft: number
-): Promise<{ response: BrowserCurlResponse; url: URL }> {
-  const response = await kernel.browsers.curl(
+  signal: AbortSignal | undefined
+) {
+  const deadline = AbortSignal.timeout(downloadTimeoutMs);
+  const stopped = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const browser = await kernel.browsers.retrieve(
     browserSessionId,
-    {
-      method: "GET",
-      response_encoding: "base64",
-      timeout_ms: downloadTimeoutMs,
-      url: url.href,
-    },
-    { maxRetries: 0, signal, timeout: downloadTimeoutMs + 30_000 }
+    {},
+    { signal: stopped }
   );
-  const location = redirectStatuses.has(response.status)
-    ? header(response, "location")
-    : undefined;
-  if (location === undefined) return { response, url };
-  if (redirectsLeft === 0) throw new SaveRefusal(redirectsMessage);
-  return fetchFile(
-    browserSessionId,
-    fileUrl(location, fence, url),
-    fence,
-    signal,
-    redirectsLeft - 1
-  );
-}
-
-function header(response: BrowserCurlResponse, name: string) {
-  return Object.entries(response.headers).find(
-    ([key]) => key.toLowerCase() === name
-  )?.[1][0];
-}
-
-function pdfContent(response: BrowserCurlResponse) {
-  if (response.status !== 200) {
-    throw new SaveRefusal(
-      `The file's URL answered HTTP ${String(response.status)}, so nothing was saved. The link may have expired: open the page that links to the file again and save the link's current address.`
+  const connection = await connectUntil(browser.cdp_ws_url, stopped);
+  try {
+    const { targetId } = createdTargetSchema.parse(
+      await connection.send("Target.createTarget", {
+        background: true,
+        url: "about:blank",
+      })
     );
+    // The tab is closed whatever happens: a leftover tab would be the newest
+    // page, which other tools take for the worker's own.
+    try {
+      const { sessionId } = attachedTargetSchema.parse(
+        await connection.send("Target.attachToTarget", {
+          flatten: true,
+          targetId,
+        })
+      );
+      return await interceptedDownload(
+        connection,
+        sessionId,
+        url,
+        fence,
+        stopped
+      );
+    } finally {
+      await connection
+        .send("Target.closeTarget", { targetId })
+        .catch(() => undefined);
+    }
+  } finally {
+    connection.close();
   }
-  if (response.body.length > maxEncodedLength) {
-    throw new SaveRefusal(tooLargeMessage);
+}
+
+// The stop signal ends only the connecting: once connected, the tab must still
+// be closed over this connection after a stop.
+async function connectUntil(url: string, stopped: AbortSignal) {
+  const connecting = new AbortController();
+  const stop = () => {
+    connecting.abort(stopped.reason);
+  };
+  stopped.addEventListener("abort", stop, { once: true });
+  try {
+    return await CdpConnection.connect(url, connecting.signal);
+  } finally {
+    stopped.removeEventListener("abort", stop);
   }
-  const content = Buffer.from(response.body, "base64");
-  if (content.byteLength > maxFileBytes) throw new SaveRefusal(tooLargeMessage);
+}
+
+function interceptedDownload(
+  connection: CdpConnection,
+  sessionId: string,
+  url: URL,
+  fence: SiteFence,
+  stopped: AbortSignal
+) {
+  return new Promise<DownloadedFile>((resolve, reject) => {
+    let requests = 0;
+    let settled = false;
+    // A refusal decided before the browser reports the navigation's end.
+    let refused: SaveRefusal | undefined;
+
+    const settle = (outcome: () => void) => {
+      if (settled) return;
+      settled = true;
+      unsubscribe();
+      stopped.removeEventListener("abort", onStopped);
+      outcome();
+    };
+    const fail = (error: Error) => {
+      settle(() => {
+        reject(error);
+      });
+    };
+    const onStopped = () => {
+      fail(new Error("The download was stopped."));
+    };
+
+    // A refused request is failed before the refusal settles, so it is never
+    // sent, whatever becomes of the tab.
+    const refuse = async (requestId: string, refusal: SaveRefusal) => {
+      refused = refusal;
+      await connection
+        .send(
+          "Fetch.failRequest",
+          { errorReason: "BlockedByClient", requestId },
+          sessionId
+        )
+        .catch(() => undefined);
+      fail(refusal);
+    };
+
+    // The URL a request is about to be sent to, or the one a redirect names.
+    const checkedHop = async (
+      requestId: string,
+      address: string,
+      base?: URL
+    ) => {
+      try {
+        if (requests > maxRedirects + 1) {
+          throw new SaveRefusal(redirectsMessage);
+        }
+        fileUrl(address, fence, base);
+      } catch (error) {
+        if (!(error instanceof SaveRefusal)) throw error;
+        await refuse(requestId, error);
+        return;
+      }
+      await connection.send("Fetch.continueRequest", { requestId }, sessionId);
+    };
+
+    const onPaused = async (paused: z.infer<typeof pausedRequestSchema>) => {
+      const { requestId } = paused;
+      if (paused.responseErrorReason !== undefined) {
+        fail(new Error("The file's request failed."));
+        return;
+      }
+      if (paused.responseStatusCode === undefined) {
+        requests += 1;
+        await checkedHop(requestId, paused.request.url);
+        return;
+      }
+      const status = paused.responseStatusCode;
+      const headers = paused.responseHeaders ?? [];
+      const location = redirectStatuses.has(status)
+        ? header(headers, "location")
+        : undefined;
+      if (location !== undefined) {
+        await checkedHop(requestId, location, new URL(paused.request.url));
+        return;
+      }
+      if (status !== 200) {
+        throw new SaveRefusal(
+          `The file's URL answered HTTP ${String(status)}, so nothing was saved. The link may have expired: open the page that links to the file again and save the link's current address.`
+        );
+      }
+      const answeredUrl = fileUrl(paused.request.url, fence);
+      const declaredLength = Number(header(headers, "content-length"));
+      if (Number.isFinite(declaredLength) && declaredLength > maxFileBytes) {
+        throw new SaveRefusal(tooLargeMessage);
+      }
+      const content = await readBody(connection, sessionId, requestId);
+      settle(() => {
+        resolve({
+          content,
+          disposition: header(headers, "content-disposition"),
+          url: answeredUrl,
+        });
+      });
+    };
+
+    const handlePaused = async (
+      paused: z.infer<typeof pausedRequestSchema>
+    ) => {
+      try {
+        await onPaused(paused);
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error("Not fetched."));
+      }
+    };
+
+    // Each pause holds its request, so the next one comes only after this
+    // one is answered.
+    const unsubscribe = connection.onEvent((event) => {
+      if (settled || event.sessionId !== sessionId) return;
+      if (event.method !== "Fetch.requestPaused") return;
+      const paused = pausedRequestSchema.safeParse(event.params);
+      if (!paused.success) {
+        fail(new Error("The browser reported an unreadable request."));
+        return;
+      }
+      void handlePaused(paused.data);
+    });
+    stopped.addEventListener("abort", onStopped, { once: true });
+    if (stopped.aborted) {
+      onStopped();
+      return;
+    }
+
+    const watchConnection = async () => {
+      await connection.closed;
+      fail(new Error("The browser connection closed."));
+    };
+    // The navigation ends on its own only when the file was never taken:
+    // Chrome's URL policy blocked a hop, or the request failed.
+    const navigate = async () => {
+      let navigated: Awaited<ReturnType<typeof connection.send>>;
+      try {
+        await connection.send(
+          "Fetch.enable",
+          {
+            patterns: (["Request", "Response"] as const).map(
+              (requestStage) => ({
+                requestStage,
+                resourceType: "Document",
+                urlPattern: "*",
+              })
+            ),
+          },
+          sessionId
+        );
+        navigated = await connection.send(
+          "Page.navigate",
+          { url: url.href },
+          sessionId,
+          downloadTimeoutMs
+        );
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error("Not fetched."));
+        return;
+      }
+      const errorText = navigatedSchema.safeParse(navigated).data?.errorText;
+      fail(
+        refused ??
+          (errorText?.includes("ERR_BLOCKED_BY_ADMINISTRATOR") === true
+            ? new SaveRefusal(offSiteMessage)
+            : new Error("The navigation ended without the file."))
+      );
+    };
+    void watchConnection();
+    void navigate();
+  });
+}
+
+async function readBody(
+  connection: CdpConnection,
+  sessionId: string,
+  requestId: string
+) {
+  const { stream } = bodyStreamSchema.parse(
+    await connection.send(
+      "Fetch.takeResponseBodyAsStream",
+      { requestId },
+      sessionId
+    )
+  );
+  const chunks: Buffer[] = [];
+  let length = 0;
+  try {
+    /* oxlint-disable eslint/no-await-in-loop -- The stream reads in order, one chunk at a time. */
+    for (;;) {
+      const chunk = bodyChunkSchema.parse(
+        await connection.send(
+          "IO.read",
+          { handle: stream, size: readChunkBytes },
+          sessionId
+        )
+      );
+      const bytes = Buffer.from(
+        chunk.data,
+        chunk.base64Encoded === true ? "base64" : "utf8"
+      );
+      length += bytes.byteLength;
+      if (length > maxFileBytes) throw new SaveRefusal(tooLargeMessage);
+      chunks.push(bytes);
+      if (chunk.eof) break;
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+  } finally {
+    await connection
+      .send("IO.close", { handle: stream }, sessionId)
+      .catch(() => undefined);
+  }
+  return Buffer.concat(chunks);
+}
+
+function header(
+  headers: readonly { readonly name: string; readonly value: string }[],
+  name: string
+) {
+  return headers.find((entry) => entry.name.toLowerCase() === name)?.value;
+}
+
+function pdfContent(content: Buffer) {
   if (!content.subarray(0, pdfSignature.byteLength).equals(pdfSignature)) {
     throw new SaveRefusal(notPdfMessage);
   }

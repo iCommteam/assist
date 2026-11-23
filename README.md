@@ -176,8 +176,10 @@ A site saves the logins its tasks use. `POST /api/site/logins` keeps a login
 in the owner's vault, encrypted like any saved login and marked with the site
 that saved it; `/vault` shows "Saved by" that site beside it, and its website
 where an owner's login shows a masked username, and the copy button on its row
-copies its id. The username, password and key are never returned, logged, put
-in an error or shown to the model.
+copies its id. The username, password and key are never returned, logged or
+put in an error, and assist never hands them to the model. A page the task
+opens may still show the username, such as "Signed in as ...", and the model
+reads that page.
 
 - `origin`: the `https:` URL of the sign-in page, such as
   `https://login.vendor.com/sign-in`, of which only the origin is kept;
@@ -247,7 +249,9 @@ answers `invalid_request`. A site may start 10 tasks in any 10 minutes; the
 next start answers `429 {"error":"rate_limited"}` with `Retry-After` in
 seconds, the count resets when the service restarts, and a `login_busy` or
 `invalid_request` start does not count. A start that answered 503 may still
-run: list the login's tasks before starting it again.
+run: list the login's tasks before starting it again. A start whose task could
+not be recorded is not listed and may keep running in the agent runtime, but
+its browsers cannot use the login.
 
 #### Status
 
@@ -261,10 +265,14 @@ a running task every few seconds.
 - `outcome`: set only while `completed`: `files` when the task keeps at least
   one saved file, `nothing_found` otherwise. It is counted from the files the
   task stored, never from what the agent wrote. After a file's 7 days it is
-  gone, so an older task that saved files reads `nothing_found`.
+  gone, so an older task that saved files reads `nothing_found`. A task that
+  failed may have saved files before it failed, so list a task's files once it
+  has ended, whether it reads `completed` or `failed`.
 - `error`: set only while `failed`, one of these codes:
   - `login_failed`: the website refused the saved username or password.
-  - `code_failed`: a code was wrong or expired, or no code arrived in time.
+  - `code_failed`: the website refused a relayed code or found it expired,
+    or an authenticator code could not be filled. A code that never arrived
+    reads `timed_out`.
   - `blocked`: the website wants something only a person can do, such as a
     CAPTCHA, a bot check, a device approval, a passkey or a new-device email
     link, or the task needs a sign-in it has no pinned login for.
@@ -288,8 +296,8 @@ result: `done` or `nothing_found` complete the task, and `login_failed`,
 `code_failed`, `blocked`, `off_site` and `failed` fail it with that code. The
 last result of the site's turn counts; a turn that ends without the tool reads
 `completed`. A code question that ended without its code, because the 20
-minutes ran out, fails the task as `timed_out` unless the agent gave a failure
-code.
+minutes ran out, fails the task as `timed_out`, also when the agent reported
+`code_failed`; another failure code the agent gave, such as `blocked`, stands.
 
 #### One-time codes
 
@@ -327,15 +335,23 @@ opening Stripe's hosted invoice page when that is where the link goes; it
 never pays, buys, upgrades, cancels, submits or changes anything else, and ends
 with `done` when it saved files or `nothing_found` when there were none.
 
-`save_file` fetches the file through the task's own signed-in browser, so the
-request carries that browser's cookies, and keeps it only when:
+`save_file` opens the file in a background tab of the task's own signed-in
+browser, so the request carries that browser's cookies, and keeps it only
+when:
 
 - the URL is `https:`, on the login's fence or one of Stripe's four invoice
-  hosts; a redirect that Kernel hands back is followed, at most 5 times, only
-  while it stays there (one Kernel follows itself is not seen). Any other host
-  is refused and the task ends with `off_site`;
-- the answer is a `200` whose bytes start with `%PDF-`, of at most 20 MB;
+  hosts, and so is every redirect, at most 5: the browser holds each request
+  before it is sent, and `save_file` lets it go only once it has checked it,
+  with Chrome's URL policy checking it too. A hop to any other host is never
+  sent, and the task ends with `off_site`;
+- the answer is a `200` whose bytes start with `%PDF-`, of at most 20 MB: a
+  larger declared length is refused before the bytes are read, and reading
+  stops once they pass 20 MB;
 - the task keeps fewer than 10 files and its 45 minutes have not passed.
+
+`save_file` takes a link's address. A PDF that only a button running a script
+or sending a form produces, with no address, cannot be saved; the task then
+ends `failed`, not `nothing_found`.
 
 A file whose bytes the task already keeps is not stored twice. Its `filename`
 is plain: no path, no control characters, at most 200 characters, ending in
@@ -348,8 +364,9 @@ its query or fragment. The URL the model passed stays in its own session
 record.
 
 A file is kept for 7 days from when the task saved it. After that it is no
-longer listed and its download answers 404, and saves, lists and downloads
-delete expired files a batch at a time. The file routes answer only for the
+longer listed and its download answers 404. An hourly sweep deletes expired
+files, also when no site calls, and saves, lists and downloads delete them a
+batch at a time as well. The file routes answer only for the
 site's own tasks, like the status: another site's task answers 404.
 
 #### Lifetimes and cancelling
@@ -359,8 +376,8 @@ site's own tasks, like the status: another site's task answers 404.
   when it next reads it, lists it or checks its login. When that cancel cannot
   reach the agent runtime the read answers 503 instead.
 - A wait for a relayed code lasts 20 minutes; the worker then deletes its
-  browser and the task fails with `code_failed` or `timed_out`, never
-  `completed`.
+  browser and the task fails with `timed_out`, or another failure code the
+  agent gave such as `blocked`, never `completed`.
 - A site task's browsers idle out after 30 minutes, so they outlive the code
   wait.
 - A saved file is kept for 7 days.
@@ -369,8 +386,10 @@ A site stops a task itself with `POST /api/site/tasks/{taskId}/cancel`: a
 running or waiting task then reads `failed` with `cancelled` within moments,
 and a task that has ended is left as it is. Before the task's turn has started
 the cancel answers 503, so retry it. Cancelling does not delete the task's
-browser, which idles out after 30 minutes; while it was saving the login's
-sign-in, a next task of that login that must sign in fails until then.
+browsers, which idle out after 30 minutes. The next start of that login, once
+none of its tasks is open, closes a browser an ended task left saving the
+login's sign-in, so the new task can sign in; the new task also wins over a
+later chat turn of an old task.
 
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to

@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { NotFoundError } from "@onkernel/sdk";
-import type { BrowserCurlResponse } from "@onkernel/sdk/resources/browsers";
 import type { SessionAuthContext } from "eve/context";
 import type * as EveTools from "eve/tools";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -50,7 +49,7 @@ vi.mock("@db/services/sites", () => ({
 
 import saveFileTools from "@agent/subagents/browser-agent/tools/save_file";
 
-const curl = vi.spyOn(kernel.browsers, "curl");
+const retrieve = vi.spyOn(kernel.browsers, "retrieve");
 const owner = accessScopeForUser("better-auth:owner-1");
 const origin = "https://login.vendor.example";
 const fileId = "00000000-0000-4000-8000-0000000000f1";
@@ -58,6 +57,8 @@ const signedQuery = "token=signed-download-secret";
 const invoiceUrl = `https://billing.vendor.example/invoices/2026-10/download?${signedQuery}`;
 const pdf = Buffer.from("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n");
 const pdfBase64 = pdf.toString("base64");
+const megabyte = 1024 * 1024;
+const limit = 20 * megabyte;
 const member = {
   attributes: { workspaceId: owner.workspaceId },
   authenticator: "authjs",
@@ -67,12 +68,231 @@ const member = {
 
 const offSiteMessage =
   "This file is neither on the pinned login's site nor on Stripe's invoice pages (billing.stripe.com, files.stripe.com, invoice.stripe.com, pay.stripe.com), so it was not fetched. Do not try another route to it. Delete the browser, then return status \"failure\" saying the invoice file is on a website this task may not open, so the task ends as off_site.";
+const notHttpsMessage =
+  "save_file takes the absolute https URL of the PDF itself, such as the address of the invoice's Download PDF link.";
 const notPdfMessage =
   "The URL did not return a PDF, so nothing was saved. It may be a web page: open it in the browser, find its Download PDF link, and save that link's address.";
 const tooLargeMessage =
   "The file is larger than 20 MB, the most a task may save, so it was not saved.";
+const redirectsMessage =
+  "The file's URL redirected too many times, so nothing was saved.";
 const failedMessage =
   "The file could not be fetched or saved. Retry once; if it fails again, report the failure.";
+
+// What the fake browser answers for a URL: a file, an error page, or a
+// redirect it follows on its own unless the client stops it.
+interface Route {
+  readonly body?: Buffer;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly location?: string;
+  readonly status?: number;
+}
+
+const commandSchema = z.object({
+  id: z.number(),
+  method: z.string(),
+  params: z.record(z.string(), z.json()).optional(),
+  sessionId: z.string().optional(),
+});
+type Command = z.infer<typeof commandSchema>;
+const jsonSchema = z.json();
+type Json = z.infer<typeof jsonSchema>;
+// A document request the fake browser holds, before it is sent or at its
+// answer.
+interface PausedRequest {
+  readonly redirectedRequestId?: string;
+  readonly request: { readonly url: string };
+  readonly requestId: string;
+  readonly resourceType: "Document";
+  readonly responseHeaders?: readonly {
+    readonly name: string;
+    readonly value: string;
+  }[];
+  readonly responseStatusCode?: number;
+}
+// What the fake browser sends back: a command's answer or an event.
+interface CdpMessage {
+  readonly error?: { readonly message: string };
+  readonly id?: number;
+  readonly method?: string;
+  readonly params?: PausedRequest;
+  readonly result?: Json;
+  readonly sessionId?: string;
+}
+
+const downloadTab = "download-tab";
+const downloadSession = "download-session";
+
+// Chromium as the download sees it over CDP: one background tab whose
+// document requests pause before they are sent and again at their answer.
+const chrome = {
+  // Hosts Chrome's URL policy refuses to open.
+  blocked: new Set<string>(),
+  commands: new Array<Command>(),
+  failing: new Map<string, string>(),
+  openTabs: 0,
+  routes: new Map<string, Route>(),
+  // Every request that left the browser, in order.
+  sent: new Array<string>(),
+};
+
+class ChromeSocket extends EventTarget {
+  #navigation: number | undefined;
+  #nextRequest = 1;
+  readonly #requests = new Map<
+    string,
+    { readonly stage: "request" | "response"; readonly url: string }
+  >();
+  #stream: { body: Buffer; offset: number } | undefined;
+
+  constructor() {
+    super();
+    queueMicrotask(() => this.dispatchEvent(new Event("open")));
+  }
+
+  close() {
+    queueMicrotask(() => this.dispatchEvent(new Event("close")));
+  }
+
+  send(data: string) {
+    const command = commandSchema.parse(JSON.parse(data));
+    chrome.commands.push(command);
+    const failure = chrome.failing.get(command.method);
+    if (failure !== undefined) {
+      this.#message({ error: { message: failure }, id: command.id });
+      return;
+    }
+    const text = (name: string) => z.string().parse(command.params?.[name]);
+    switch (command.method) {
+      case "Target.createTarget":
+        chrome.openTabs += 1;
+        this.#reply(command, { targetId: downloadTab });
+        return;
+      case "Target.attachToTarget":
+        this.#reply(command, { sessionId: downloadSession });
+        return;
+      case "Page.navigate":
+        this.#navigation = command.id;
+        this.#request(text("url"));
+        return;
+      case "Fetch.continueRequest":
+        this.#reply(command, {});
+        this.#continue(text("requestId"));
+        return;
+      case "Fetch.failRequest":
+        this.#reply(command, {});
+        this.#endNavigation("net::ERR_BLOCKED_BY_CLIENT");
+        return;
+      case "Fetch.takeResponseBodyAsStream": {
+        const request = this.#requests.get(text("requestId"));
+        this.#stream = {
+          body: chrome.routes.get(request?.url ?? "")?.body ?? Buffer.alloc(0),
+          offset: 0,
+        };
+        this.#reply(command, { stream: "stream-1" });
+        return;
+      }
+      case "IO.read": {
+        const stream = this.#stream ?? { body: Buffer.alloc(0), offset: 0 };
+        const size = z.number().parse(command.params?.size);
+        const chunk = stream.body.subarray(stream.offset, stream.offset + size);
+        stream.offset += chunk.byteLength;
+        this.#reply(command, {
+          base64Encoded: true,
+          data: chunk.toString("base64"),
+          eof: stream.offset >= stream.body.byteLength,
+        });
+        return;
+      }
+      case "Target.closeTarget":
+        chrome.openTabs -= 1;
+        this.#reply(command, { success: true });
+        this.#endNavigation("net::ERR_ABORTED");
+        return;
+      default:
+        this.#reply(command, {});
+    }
+  }
+
+  #request(url: string, redirectedRequestId?: string) {
+    if (chrome.blocked.has(new URL(url).hostname)) {
+      this.#endNavigation("net::ERR_BLOCKED_BY_ADMINISTRATOR");
+      return;
+    }
+    const requestId = `request-${String(this.#nextRequest++)}`;
+    this.#requests.set(requestId, { stage: "request", url });
+    const paused = {
+      request: { url },
+      requestId,
+      resourceType: "Document",
+    } as const;
+    this.#event(
+      redirectedRequestId === undefined
+        ? paused
+        : { ...paused, redirectedRequestId }
+    );
+  }
+
+  #continue(requestId: string) {
+    const request = this.#requests.get(requestId);
+    if (!request) return;
+    const route = chrome.routes.get(request.url) ?? { status: 404 };
+    if (request.stage === "response") {
+      this.#request(new URL(route.location ?? "", request.url).href, requestId);
+      return;
+    }
+    chrome.sent.push(request.url);
+    this.#requests.set(requestId, { stage: "response", url: request.url });
+    const headers = Object.entries(route.headers ?? {}).map(
+      ([name, value]) => ({ name, value })
+    );
+    if (route.location !== undefined) {
+      headers.push({ name: "Location", value: route.location });
+    }
+    this.#event({
+      request: { url: request.url },
+      requestId,
+      resourceType: "Document",
+      responseHeaders: headers,
+      responseStatusCode:
+        route.status ?? (route.location === undefined ? 200 : 302),
+    });
+  }
+
+  #endNavigation(errorText: string) {
+    const id = this.#navigation;
+    this.#navigation = undefined;
+    if (id !== undefined) this.#message({ id, result: { errorText } });
+  }
+
+  #reply(command: Command, result: Json) {
+    this.#message({ id: command.id, result });
+  }
+
+  #event(params: PausedRequest) {
+    this.#message({
+      method: "Fetch.requestPaused",
+      params,
+      sessionId: downloadSession,
+    });
+  }
+
+  #message(message: CdpMessage) {
+    queueMicrotask(() =>
+      this.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify(message) })
+      )
+    );
+  }
+}
+
+function serve(url: string, route: Route = {}) {
+  chrome.routes.set(url, { body: pdf, ...route });
+}
+
+function sentCommands(method: string) {
+  return chrome.commands.filter((command) => command.method === method);
+}
 
 function pinned(login = { id: "login-1", origin }) {
   return sitePrincipal(
@@ -147,14 +367,6 @@ async function refusal(
   throw new Error("save_file did not refuse.");
 }
 
-function answer(
-  body: string,
-  status = 200,
-  headers: BrowserCurlResponse["headers"] = {}
-): BrowserCurlResponse {
-  return { body, duration_ms: 5, headers, status };
-}
-
 const logged: string[] = [];
 const consoleSpies = (["error", "info", "log", "warn"] as const).map((level) =>
   vi.spyOn(console, level)
@@ -163,12 +375,32 @@ const consoleSpies = (["error", "info", "log", "warn"] as const).map((level) =>
 beforeEach(() => {
   vi.clearAllMocks();
   resetEveState();
+  vi.stubGlobal("WebSocket", ChromeSocket);
+  chrome.blocked.clear();
+  chrome.commands.length = 0;
+  chrome.failing.clear();
+  chrome.openTabs = 0;
+  chrome.routes.clear();
+  chrome.sent.length = 0;
   logged.length = 0;
   for (const spy of consoleSpies) {
     spy.mockImplementation((...values) => {
       logged.push(JSON.stringify(values));
     });
   }
+  retrieve.mockResolvedValue({
+    browser_live_view_url: "https://live.kernel.test/browser-1",
+    cdp_ws_url: "wss://kernel.test/cdp",
+    created_at: "2026-11-23T00:00:00.000Z",
+    headless: false,
+    memory: "2GiB",
+    profile_save_changes: false,
+    region: "us-east",
+    session_id: "browser-1",
+    stealth: false,
+    timeout_seconds: 1800,
+    webdriver_ws_url: "wss://kernel.test/webdriver",
+  });
   mocks.requireWorkerScope.mockResolvedValue(owner);
   mocks.requireOwnedBrowserSession.mockResolvedValue({
     createdAt: "2026-11-23T00:00:00.000Z",
@@ -176,7 +408,7 @@ beforeEach(() => {
     workerSessionId: "worker-1",
   });
   mocks.siteTaskFileRoom.mockResolvedValue("open");
-  mocks.purgeExpiredTaskFiles.mockResolvedValue(undefined);
+  mocks.purgeExpiredTaskFiles.mockResolvedValue(0);
   mocks.saveSiteTaskFile.mockImplementation(
     async (_site, _scope, _s, file) => ({
       alreadySaved: false,
@@ -188,23 +420,25 @@ beforeEach(() => {
       ok: true,
     })
   );
-  curl.mockResolvedValue(
-    answer(pdfBase64, 200, {
-      "Content-Disposition": ['attachment; filename="Invoice 2026-10.pdf"'],
-      "Content-Type": ["application/pdf"],
-    })
-  );
+  serve(invoiceUrl, {
+    headers: {
+      "Content-Disposition": 'attachment; filename="Invoice 2026-10.pdf"',
+      "Content-Type": "application/pdf",
+    },
+  });
 });
 
 // No log line of any test, failures included, carries the link's query or
-// the file's bytes.
+// the file's bytes, and no download leaves its tab open.
 afterEach(() => {
+  vi.unstubAllGlobals();
   const leaked = logged.some((line) =>
     ["signed-download-secret", pdfBase64, "%PDF"].some((value) =>
       line.includes(value)
     )
   );
   if (leaked) throw new Error("A file's link or bytes reached a log line.");
+  if (chrome.openTabs !== 0) throw new Error("A download left its tab open.");
 });
 
 async function offered(
@@ -244,7 +478,7 @@ describe("save_file availability", () => {
     await expect(refusal({}, workerContext(member, member))).resolves.toBe(
       "Only a site task pinned to a saved login can save files."
     );
-    expect(curl).not.toHaveBeenCalled();
+    expect(retrieve).not.toHaveBeenCalled();
     expect(mocks.saveSiteTaskFile).not.toHaveBeenCalled();
   });
 
@@ -254,12 +488,12 @@ describe("save_file availability", () => {
     );
 
     await expect(refusal()).resolves.toBe("Browser session not found.");
-    expect(curl).not.toHaveBeenCalled();
+    expect(retrieve).not.toHaveBeenCalled();
   });
 });
 
 describe("save_file", () => {
-  it("fetches the PDF through the signed-in browser and returns only its id, name and size", async () => {
+  it("opens the PDF in a background tab of the signed-in browser and returns only its id, name and size", async () => {
     const result = await save();
 
     expect(result).toEqual({
@@ -268,16 +502,53 @@ describe("save_file", () => {
       fileId,
       filename: "Invoice 2026-10.pdf",
     });
-    expect(curl).toHaveBeenCalledExactlyOnceWith(
-      "browser-1",
-      {
-        method: "GET",
-        response_encoding: "base64",
-        timeout_ms: 60_000,
-        url: invoiceUrl,
-      },
-      expect.objectContaining({ maxRetries: 0 })
-    );
+    expect(retrieve).toHaveBeenCalledOnce();
+    const [browserId, query, options] = retrieve.mock.calls[0] ?? [];
+    expect([browserId, query]).toEqual(["browser-1", {}]);
+    expect(options?.signal).toBeInstanceOf(AbortSignal);
+    expect(chrome.commands.map(({ method }) => method)).toEqual([
+      "Target.createTarget",
+      "Target.attachToTarget",
+      "Fetch.enable",
+      "Page.navigate",
+      "Fetch.continueRequest",
+      "Fetch.takeResponseBodyAsStream",
+      "IO.read",
+      "IO.close",
+      "Target.closeTarget",
+    ]);
+    expect(sentCommands("Target.createTarget")[0]?.params).toEqual({
+      background: true,
+      url: "about:blank",
+    });
+    // Only the download's own tab pauses its requests.
+    expect(sentCommands("Fetch.enable")).toEqual([
+      expect.objectContaining({
+        params: {
+          patterns: [
+            {
+              requestStage: "Request",
+              resourceType: "Document",
+              urlPattern: "*",
+            },
+            {
+              requestStage: "Response",
+              resourceType: "Document",
+              urlPattern: "*",
+            },
+          ],
+        },
+        sessionId: downloadSession,
+      }),
+    ]);
+    expect(sentCommands("Page.navigate")[0]).toMatchObject({
+      params: { url: invoiceUrl },
+      sessionId: downloadSession,
+    });
+    expect(sentCommands("Target.closeTarget")[0]?.params).toEqual({
+      targetId: downloadTab,
+    });
+    expect(chrome.sent).toEqual([invoiceUrl]);
     expect(mocks.siteTaskFileRoom).toHaveBeenCalledExactlyOnceWith(
       "teemiq",
       owner,
@@ -301,18 +572,20 @@ describe("save_file", () => {
   });
 
   it("saves from the login's site, any host under its domain, and Stripe's invoice hosts", async () => {
-    for (const url of [
+    const urls = [
       "https://login.vendor.example/statements/1.pdf",
       "https://vendor.example/invoice.pdf",
       "https://invoice.stripe.com/i/acct_1/live_abc/pdf?s=ap",
       "https://pay.stripe.com/invoice/acct_1/invst_abc/pdf?s=ap",
       "https://files.stripe.com/links/abc",
       "https://billing.stripe.com/invoice/abc/pdf",
-    ]) {
+    ];
+    for (const url of urls) {
+      serve(url);
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each URL is saved on its own.
       await expect(save({ url })).resolves.toMatchObject({ fileId });
     }
-    expect(curl).toHaveBeenCalledTimes(6);
+    expect(chrome.sent).toEqual(urls);
   });
 
   it("refuses any other host with a fixed message that ends the task as off_site", async () => {
@@ -327,13 +600,12 @@ describe("save_file", () => {
       expect(message).toBe(offSiteMessage);
       expect(message).not.toContain(new URL(url).hostname);
     }
-    expect(curl).not.toHaveBeenCalled();
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(chrome.commands).toEqual([]);
     expect(mocks.siteTaskFileRoom).not.toHaveBeenCalled();
   });
 
   it("takes only https URLs without user info, and keeps Amazon blocked", async () => {
-    const notHttps =
-      "save_file takes the absolute https URL of the PDF itself, such as the address of the invoice's Download PDF link.";
     for (const url of [
       "http://billing.vendor.example/invoice.pdf",
       "https://user:pw@billing.vendor.example/invoice.pdf",
@@ -342,102 +614,130 @@ describe("save_file", () => {
       "file:///etc/passwd",
     ]) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each URL is refused on its own.
-      await expect(refusal({ url })).resolves.toBe(notHttps);
+      await expect(refusal({ url })).resolves.toBe(notHttpsMessage);
     }
     await expect(
       refusal({ url: "https://sellercentral.amazon.com/invoice.pdf" })
     ).resolves.toMatch(/^sellercentral\.amazon\.com is an Amazon site/u);
-    expect(curl).not.toHaveBeenCalled();
+    expect(chrome.commands).toEqual([]);
   });
+});
 
-  it("follows a redirect only while it stays inside the fence", async () => {
-    curl
-      .mockResolvedValueOnce(
-        answer("", 302, {
-          Location: ["https://files.stripe.com/links/abc?sig=xyz"],
-        })
-      )
-      .mockResolvedValueOnce(answer(pdfBase64));
+describe("save_file redirects", () => {
+  const stripeInvoice = "https://pay.stripe.com/invoice/acct_1/invst_2/pdf";
 
-    await expect(
-      save({ url: "https://pay.stripe.com/invoice/acct_1/invst_2/pdf" })
-    ).resolves.toMatchObject({ filename: "document.pdf" });
-    expect(curl).toHaveBeenNthCalledWith(
-      2,
-      "browser-1",
-      expect.objectContaining({
-        url: "https://files.stripe.com/links/abc?sig=xyz",
-      }),
-      expect.anything()
-    );
+  it("follows a redirect that stays inside the fence, checking each hop before it is sent", async () => {
+    const signed = "https://files.stripe.com/links/abc?sig=xyz";
+    serve(stripeInvoice, { location: signed });
+    serve(signed);
 
-    curl.mockReset();
-    curl
-      .mockResolvedValueOnce(answer("", 302, { location: ["/archive/x.pdf"] }))
-      .mockResolvedValueOnce(answer(pdfBase64));
+    await expect(save({ url: stripeInvoice })).resolves.toMatchObject({
+      filename: "document.pdf",
+    });
+    expect(chrome.sent).toEqual([stripeInvoice, signed]);
+
+    chrome.sent.length = 0;
+    serve(invoiceUrl, { location: "/archive/x.pdf", status: 301 });
+    serve("https://billing.vendor.example/archive/x.pdf");
     await expect(save()).resolves.toMatchObject({ filename: "x.pdf" });
-    expect(curl).toHaveBeenLastCalledWith(
-      "browser-1",
-      expect.objectContaining({
-        url: "https://billing.vendor.example/archive/x.pdf",
-      }),
-      expect.anything()
-    );
-
-    curl.mockReset();
-    curl.mockResolvedValueOnce(
-      answer("", 302, {
-        location: ["https://attacker.example/x.pdf?signed-download-secret"],
-      })
-    );
-    await expect(refusal()).resolves.toBe(offSiteMessage);
-    expect(curl).toHaveBeenCalledOnce();
-
-    curl.mockReset();
-    curl.mockResolvedValue(
-      answer("", 301, { location: ["https://vendor.example/loop.pdf"] })
-    );
-    await expect(refusal()).resolves.toBe(
-      "The file's URL redirected too many times, so nothing was saved."
-    );
-    expect(curl).toHaveBeenCalledTimes(6);
-    expect(mocks.saveSiteTaskFile).toHaveBeenCalledTimes(2);
+    expect(chrome.sent).toEqual([
+      invoiceUrl,
+      "https://billing.vendor.example/archive/x.pdf",
+    ]);
   });
 
+  it("never sends a hop that leaves the fence, reaches Amazon or drops https", async () => {
+    for (const [location, message] of [
+      ["https://attacker.example/x.pdf?signed-download-secret", offSiteMessage],
+      ["https://dashboard.stripe.com/x.pdf", offSiteMessage],
+      ["http://billing.vendor.example/x.pdf", notHttpsMessage],
+      [
+        "https://sellercentral.amazon.com/x.pdf",
+        expect.stringMatching(/^sellercentral\.amazon\.com is an Amazon site/u),
+      ],
+    ] as const) {
+      chrome.commands.length = 0;
+      chrome.sent.length = 0;
+      serve(invoiceUrl, { location });
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each redirect is refused on its own.
+      await expect(refusal()).resolves.toEqual(message);
+      expect(chrome.sent).toEqual([invoiceUrl]);
+      expect(sentCommands("Fetch.failRequest")).toEqual([
+        expect.objectContaining({
+          params: { errorReason: "BlockedByClient", requestId: "request-1" },
+          sessionId: downloadSession,
+        }),
+      ]);
+    }
+    expect(mocks.saveSiteTaskFile).not.toHaveBeenCalled();
+  });
+
+  it("stops a redirect chain after five redirects", async () => {
+    serve(invoiceUrl, { location: "https://vendor.example/loop-1.pdf" });
+    for (const hop of [1, 2, 3, 4, 5]) {
+      serve(`https://vendor.example/loop-${String(hop)}.pdf`, {
+        location: `https://vendor.example/loop-${String(hop + 1)}.pdf`,
+      });
+    }
+
+    await expect(refusal()).resolves.toBe(redirectsMessage);
+    expect(chrome.sent).toHaveLength(6);
+    expect(sentCommands("Fetch.failRequest")).toHaveLength(1);
+  });
+
+  it("reads off_site when Chrome's URL policy blocks a hop", async () => {
+    serve(invoiceUrl, { location: "https://cdn.vendor.example/x.pdf" });
+    chrome.blocked.add("cdn.vendor.example");
+
+    await expect(refusal()).resolves.toBe(offSiteMessage);
+    expect(chrome.sent).toEqual([invoiceUrl]);
+  });
+});
+
+describe("save_file answers", () => {
   it("keeps only a 200 answer whose bytes start with %PDF-", async () => {
-    curl.mockResolvedValueOnce(answer(pdfBase64, 403));
+    serve(invoiceUrl, { status: 403 });
     await expect(refusal()).resolves.toBe(
       "The file's URL answered HTTP 403, so nothing was saved. The link may have expired: open the page that links to the file again and save the link's current address."
     );
     for (const body of [
-      Buffer.from("<!doctype html><title>Invoice</title>").toString("base64"),
-      Buffer.from(" %PDF-1.7 leading space").toString("base64"),
-      Buffer.from("%PDF").toString("base64"),
-      "",
+      Buffer.from("<!doctype html><title>Invoice</title>"),
+      Buffer.from(" %PDF-1.7 leading space"),
+      Buffer.from("%PDF"),
+      Buffer.alloc(0),
     ]) {
-      curl.mockResolvedValueOnce(answer(body));
+      serve(invoiceUrl, { body });
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each answer is refused on its own.
       await expect(refusal()).resolves.toBe(notPdfMessage);
     }
     expect(mocks.saveSiteTaskFile).not.toHaveBeenCalled();
   });
 
-  it("keeps a file of up to 20 MB and refuses a larger one", async () => {
-    const limit = 20 * 1024 * 1024;
+  it("keeps a file of up to 20 MB and stops reading a larger one at the cap", async () => {
     const largest = Buffer.alloc(limit, 0x20);
     pdf.copy(largest);
-    curl.mockResolvedValueOnce(answer(largest.toString("base64")));
+    serve(invoiceUrl, { body: largest });
     await expect(save()).resolves.toMatchObject({ byteSize: limit });
 
-    const larger = Buffer.alloc(limit + 1, 0x20);
+    chrome.commands.length = 0;
+    const larger = Buffer.alloc(limit + megabyte * 5, 0x20);
     pdf.copy(larger);
-    curl.mockResolvedValueOnce(answer(larger.toString("base64")));
+    serve(invoiceUrl, { body: larger });
     await expect(refusal()).resolves.toBe(tooLargeMessage);
-
-    // A body far past the limit is refused before it is decoded.
-    curl.mockResolvedValueOnce(answer("A".repeat(Math.ceil(limit / 3) * 8)));
-    await expect(refusal()).resolves.toBe(tooLargeMessage);
+    // Reading stops at the first megabyte past the cap.
+    expect(sentCommands("IO.read")).toHaveLength(21);
+    expect(sentCommands("IO.close")).toHaveLength(1);
     expect(mocks.saveSiteTaskFile).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a file whose declared length passes 20 MB before reading it", async () => {
+    serve(invoiceUrl, {
+      headers: { "content-length": String(limit + 1) },
+    });
+
+    await expect(refusal()).resolves.toBe(tooLargeMessage);
+    expect(sentCommands("Fetch.takeResponseBodyAsStream")).toEqual([]);
+    expect(sentCommands("IO.read")).toEqual([]);
   });
 
   it("refuses an eleventh file, and saves nothing once the task's 45 minutes have passed", async () => {
@@ -449,7 +749,7 @@ describe("save_file", () => {
     const closed =
       'This site task has passed its 45 minutes, so it can save no more files. Delete the browser, then return status "failure" saying the task ran out of time.';
     await expect(refusal()).resolves.toBe(closed);
-    expect(curl).not.toHaveBeenCalled();
+    expect(retrieve).not.toHaveBeenCalled();
 
     // Another save may take the last place while this one downloads.
     mocks.saveSiteTaskFile.mockResolvedValueOnce({ ok: false, reason: "full" });
@@ -476,11 +776,14 @@ describe("save_file", () => {
     });
   });
 
-  it("withholds what a failed download or save says", async () => {
-    curl.mockRejectedValueOnce(
-      new Error(`connect failed for ${invoiceUrl} with signed-download-secret`)
+  it("withholds what a failed download or save says, and still closes its tab", async () => {
+    chrome.failing.set(
+      "IO.read",
+      `read failed for ${invoiceUrl} with signed-download-secret`
     );
     await expect(refusal()).resolves.toBe(failedMessage);
+    expect(sentCommands("Target.closeTarget")).toHaveLength(1);
+    chrome.failing.clear();
 
     mocks.saveSiteTaskFile.mockRejectedValueOnce(
       new Error(`Failed query: insert ... params: ${pdfBase64}`)
@@ -490,7 +793,11 @@ describe("save_file", () => {
     mocks.siteTaskFileRoom.mockRejectedValueOnce(new Error("pool timeout"));
     await expect(refusal()).resolves.toBe(failedMessage);
 
-    curl.mockRejectedValueOnce(
+    chrome.failing.set("Target.createTarget", `no tab for ${invoiceUrl}`);
+    await expect(refusal()).resolves.toBe(failedMessage);
+    chrome.failing.clear();
+
+    retrieve.mockRejectedValueOnce(
       new NotFoundError(
         404,
         { error: "gone" },
@@ -502,6 +809,21 @@ describe("save_file", () => {
       'The browser closed before the file was fetched. Return status "failure" saying the browser expired before the file was saved.'
     );
     expect(logged.length).toBeGreaterThan(0);
+  });
+
+  it("gives up when the worker is stopped, closing its tab", async () => {
+    const stop = new AbortController();
+    const context = toolContextFor({
+      abortSignal: stop.signal,
+      auth: { current: pinned(), initiator: pinned() },
+      parentSessionId: "wrun_root",
+      sessionId: "worker-1",
+    });
+    stop.abort();
+
+    await expect(refusal({}, context)).resolves.toBe(failedMessage);
+    expect(sentCommands("Page.navigate")).toEqual([]);
+    expect(mocks.saveSiteTaskFile).not.toHaveBeenCalled();
   });
 });
 
@@ -530,16 +852,15 @@ describe("save_file names", () => {
       "the response's encoded name",
       {},
       {
-        "content-disposition": [
+        "content-disposition":
           "attachment; filename*=UTF-8''Rechnung%20Oktober.pdf; filename=\"x.pdf\"",
-        ],
       },
       "Rechnung Oktober.pdf",
     ],
     [
       "the response's plain name",
       {},
-      { "Content-Disposition": ["inline; filename=Statement_10.pdf"] },
+      { "Content-Disposition": "inline; filename=Statement_10.pdf" },
       "Statement_10.pdf",
     ],
     [
@@ -549,16 +870,17 @@ describe("save_file names", () => {
       "document.pdf",
     ],
   ])("uses %s", async (_case, input, headers, filename) => {
-    curl.mockResolvedValueOnce(answer(pdfBase64, 200, headers));
+    serve(invoiceUrl, { headers });
 
     await expect(save(input)).resolves.toMatchObject({ filename });
   });
 
   it("takes the URL's last segment only when it names a PDF", async () => {
-    curl.mockResolvedValueOnce(answer(pdfBase64));
-    await expect(
-      save({ url: "https://billing.vendor.example/docs/INV%202026-10.PDF?x=1" })
-    ).resolves.toMatchObject({ filename: "INV 2026-10.pdf" });
+    const url = "https://billing.vendor.example/docs/INV%202026-10.PDF?x=1";
+    serve(url);
+    await expect(save({ url })).resolves.toMatchObject({
+      filename: "INV 2026-10.pdf",
+    });
   });
 
   it("keeps a name to 200 characters, ending in .pdf", async () => {

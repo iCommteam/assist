@@ -130,16 +130,23 @@ describe("site task status", () => {
     });
   });
 
-  it("joins every message of the turn and keeps replies larger than the folded view", () => {
+  it("replies with the turn's last message, kept whole when the folded view withholds it", () => {
     const long = "x".repeat(18_000);
     const events = eventsOf([
+      [turnStarted, runRequested],
+      sendMessage("call-1", { kind: "message", text: "First draft." }),
+      sendMessage("call-2", { kind: "message", text: long }),
+      [turnSettled("completed")],
+    ]);
+    const linked = eventsOf([
       [turnStarted, runRequested],
       sendMessage("call-1", { kind: "message", text: long }),
       sendMessage("call-2", { kind: "link", url: "https://example.com/" }),
       [turnSettled("completed")],
     ]);
 
-    expect(statusOf(events).reply).toBe(`${long}\n\nhttps://example.com/`);
+    expect(statusOf(events).reply).toBe(long);
+    expect(statusOf(linked).reply).toBe("https://example.com/");
   });
 
   it("completes with no reply when the agent sent nothing", () => {
@@ -496,10 +503,34 @@ describe("site task code wait", () => {
     ).toMatchObject({ error: "timed_out", status: "failed" });
   });
 
-  it("keeps the agent's failure for a code that did not arrive", () => {
+  it("reads timed out for a code that did not arrive, also when the agent called it code_failed", () => {
     expect(statusOf(waitedOut(endTask("call-1", "code_failed")))).toMatchObject(
-      { error: "code_failed", status: "failed" }
+      { error: "timed_out", status: "failed" }
     );
+  });
+
+  it("keeps another failure the agent chose after the code wait", () => {
+    for (const result of ["blocked", "login_failed", "off_site", "failed"]) {
+      expect(statusOf(waitedOut(endTask("call-1", result)))).toMatchObject({
+        error: result,
+        status: "failed",
+      });
+    }
+  });
+
+  it("keeps code_failed for a code that reached the worker", () => {
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      codeQuestion("interaction-1", "Enter the code."),
+      [codeAnswer("interaction-1"), codeSettled("interaction-1", "accepted")],
+      endTask("call-1", "code_failed"),
+      [turnSettled("completed")],
+    ]);
+
+    expect(statusOf(events)).toMatchObject({
+      error: "code_failed",
+      status: "failed",
+    });
   });
 
   it("completes when a later code reached the worker", () => {
