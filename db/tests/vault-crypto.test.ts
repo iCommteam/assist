@@ -127,6 +127,49 @@ describe("vault encryption", () => {
     expect(await readVaultSecret(alice, id)).toBe(secret);
   });
 
+  it("keeps an authenticator setup key inside the ciphertext, out of the hint", async () => {
+    const records: { readonly account: string; readonly id: string }[] = [];
+    // SAFETY: saveVaultItem writes its record with db.insert(...).values(...) only.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a minimal insert stub stands in for the database driver
+    const database = {
+      insert: () => ({
+        values: async (record: { account: string; id: string }) => {
+          records.push(record);
+        },
+      }),
+    } as never;
+    vi.spyOn(Database, "db", "get").mockReturnValue(database);
+    const withKey = serializeLoginVaultPayload({
+      authentication: {
+        password: "correct horse battery",
+        totp: {
+          algorithm: "SHA1",
+          digits: 6,
+          period: 30,
+          secret: "JBSWY3DPEHPK3PXP",
+        },
+        type: "password",
+      },
+      identifier: { type: "email", value: "alice@example.com" },
+      kind: "login",
+      origin: "https://example.com",
+      version: 2,
+    });
+
+    await saveVaultItem(alice, {
+      account: "",
+      kind: "login",
+      label: "Example",
+      secret: withKey,
+    });
+
+    const [record] = records;
+    const [ciphertext] = [...store.values()];
+    expect(record?.account).toBe("example.com · a•••@example.com");
+    expect(ciphertext).not.toContain("JBSWY3DPEHPK3PXP");
+    expect(await readVaultSecret(alice, record?.id ?? "")).toBe(withKey);
+  });
+
   it("refuses an unknown format", async () => {
     const { id, value } = await savedCiphertext();
     store.set(`${alice.workspaceId}/${id}`, value.replace(/^v1\./u, "v2."));

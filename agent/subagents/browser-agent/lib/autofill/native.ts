@@ -4,11 +4,12 @@ import type { AutofillClaim } from "./protocol";
 import {
   classifyNativeLoginControl,
   frameOriginExpression,
+  isOneTimeCodeControl,
   nativeLoginAutofillTokens,
   nativeLoginControlInspectionExpression,
   nativeLoginFillFunctionDeclaration,
   selectNativeLoginFills,
-  type ClassifiedNativeLoginControl,
+  type NativeLoginControlDescriptor,
 } from "./login";
 
 const targetListSchema = z.object({
@@ -855,7 +856,8 @@ async function fillNativeLoginControls(
   const controls = await inspectNativeLoginControls(
     connection,
     sessionIds,
-    expectedOrigin
+    expectedOrigin,
+    classifyNativeLoginControl
   );
   const focused = controls.find((control) => control.focused);
   if (!focused) {
@@ -893,10 +895,11 @@ async function fillNativeLoginControls(
   return fills.length;
 }
 
-async function inspectNativeLoginControls(
+async function inspectNativeLoginControls<T>(
   connection: CdpConnection,
   sessionIds: readonly string[],
-  expectedOrigin: string
+  expectedOrigin: string,
+  classify: (descriptor: NativeLoginControlDescriptor) => T | null
 ) {
   return (
     await Promise.all(
@@ -913,7 +916,8 @@ async function inspectNativeLoginControls(
                   connection,
                   sessionId,
                   frameId,
-                  expectedOrigin
+                  expectedOrigin,
+                  classify
                 ).catch(() => [])
               )
             )
@@ -926,11 +930,12 @@ async function inspectNativeLoginControls(
   ).flat();
 }
 
-async function inspectNativeLoginFrame(
+async function inspectNativeLoginFrame<T>(
   connection: CdpConnection,
   sessionId: string,
   frameId: string,
-  expectedOrigin: string
+  expectedOrigin: string,
+  classify: (descriptor: NativeLoginControlDescriptor) => T | null
 ) {
   const { executionContextId } = isolatedWorldSchema.parse(
     await connection.send(
@@ -964,7 +969,7 @@ async function inspectNativeLoginFrame(
     response.result.value
   );
   return descriptors.flatMap((descriptor) => {
-    const classified = classifyNativeLoginControl(descriptor);
+    const classified = classify(descriptor);
     return classified
       ? [{ ...classified, executionContextId, frameId, sessionId }]
       : [];
@@ -973,9 +978,9 @@ async function inspectNativeLoginFrame(
 
 async function fillNativeLoginControl(
   connection: CdpConnection,
-  control: ClassifiedNativeLoginControl & {
+  control: {
     readonly executionContextId: number;
-    readonly frameId: string;
+    readonly index: number;
     readonly sessionId: string;
   },
   value: string,
@@ -1014,6 +1019,56 @@ async function fillNativeLoginControl(
       .send("Runtime.releaseObject", { objectId }, control.sessionId)
       .catch(() => undefined);
   }
+}
+
+// Fills a one-time code into the focused code field of a document served from
+// the saved login's origin, marked like a login value for screenshot masking.
+export async function fillKernelOneTimeCode({
+  browserSessionId,
+  code,
+  expectedOrigin,
+  signal,
+}: {
+  readonly browserSessionId: string;
+  readonly code: string;
+  readonly expectedOrigin: string;
+  readonly signal?: AbortSignal;
+}) {
+  await withKernelPage(
+    browserSessionId,
+    signal,
+    async ({ connection, origin, sessionId }) => {
+      if (origin !== expectedOrigin) {
+        throw new Error(
+          "The active tab no longer matches the approved origin."
+        );
+      }
+      const controls = await inspectNativeLoginControls(
+        connection,
+        sessionId,
+        expectedOrigin,
+        (descriptor) => descriptor
+      );
+      const focused = controls.find((control) => control.focused);
+      if (!focused || !isOneTimeCodeControl(focused)) {
+        throw new Error(
+          "Focus the visible authenticator code field of the sign-in and retry."
+        );
+      }
+      if (
+        !(await fillNativeLoginControl(
+          connection,
+          focused,
+          code,
+          expectedOrigin
+        ))
+      ) {
+        throw new Error(
+          "The code field rejected secure autofill or is not served from the saved origin."
+        );
+      }
+    }
+  );
 }
 
 export function buildNativeAutofillPayload(

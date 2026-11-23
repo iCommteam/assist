@@ -59,6 +59,7 @@ describe("root and worker capability boundaries", () => {
       "bash.ts",
       "computer_action.ts",
       "fill_from_vault.ts",
+      "fill_totp_from_vault.ts",
       "list_vault.ts",
       "manage_browsers.ts",
       "personal_info.ts",
@@ -150,6 +151,9 @@ describe("root and worker capability boundaries", () => {
       "Never wait for it to clear or for a solver"
     );
     expect(workerInstructions).toContain("The vault fills saved logins only.");
+    expect(workerInstructions).toContain(
+      "never ask the coordinator for a code the vault can produce"
+    );
     expect(existsSync(`${workerRoot}/lib/browser-contract.ts`)).toBe(false);
     expect(existsSync(`${workerRoot}/lib/browser-runtime.ts`)).toBe(false);
     expect(existsSync(`${workerRoot}/lib/owned-browser.ts`)).toBe(true);
@@ -164,9 +168,11 @@ describe("root and worker capability boundaries", () => {
       );
       expect(source).not.toContain("new Kernel(");
     }
-    expect(readFileSync(`${workerTools}/fill_from_vault.ts`, "utf8")).toContain(
-      'from "../lib/autofill/native"'
-    );
+    for (const tool of ["fill_from_vault", "fill_totp_from_vault"]) {
+      expect(readFileSync(`${workerTools}/${tool}.ts`, "utf8")).toContain(
+        'from "../lib/autofill/native"'
+      );
+    }
   });
 
   it("requires structured completion for initial and resumed worker calls", () => {

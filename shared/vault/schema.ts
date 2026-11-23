@@ -1,5 +1,6 @@
 import creditCardType from "credit-card-type";
 import { z } from "zod";
+import { authenticatorKeySchema } from "@shared/vault/authenticator";
 
 export const vaultItemKinds = [
   "login",
@@ -73,6 +74,9 @@ export const loginIdentifierSchema = z
 const loginAuthenticationSchema = z.discriminatedUnion("type", [
   z.object({
     password: z.string().min(1).max(20_000),
+    // An authenticator app's setup key, for a site that asks for its code
+    // after the password. The browser worker never receives it.
+    totp: authenticatorKeySchema.optional(),
     type: z.literal("password"),
   }),
   z.object({ type: z.literal("email_otp") }),

@@ -196,6 +196,9 @@ describe("site task instructions", () => {
       "tell it in its assignment that the task is limited to that one account"
     );
     expect(selected?.content).toContain(
+      "tell the worker to fill it with `fill_totp_from_vault`"
+    );
+    expect(selected?.content).toContain(
       "never change account settings, passwords, email addresses, phone numbers, addresses, or payout or payment details"
     );
     expect(selected?.content).toContain(
@@ -216,6 +219,9 @@ describe("site task instructions", () => {
     expect(pinned?.content).toContain("Stop and return `failure`");
     expect(pinned?.content).toContain(
       "keep the saved sign-in of that login alone, so the site may start signed out"
+    );
+    expect(pinned?.content).toContain(
+      "When the sign-in asks for an authenticator-app code, fill it with `fill_totp_from_vault`"
     );
 
     expect(await evaluateDynamic(workerSiteLogin, siteContext())).toBeNull();

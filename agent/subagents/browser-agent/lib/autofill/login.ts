@@ -74,6 +74,54 @@ export function classifyNativeLoginControl(
   return null;
 }
 
+const oneTimeCodeInputTypes = new Set([
+  "",
+  "number",
+  "password",
+  "tel",
+  "text",
+]);
+const otherAutocompleteTokens = new Set([
+  "current-password",
+  "email",
+  "new-password",
+  "tel",
+  "username",
+]);
+const otherCodeWording =
+  /\b(?:postal|post ?code|zip|promo|coupon|discount|gift|voucher|referral|invit|country|area code|captcha|card|cvc|cvv|csc|(?:new|confirm|create|repeat|retype|verify) ?password)/u;
+const oneTimeCodeWording =
+  /\b(?:otp|totp|mfa|2fa|tfa|one ?time|passcode|verification|verify|authenticat|security code|two ?factor|two ?step|2 ?step|token|code|digit)/u;
+
+// Whether a control asks for a one-time code. Only fill_totp_from_vault uses
+// this; classifyNativeLoginControl keeps refusing these fields. A control with
+// no code wording is refused rather than guessed at.
+export function isOneTimeCodeControl(descriptor: NativeLoginControlDescriptor) {
+  if (!oneTimeCodeInputTypes.has(descriptor.type)) return false;
+  const autocompleteTokens = descriptor.autocomplete
+    .toLowerCase()
+    .split(/\s+/u)
+    .filter(Boolean);
+  if (autocompleteTokens.includes("one-time-code")) return true;
+  if (
+    autocompleteTokens.some(
+      (token) => otherAutocompleteTokens.has(token) || token.startsWith("cc-")
+    )
+  ) {
+    return false;
+  }
+
+  // Split camel case first, so a name such as otpCode still reads as "otp".
+  const searchable = normalizeText(
+    [descriptor.name, descriptor.label]
+      .join(" ")
+      .replaceAll(/(?<lower>[a-z])(?<upper>[A-Z])/gu, "$<lower> $<upper>")
+  );
+  return (
+    !otherCodeWording.test(searchable) && oneTimeCodeWording.test(searchable)
+  );
+}
+
 export function selectNativeLoginFills<T extends ClassifiedNativeLoginControl>(
   controls: readonly T[],
   claims: readonly Pick<AutofillClaim, "token" | "value">[]

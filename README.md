@@ -154,6 +154,13 @@ saved to the workspace profile instead, so a login's first pinned task starts
 signed out and signs in itself. Removing the login from the vault also deletes
 its profile.
 
+A saved login with a password may also hold an authenticator app's setup key:
+the vault form takes the key or the `otpauth://totp/` link a site shows during
+setup, and keeps it encrypted with the password. When a sign-in asks for the
+app's code, the worker's `fill_totp_from_vault` computes the current code on
+the server and types it into the focused code field; the model never sees the
+key or the code. A code sent by email or text message still ends a site task.
+
 Every call sends `Authorization: Bearer <token>`:
 
 | Call                           | Answer                                                                                                                 |

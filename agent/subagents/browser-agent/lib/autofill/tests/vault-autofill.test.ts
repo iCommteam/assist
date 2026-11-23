@@ -12,6 +12,7 @@ import {
 import {
   classifyNativeLoginControl,
   frameOriginExpression,
+  isOneTimeCodeControl,
   nativeLoginFillFunctionDeclaration,
   selectNativeLoginFills,
   type NativeLoginControlDescriptor,
@@ -26,7 +27,10 @@ import {
   materializeAutofillClaims,
   type AutofillVaultAdapter,
 } from "@agent/subagents/browser-agent/lib/autofill/service";
-import { vaultAutofillProvider } from "@agent/subagents/browser-agent/lib/autofill/provider";
+import {
+  authenticatorCodeForLogin,
+  vaultAutofillProvider,
+} from "@agent/subagents/browser-agent/lib/autofill/provider";
 
 interface VaultStore {
   items: { id: string }[];
@@ -225,6 +229,94 @@ describe("vault browser autofill", () => {
         surface: credentialsSurface,
       })
     ).rejects.toThrow("restricted to https://checkout.example");
+  });
+
+  it("computes a login's authenticator code only at its saved origin", async () => {
+    const login = vaultItem("login", "Vendor", "a•••@example.com");
+    const totp = {
+      algorithm: "SHA1",
+      digits: 6,
+      period: 30,
+      secret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+    } as const;
+    const provider = providerFor(
+      login,
+      serializeLoginVaultPayload({
+        authentication: { password: "correct horse", totp, type: "password" },
+        identifier: { type: "email", value: "ada@example.com" },
+        kind: "login",
+        origin: "https://billing.vendor.example",
+        version: 2,
+      })
+    );
+
+    await expect(
+      authenticatorCodeForLogin(
+        scope,
+        login.id,
+        "https://billing.vendor.example",
+        59_000
+      )
+    ).resolves.toBe("287082");
+    await expect(
+      authenticatorCodeForLogin(
+        scope,
+        login.id,
+        "https://attacker.example",
+        59_000
+      )
+    ).rejects.toThrow("restricted to https://billing.vendor.example");
+    await expect(
+      authenticatorCodeForLogin(scope, "vault-missing", "https://x", 59_000)
+    ).rejects.toThrow("The selected vault item was not found.");
+
+    // fill_from_vault's claims never carry the key, nor a code.
+    const claims = await provider.materializeClaims(scope, login.id, {
+      availableTokens: new Set([
+        "username",
+        "current-password",
+        "one-time-code",
+      ]),
+      origin: "https://billing.vendor.example",
+      surface: credentialsSurface,
+    });
+    expect(claimValues(claims)).toEqual({
+      "current-password": "correct horse",
+      username: "ada@example.com",
+    });
+  });
+
+  it("refuses an authenticator code for a login without a setup key", async () => {
+    const login = vaultItem("login", "Vendor", "a•••@example.com");
+    providerFor(
+      login,
+      serializeLoginVaultPayload({
+        authentication: { password: "correct horse", type: "password" },
+        identifier: { type: "email", value: "ada@example.com" },
+        kind: "login",
+        origin: "https://billing.vendor.example",
+        version: 2,
+      })
+    );
+    await expect(
+      authenticatorCodeForLogin(
+        scope,
+        login.id,
+        "https://billing.vendor.example",
+        59_000
+      )
+    ).rejects.toThrow("This saved login has no authenticator setup key.");
+
+    const card = vaultItem("payment", "Card", "Visa · •••• 4242");
+    providerFor(card, "{}");
+    await expect(
+      authenticatorCodeForLogin(
+        scope,
+        card.id,
+        "https://billing.vendor.example",
+        59_000
+      )
+    ).rejects.toThrow("The selected vault item was not found.");
   });
 
   it("materializes passwordless identifiers without an OTP", async () => {
@@ -625,6 +717,34 @@ describe("vault browser autofill", () => {
         loginControl({ autocomplete: "new-password", type: "password" })
       )
     ).toBeNull();
+  });
+
+  it.each([
+    ["autocomplete one-time-code", { autocomplete: "one-time-code" }],
+    ["a code label", { label: "Enter the 6-digit code", type: "tel" }],
+    ["an authenticator label", { label: "Code from your authenticator app" }],
+    ["a camel-case name", { name: "otpCode" }],
+    ["a one-time password", { label: "One-time password", type: "password" }],
+    ["a numeric verification field", { name: "verification", type: "number" }],
+  ])("accepts %s as a one-time code field", (_case, overrides) => {
+    expect(isOneTimeCodeControl(loginControl(overrides))).toBe(true);
+  });
+
+  it.each([
+    ["a password field", { name: "password", type: "password" }],
+    ["an email field", { label: "Email code", type: "email" }],
+    ["a username field", { autocomplete: "username", label: "Code" }],
+    ["a new password", { autocomplete: "new-password", label: "Code" }],
+    ["a card code", { autocomplete: "cc-csc", label: "Security code" }],
+    ["a card code by label", { label: "Card security code" }],
+    ["a postal code", { label: "Postal code" }],
+    ["a promo code", { name: "promoCode" }],
+    ["a CAPTCHA", { label: "Type the characters (CAPTCHA code)" }],
+    ["a confirm-password field", { label: "Verify password" }],
+    ["a search box", { label: "Search invoices", type: "search" }],
+    ["an unlabeled field", {}],
+  ])("refuses %s as a one-time code field", (_case, overrides) => {
+    expect(isOneTimeCodeControl(loginControl(overrides))).toBe(false);
   });
 
   it("selects one identifier and current password from the focused login form", () => {

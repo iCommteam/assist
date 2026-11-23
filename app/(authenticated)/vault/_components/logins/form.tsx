@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@web/components/ui/select";
+import { authenticatorSetupKeySchema } from "@shared/vault/authenticator";
 import {
   loginIdentifierSchema,
   loginIdentifierTypeSchema,
@@ -24,6 +25,7 @@ import { FormField } from "../field";
 
 const loginFormSchema = z
   .object({
+    authenticatorKey: z.string().trim(),
     identifier: z.string().trim(),
     identifierType: loginIdentifierTypeSchema,
     nickname: z.string().trim().min(1, "Enter a name for this login.").max(120),
@@ -55,6 +57,22 @@ const loginFormSchema = z
         path: ["password"],
       });
     }
+    if (!form.authenticatorKey) return;
+    const key = authenticatorSetupKeySchema.safeParse(form.authenticatorKey);
+    for (const issue of key.error?.issues ?? []) {
+      context.addIssue({
+        code: "custom",
+        message: issue.message,
+        path: ["authenticatorKey"],
+      });
+    }
+    if (!form.password) {
+      context.addIssue({
+        code: "custom",
+        message: "An authenticator setup key needs the password too.",
+        path: ["authenticatorKey"],
+      });
+    }
   });
 
 export function LoginForm({
@@ -77,6 +95,7 @@ export function LoginForm({
   });
   const [attempted, setAttempted] = useState(false);
   const [form, setForm] = useState<z.input<typeof loginFormSchema>>({
+    authenticatorKey: "",
     identifier: "",
     identifierType: initialIdentifierType ?? "email",
     nickname: initialLabel,
@@ -206,6 +225,19 @@ export function LoginForm({
           type="password"
           value={form.password}
         />
+        <FormField
+          autoComplete="off"
+          description="The key or otpauth:// link the site shows when you add an authenticator app. The browser then enters the app's codes itself."
+          error={errors.authenticatorKey?.[0]}
+          id="vault-login-authenticator-key"
+          label="Authenticator setup key (optional)"
+          onChange={(authenticatorKey) => {
+            setForm((current) => ({ ...current, authenticatorKey }));
+          }}
+          spellCheck={false}
+          type="password"
+          value={form.authenticatorKey}
+        />
       </FieldGroup>
       <DialogFooter>
         <Button disabled={create.isPending} type="submit">
@@ -232,7 +264,13 @@ function identifierLabel(type: z.infer<typeof loginIdentifierTypeSchema>) {
 
 function loginAuthentication(form: z.output<typeof loginFormSchema>) {
   if (form.password) {
-    return { password: form.password, type: "password" as const };
+    return {
+      password: form.password,
+      totp: form.authenticatorKey
+        ? authenticatorSetupKeySchema.parse(form.authenticatorKey)
+        : undefined,
+      type: "password" as const,
+    };
   }
   if (form.identifierType === "email") return { type: "email_otp" as const };
   if (form.identifierType === "phone") return { type: "sms_otp" as const };

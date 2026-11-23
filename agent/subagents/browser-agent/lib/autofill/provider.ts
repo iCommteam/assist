@@ -11,8 +11,10 @@ import {
   parsePaymentCardSecret,
   type VaultItemKind,
 } from "@shared/vault/schema";
+import type { AccessScope } from "@shared/identity/access-scope";
 import type { DetectedAutofillSurface } from "./protocol";
 import type { AutofillVaultAdapter } from "./service";
+import { authenticatorCode } from "./totp";
 
 interface VaultAutofillCodec {
   readonly claims: (
@@ -231,6 +233,29 @@ export const vaultAutofillProvider: AutofillVaultAdapter = {
     });
   },
 };
+
+// The current authenticator code of a saved login at `origin`. Kept out of the
+// login codec, so fill_from_vault can never fill a code or the setup key.
+export async function authenticatorCodeForLogin(
+  scope: AccessScope,
+  candidateId: string,
+  origin: string,
+  now: number
+) {
+  const item = await readVaultItem(scope, candidateId);
+  if (item?.kind !== "login") {
+    throw new Error("The selected vault item was not found.");
+  }
+  const secret = await readVaultSecret(scope, item.id);
+  if (!secret) throw new Error("The selected vault item has no secret.");
+  const { authentication } = requireBoundLogin(secret, origin);
+  const key =
+    authentication.type === "password" ? authentication.totp : undefined;
+  if (!key) {
+    throw new Error("This saved login has no authenticator setup key.");
+  }
+  return authenticatorCode(key, now);
+}
 
 function codecsForSurface(surface: DetectedAutofillSurface) {
   return codecs.filter((codec) => codec.surfaceKinds.includes(surface.kind));

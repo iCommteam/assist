@@ -39,6 +39,34 @@ describe("versioned vault payloads", () => {
     );
   });
 
+  it("keeps an optional authenticator setup key with a password", () => {
+    const totp = {
+      algorithm: "SHA256",
+      digits: 8,
+      period: 30,
+      secret: "JBSWY3DPEHPK3PXP",
+    } as const;
+    const login = serializeLoginVaultPayload({
+      authentication: { password: "correct horse", totp, type: "password" },
+      identifier: { type: "email", value: "ap@example.com" },
+      kind: "login",
+      origin: "https://billing.vendor.example",
+      version: 2,
+    });
+
+    expect(loginVaultPayloadStringSchema.safeParse(login).success).toBe(true);
+    expect(parseLoginVaultPayload(login)?.authentication).toEqual({
+      password: "correct horse",
+      totp,
+      type: "password",
+    });
+    expect(
+      loginVaultPayloadStringSchema.safeParse(
+        login.replace("JBSWY3DPEHPK3PXP", "not a key")
+      ).success
+    ).toBe(false);
+  });
+
   it("rejects an OTP method that does not match its identifier", () => {
     expect(() =>
       serializeLoginVaultPayload({

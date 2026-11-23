@@ -24,6 +24,7 @@ const toolActivityKind = new Map<string, BrowserActivityKind>([
   ["browser_wait_for", "semantic"],
   ["computer_action", "visual"],
   ["fill_from_vault", "vault"],
+  ["fill_totp_from_vault", "vault"],
   ["list_vault", "vault"],
   ["load_skill", "setup"],
   ["manage_browsers", "setup"],
