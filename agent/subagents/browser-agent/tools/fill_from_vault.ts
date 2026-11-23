@@ -57,7 +57,11 @@ export default defineTool({
   async execute(input, context) {
     const scope = await requireWorkerScope(context);
 
-    await requireOwnedBrowserSession(scope, input.browserSessionId);
+    await requireOwnedBrowserSession(
+      scope,
+      context.session,
+      input.browserSessionId
+    );
     assertWorkerNotBlocked();
     const item = await readVaultItem(scope, input.candidateId);
     if (!item) throw new Error("The selected vault item was not found.");

@@ -8,6 +8,7 @@ import {
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { siteOfSession } from "@agent/lib/site-principal";
 import { readUserProfile, patchUserProfile } from "@db/services/user-profile";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
@@ -20,6 +21,9 @@ import { resolveModeValue } from "../lib/mode";
 function resolvePersonalInfoAccessScope(
   context: Pick<MemoryScopeContext | SessionContext, "session">
 ): AccessScope | null {
+  // A site task acts for the owner, but the pages it opens are not his: they
+  // may neither have his Personal Info typed into a form nor rewrite it.
+  if (siteOfSession(context.session.auth.initiator)) return null;
   const caller = [
     context.session.auth.current,
     context.session.auth.initiator,
@@ -65,6 +69,7 @@ export default defineMemory({
       const current = context.session.auth.current;
       if (
         current?.principalType !== "user" ||
+        siteOfSession(context.session.auth.initiator) ||
         resolveModeValue(context, { interactive: true }) !== true
       ) {
         return null;

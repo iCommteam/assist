@@ -394,6 +394,42 @@ describe("workstream memory", () => {
     expect(await workstreamMemory.provider.tools(runtime)).toBeNull();
   });
 
+  it("disables the slot for the whole of a site task, even when the owner writes in it", async () => {
+    await saveWorkstream(
+      alice,
+      "key-a",
+      { id: "autumn-trip", expectedRevision: 0, content },
+      "save",
+      "first"
+    );
+    const site = {
+      attributes: { site: "teemiq", workspaceId: alice.workspaceId },
+      authenticator: "assist-site",
+      principalId: alice.userId,
+      principalType: "user",
+    };
+    const member = context("site-task");
+    await Promise.all(
+      [
+        { current: site, initiator: site },
+        // The owner writing into a site task's chat leaves its initiator.
+        { current: member.session.auth.current, initiator: site },
+      ].map(async (auth) => {
+        const siteTask = { ...member, session: { ...member.session, auth } };
+        expect(workstreamMemory.scope(siteTask)).toBeNull();
+        expect(await workstreamMemory.provider.tools(siteTask)).toBeNull();
+        expect(
+          await workstreamMemory.provider.recall["turn.started"](siteTask)
+        ).toBeNull();
+      })
+    );
+    // The same owner outside a site task still recalls the note.
+    expect(
+      (await workstreamMemory.provider.recall["turn.started"](member))
+        ?.messages[0]?.content
+    ).toContain("Autumn trip");
+  });
+
   it("rejects oversized content and preserves cancellation", async () => {
     expect(
       saveWorkstreamSchema.safeParse({

@@ -174,6 +174,9 @@ describe("site task instructions", () => {
     expect(selected?.content).toContain(
       "must delete its browser before it returns"
     );
+    expect(selected?.content).toContain(
+      "Personal Info and workstreams are off for a site task"
+    );
   });
 
   it("keeps site sessions in interactive mode", async () => {

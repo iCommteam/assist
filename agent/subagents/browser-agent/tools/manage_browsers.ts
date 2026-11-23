@@ -10,7 +10,7 @@ import { z } from "zod";
 import {
   createBrowserSession,
   deleteBrowserSession,
-  listBrowserSessions,
+  listWorkerBrowserSessions,
   withBrowserProfileWriteLock,
 } from "@db/services/browsers";
 import { recordBrowserTraceDomains } from "@db/services/browser-traces";
@@ -54,7 +54,7 @@ const inputSchema = z.object({
 
 const manageBrowsers = defineTool({
   description:
-    'Manage browser sessions backed by the workspace persistent profile. Create read-only browsers by default so tasks can run in parallel. Immediately before a login, replace that task browser with one created using save_changes: true, then delete it after authentication so the session is saved. Only one profile writer may be active. Use "list" or "get" to inspect sessions.',
+    'Manage browser sessions backed by the workspace persistent profile. Create read-only browsers by default so tasks can run in parallel. Immediately before a login, replace that task browser with one created using save_changes: true, then delete it after authentication so the session is saved. Only one profile writer may be active. Use "list" or "get" to inspect the browsers this task created.',
   inputSchema,
   async execute(input, context) {
     const scope = await requireWorkerScope(context);
@@ -131,7 +131,10 @@ const manageBrowsers = defineTool({
           : create();
       }
       case "list": {
-        const records = await listBrowserSessions(scope);
+        const records = await listWorkerBrowserSessions(
+          scope,
+          context.session.id
+        );
         const includeDeleted = input.status !== "active";
         const browsers = await Promise.all(
           records.map(async ({ sessionId }) => {
@@ -169,14 +172,14 @@ const manageBrowsers = defineTool({
       }
       case "get": {
         const sessionId = requireSessionId(input.session_id);
-        await requireOwnedBrowserSession(scope, sessionId);
+        await requireOwnedBrowserSession(scope, context.session, sessionId);
         return browserDescriptor(
           await retrieveBrowser(scope, sessionId, signal)
         );
       }
       case "update": {
         const sessionId = requireSessionId(input.session_id);
-        await requireOwnedBrowserSession(scope, sessionId);
+        await requireOwnedBrowserSession(scope, context.session, sessionId);
         const viewport = browserViewport(input);
         const browser = viewport
           ? await kernel.browsers.update(sessionId, { viewport }, { signal })
@@ -185,10 +188,14 @@ const manageBrowsers = defineTool({
       }
       case "delete": {
         const sessionId = requireSessionId(input.session_id);
-        const record = await requireOwnedBrowserSession(scope, sessionId);
+        const record = await requireOwnedBrowserSession(
+          scope,
+          context.session,
+          sessionId
+        );
         await harvestBrowserTraceDomains(
           scope,
-          record.workerSessionId ?? context.session.id,
+          context.session.id,
           { createdAt: record.createdAt, sessionId: record.sessionId },
           signal
         );

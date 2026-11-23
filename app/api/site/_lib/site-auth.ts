@@ -6,13 +6,18 @@ const noStore = { "cache-control": "no-store" };
 // Every site API body is a flat JSON object of strings, booleans and nulls.
 export function siteJson(
   body: Readonly<Record<string, string | boolean | null>>,
-  status = 200
+  status = 200,
+  headers: Readonly<Record<string, string>> = {}
 ) {
-  return Response.json(body, { headers: noStore, status });
+  return Response.json(body, { headers: { ...headers, ...noStore }, status });
 }
 
-export function siteError(status: number, error: string) {
-  return siteJson({ error }, status);
+export function siteError(
+  status: number,
+  error: string,
+  headers?: Readonly<Record<string, string>>
+) {
+  return siteJson({ error }, status, headers);
 }
 
 // The site API authenticates by bearer token alone: it never reads cookies, so

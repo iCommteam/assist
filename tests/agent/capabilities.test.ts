@@ -55,10 +55,23 @@ describe("authored mode capability matrix", () => {
       "send_message",
     ]);
   });
+
+  it("gives site tasks no memory tools, so a page cannot rewrite the owner's details or notes", async () => {
+    expect(await authoredCapabilities("assist-site", "teemiq")).toEqual([
+      "react_to_message",
+      "request_vault_import",
+      "request_vault_setup",
+      "schedules-answer",
+      "schedules-create",
+      "schedules-list",
+      "schedules-update",
+      "send_message",
+    ]);
+  });
 });
 
-async function authoredCapabilities(authenticator: string) {
-  const context = dynamicContext(authenticator);
+async function authoredCapabilities(authenticator: string, site?: string) {
+  const context = dynamicContext(authenticator, site);
   const capabilities: string[] = [];
 
   const resolvedGroups = await Promise.all(
@@ -109,17 +122,19 @@ async function authoredCapabilities(authenticator: string) {
   return capabilities.toSorted();
 }
 
-function dynamicContext(authenticator: string) {
+// A site's principal starts its session, so it is the initiator as well.
+function dynamicContext(authenticator: string, site?: string) {
+  const attributes: Readonly<Record<string, string>> = site
+    ? { site, workspaceId: member.workspaceId }
+    : { workspaceId: member.workspaceId };
+  const principal = {
+    attributes,
+    authenticator,
+    principalId: member.userId,
+    principalType: "user",
+  };
   return dynamicContextFor({
-    auth: {
-      current: {
-        attributes: { workspaceId: member.workspaceId },
-        authenticator,
-        principalId: member.userId,
-        principalType: "user",
-      },
-      initiator: null,
-    },
+    auth: { current: principal, initiator: site ? principal : null },
     channel: { kind: "channel:linq", metadata: {} },
     sessionId: "session-1",
   });

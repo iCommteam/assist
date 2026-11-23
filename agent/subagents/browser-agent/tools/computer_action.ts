@@ -104,7 +104,7 @@ export default defineTool({
   outputSchema,
   async execute(input, context) {
     const scope = await requireWorkerScope(context);
-    await requireOwnedBrowserSession(scope, input.session_id);
+    await requireOwnedBrowserSession(scope, context.session, input.session_id);
     assertWorkerNotBlocked();
 
     const computer = kernel.browsers.computer;

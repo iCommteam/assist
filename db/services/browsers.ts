@@ -41,18 +41,6 @@ export async function listWorkerBrowserSessions(
   return rows.map(serializeBrowserSession);
 }
 
-export async function listBrowserSessions(scope: AccessScope) {
-  const rows = await db
-    .select({
-      createdAt: browserSessions.createdAt,
-      sessionId: browserSessions.sessionId,
-    })
-    .from(browserSessions)
-    .where(eq(browserSessions.workspaceId, scope.workspaceId))
-    .orderBy(desc(browserSessions.createdAt));
-  return rows.map(serializeBrowserSession);
-}
-
 export async function readBrowserSession(
   scope: AccessScope,
   sessionId: string

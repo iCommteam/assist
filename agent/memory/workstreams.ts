@@ -8,6 +8,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { resolveModeValue } from "@agent/lib/mode";
+import { siteOfSession } from "@agent/lib/site-principal";
 import {
   findWorkstreams,
   forgetWorkstream,
@@ -25,6 +26,9 @@ import {
 function interactiveWorkstreamScope(
   context: Pick<MemoryScopeContext, "session">
 ) {
+  // A site task's pages must neither plant notes that the owner's later chats
+  // recall nor read the ones he saved.
+  if (siteOfSession(context.session.auth.initiator)) return null;
   const caller = context.session.auth.current;
   if (
     caller?.principalType !== "user" ||

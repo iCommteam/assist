@@ -72,8 +72,16 @@ const siteVariables = [
   ["ASSIST_SITE_OWNER_AGENTS", "owner@example.test"],
 ] as const;
 
+// The route keeps each site's recent task starts in memory for ten minutes.
+// Only Date is faked, and each test starts an hour after the last, so no test
+// inherits another's starts.
+let clock = Date.parse("2026-01-01T00:00:00.000Z");
+
 beforeEach(() => {
   vi.clearAllMocks();
+  clock += 60 * 60_000;
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(clock);
   eve.bearers.length = 0;
   eve.baseUrls.length = 0;
   for (const [name, value] of siteVariables) vi.stubEnv(name, value);
@@ -95,6 +103,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const [name] of siteVariables) vi.stubEnv(name, "");
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("site API authentication", () => {
@@ -312,6 +321,78 @@ describe("POST /api/site/tasks", () => {
     expect(services.recordSiteTask).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /api/site/tasks rate cap", () => {
+  it("answers 429 with Retry-After at the eleventh start in ten minutes, before eve", async () => {
+    const accepted = await startEveryMinute(10);
+    vi.setSystemTime(clock + 9 * 60_000 + 30_000);
+
+    const refused = await startTask(teemiqToken);
+
+    expect(accepted).toEqual(Array.from({ length: 10 }, () => 202));
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("cache-control")).toBe("no-store");
+    // The first start leaves the window at minute ten.
+    expect(refused.headers.get("retry-after")).toBe("30");
+    await expect(refused.json()).resolves.toEqual({ error: "rate_limited" });
+    expect(eve.create).toHaveBeenCalledTimes(10);
+    expect(services.ensureScope).toHaveBeenCalledTimes(10);
+    expect(services.recordSiteTask).toHaveBeenCalledTimes(10);
+    expect(console.warn).toHaveBeenCalledWith(
+      "[site] task start rate limited",
+      { site: "teemiq" }
+    );
+  });
+
+  it("slides the window one start at a time and counts each site apart", async () => {
+    await startEveryMinute(10);
+
+    vi.setSystemTime(clock + 10 * 60_000);
+    const reopened = await startTask(teemiqToken);
+    const full = await startTask(teemiqToken);
+    const otherSite = await startTask(agentsToken);
+
+    expect(reopened.status).toBe(202);
+    expect(full.status).toBe(429);
+    expect(full.headers.get("retry-after")).toBe("60");
+    expect(otherSite.status).toBe(202);
+  });
+
+  it("does not count a request it refuses as invalid", async () => {
+    const invalid = await Promise.all(
+      Array.from({ length: 12 }, () =>
+        createTask(
+          new Request("https://assist.example/api/site/tasks", {
+            body: "{}",
+            headers: { authorization: `Bearer ${teemiqToken}` },
+            method: "POST",
+          })
+        )
+      )
+    );
+
+    expect(invalid.map(({ status }) => status)).toEqual(
+      Array.from({ length: 12 }, () => 400)
+    );
+    expect((await startTask(teemiqToken)).status).toBe(202);
+  });
+});
+
+function startTask(token: string) {
+  return createTask(siteRequest("/tasks", token, { message: "hello" }));
+}
+
+// Starts one teemiq task at the top of each minute from the test's clock.
+async function startEveryMinute(count: number) {
+  const statuses: number[] = [];
+  /* oxlint-disable eslint/no-await-in-loop -- Each start runs at its own minute. */
+  for (let minute = 0; minute < count; minute += 1) {
+    vi.setSystemTime(clock + minute * 60_000);
+    statuses.push((await startTask(teemiqToken)).status);
+  }
+  /* oxlint-enable eslint/no-await-in-loop */
+  return statuses;
+}
 
 describe("GET /api/site/tasks/{taskId}", () => {
   it("returns the agent's reply once the task completes", async () => {

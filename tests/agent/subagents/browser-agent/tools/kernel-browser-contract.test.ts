@@ -4,7 +4,7 @@ import { z } from "zod";
 import type {
   createBrowserSession,
   deleteBrowserSession,
-  listBrowserSessions,
+  listWorkerBrowserSessions,
   withBrowserProfileWriteLock,
 } from "@db/services/browsers";
 import type { recordBrowserTraceDomains } from "@db/services/browser-traces";
@@ -25,7 +25,7 @@ const serviceMocks = vi.hoisted(() => ({
   createBrowserSession: vi.fn<typeof createBrowserSession>(),
   deleteBrowserSession: vi.fn<typeof deleteBrowserSession>(),
   harvestBrowserTraceDomains: vi.fn<typeof harvestBrowserTraceDomains>(),
-  listBrowserSessions: vi.fn<typeof listBrowserSessions>(),
+  listWorkerBrowserSessions: vi.fn<typeof listWorkerBrowserSessions>(),
   recordBrowserTraceDomains: vi.fn<typeof recordBrowserTraceDomains>(),
   requireOwnedBrowserSession: vi.fn<typeof requireOwnedBrowserSession>(),
   requireWorkerScope: vi.fn<typeof requireWorkerScope>(),
@@ -35,7 +35,7 @@ const serviceMocks = vi.hoisted(() => ({
 vi.mock("@db/services/browsers", () => ({
   createBrowserSession: serviceMocks.createBrowserSession,
   deleteBrowserSession: serviceMocks.deleteBrowserSession,
-  listBrowserSessions: serviceMocks.listBrowserSessions,
+  listWorkerBrowserSessions: serviceMocks.listWorkerBrowserSessions,
   withBrowserProfileWriteLock: serviceMocks.withBrowserProfileWriteLock,
 }));
 vi.mock("@db/services/browser-traces", () => ({
@@ -63,7 +63,7 @@ const mocks = {
   deleteBrowser: vi.spyOn(kernel.browsers, "deleteByID"),
   deleteBrowserSession: serviceMocks.deleteBrowserSession,
   harvestBrowserTraceDomains: serviceMocks.harvestBrowserTraceDomains,
-  listBrowserSessions: serviceMocks.listBrowserSessions,
+  listWorkerBrowserSessions: serviceMocks.listWorkerBrowserSessions,
   listKernelBrowsers: vi.spyOn(kernel.browsers, "list"),
   playwright: vi.spyOn(kernel.browsers.playwright, "execute"),
   readBrowserSession: serviceMocks.requireOwnedBrowserSession,
@@ -108,7 +108,7 @@ beforeEach(() => {
   mocks.createBrowserSession.mockResolvedValue();
   mocks.deleteBrowserSession.mockResolvedValue(true);
   mocks.harvestBrowserTraceDomains.mockResolvedValue();
-  mocks.listBrowserSessions.mockResolvedValue([]);
+  mocks.listWorkerBrowserSessions.mockResolvedValue([]);
   mocks.readBrowserSession.mockResolvedValue({
     createdAt: "2026-08-27T00:00:00.000Z",
     sessionId: "browser-1",
@@ -254,7 +254,7 @@ describe("Kernel browser contract", () => {
     mocks.readBrowserSession.mockResolvedValue({
       createdAt: "2026-08-27T00:00:00.000Z",
       sessionId: "browser-1",
-      workerSessionId: "worker-session-9",
+      workerSessionId: "worker-session-1",
     });
 
     const result = await manageBrowsers.execute(
@@ -265,7 +265,7 @@ describe("Kernel browser contract", () => {
     expect(result).toBe("Browser session deleted successfully");
     expect(mocks.harvestBrowserTraceDomains).toHaveBeenCalledExactlyOnceWith(
       { userId: "user-1", workspaceId: "workspace-1" },
-      "worker-session-9",
+      "worker-session-1",
       { createdAt: "2026-08-27T00:00:00.000Z", sessionId: "browser-1" },
       expect.any(AbortSignal)
     );
@@ -295,7 +295,7 @@ describe("Kernel browser contract", () => {
   });
 
   it("prunes stale owned records when Kernel reports a missing browser", async () => {
-    mocks.listBrowserSessions.mockResolvedValue([
+    mocks.listWorkerBrowserSessions.mockResolvedValue([
       {
         createdAt: "2026-08-27T00:00:00.000Z",
         sessionId: "stale-browser",
@@ -312,6 +312,43 @@ describe("Kernel browser contract", () => {
     expect(mocks.deleteBrowserSession).toHaveBeenCalledExactlyOnceWith(
       { userId: "user-1", workspaceId: "workspace-1" },
       "stale-browser"
+    );
+  });
+
+  it("lists and opens only the browsers this worker created", async () => {
+    mocks.listWorkerBrowserSessions.mockResolvedValue([
+      { createdAt: "2026-08-27T00:00:00.000Z", sessionId: "browser-1" },
+    ]);
+    mocks.retrieveBrowser.mockResolvedValue({
+      cdp_ws_url: "wss://kernel.test/cdp",
+      created_at: "2026-08-27T00:00:00.000Z",
+      headless: false,
+      memory: "2GiB",
+      region: "us-east",
+      session_id: "browser-1",
+      stealth: false,
+      timeout_seconds: 900,
+      webdriver_ws_url: "wss://kernel.test/webdriver",
+    });
+
+    const listed = await manageBrowsers.execute(
+      { action: "list" },
+      workerContext
+    );
+    await manageBrowsers.execute(
+      { action: "get", session_id: "browser-1" },
+      workerContext
+    );
+
+    expect(listed).toMatchObject({ items: [{ session_id: "browser-1" }] });
+    expect(mocks.listWorkerBrowserSessions).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      "worker-session-1"
+    );
+    expect(mocks.readBrowserSession).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      expect.objectContaining({ id: "worker-session-1" }),
+      "browser-1"
     );
   });
 

@@ -68,7 +68,7 @@ async function executeSemanticTool(
 
   const scope = await requireWorkerScope(context);
   const { sessionId, toolInput } = splitSessionInput(input);
-  await requireOwnedBrowserSession(scope, sessionId);
+  await requireOwnedBrowserSession(scope, context.session, sessionId);
   assertWorkerNotBlocked();
   if (spec.name === "browser_navigate") {
     const url = typeof toolInput.url === "string" ? toolInput.url : "";

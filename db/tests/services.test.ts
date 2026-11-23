@@ -119,12 +119,14 @@ describe("database services", () => {
     expect(
       await browsers.readBrowserSession(bob, "browser-alice")
     ).toBeUndefined();
-    expect(await browsers.listBrowserSessions(alice)).toHaveLength(1);
     expect(
       await browsers.listWorkerBrowserSessions(alice, "worker-alice")
     ).toHaveLength(1);
     expect(
       await browsers.listWorkerBrowserSessions(bob, "worker-alice")
+    ).toEqual([]);
+    expect(
+      await browsers.listWorkerBrowserSessions(alice, "worker-other")
     ).toEqual([]);
     expect(await browsers.deleteBrowserSession(bob, "browser-alice")).toBe(
       false
