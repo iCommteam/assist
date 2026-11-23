@@ -41,16 +41,20 @@ describe("sign-in proxy", () => {
   });
 
   it.each([
-    "/api/site/ping",
-    "/api/site/tasks",
-    "/api/site/tasks/00000000-0000-4000-8000-000000000001",
+    ["GET", "/api/site/ping"],
+    ["POST", "/api/site/logins"],
+    ["GET", "/api/site/logins"],
+    ["DELETE", "/api/site/logins/00000000-0000-4000-8000-000000000002"],
+    ["POST", "/api/site/tasks"],
+    ["GET", "/api/site/tasks/00000000-0000-4000-8000-000000000001"],
+    ["POST", "/api/site/tasks/00000000-0000-4000-8000-000000000001/input"],
   ])(
-    "lets the site API at %s authenticate its own bearer token",
-    async (path) => {
+    "lets the site API's %s %s authenticate its own bearer token",
+    async (method, path) => {
       const response = await proxy(
         new NextRequest(`https://example.com${path}`, {
           headers: { authorization: "Bearer token" },
-          method: path === "/api/site/tasks" ? "POST" : "GET",
+          method,
         })
       );
       expect(response.headers.get("x-middleware-next")).toBe("1");
@@ -62,8 +66,11 @@ describe("sign-in proxy", () => {
     "/api/site",
     "/api/site/",
     "/api/site/other",
+    "/api/site/logins/",
+    "/api/site/logins/one/two",
     "/api/site/tasks/",
     "/api/site/tasks/one/two",
+    "/api/site/tasks/one/input/two",
     "/api/site/pingx",
     "/api/trpc/vault.list",
   ])("keeps the sign-in redirect for %s", async (path) => {

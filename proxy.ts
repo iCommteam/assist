@@ -14,7 +14,8 @@ const publicPaths = new Set([
 // The site API authenticates each call by bearer token and never reads
 // cookies, so it skips the sign-in redirect and the Origin check. Only its
 // exact routes match.
-const siteApiPath = /^\/api\/site\/(?:ping|tasks|tasks\/[^/]+)$/u;
+const siteApiPath =
+  /^\/api\/site\/(?:ping|logins(?:\/[^/]+)?|tasks(?:\/[^/]+(?:\/input)?)?)$/u;
 
 const safeMethods = new Set(["GET", "HEAD"]);
 
