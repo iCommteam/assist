@@ -13,6 +13,7 @@ import {
 import { z } from "zod";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import { isSiteCodeQuestion } from "@shared/identity/site-code/question";
+import { siteTaskLifetimeMs } from "@shared/identity/site-task/lifetime";
 import {
   siteTaskEndToolName,
   siteTaskResultSchema,
@@ -35,8 +36,6 @@ const endedTaskSchema = z.object({
   type: z.literal("call.settled"),
 });
 
-// No site task stays open longer than this, also while it waits for a code.
-export const siteTaskLifetimeMs = 45 * 60_000;
 const repeatedCodeText =
   "The code sent before could not be used, so a new one is needed.";
 const maxQuestionLength = 300;

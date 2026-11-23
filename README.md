@@ -138,148 +138,236 @@ upper-case suffix that becomes the site's name:
 A site works inside its owner's personal workspace, with the owner's tools,
 and each task appears in the owner's chat history. A site task neither reads
 nor changes the owner's Personal Info or workstreams, and its browser worker
-reaches only the browsers it opened. A site can read only the tasks it
-created. The owner can follow a site task in the chat but cannot answer its
-code question there; only the site can.
+reaches only the browsers it opened. A site reads only the tasks and logins it
+created itself. The owner can follow a site task in the chat but cannot answer
+its code question there; only the site can.
 
-A site saves the logins its tasks use through the API. `POST /api/site/logins`
-keeps the sign-in page's origin, a label, the username or email, the password
-and, optionally, an authenticator setup key in the owner's vault, encrypted
-like any saved login and marked with the site that saved it; `/vault` shows
-that site beside the login, and its website where an owner's login shows a
-masked username. The username, password and key are never returned, logged or
-shown to the model. The origin is the `https:` URL of the sign-in
-page, such as `https://login.vendor.com/sign-in`, of which only the origin is
-kept; an IP address, `localhost`, a single-label host or a port is refused. A
-label has 1 to 60 characters, and a site cannot save two logins whose labels
-differ only in case.
+#### Calls
 
-A task may be pinned to one of those logins by its id, `loginId`. A site sees,
-pins and removes only the logins it saved itself, never the owner's own or
-another site's. The copy button on a login's row at `/vault` copies its id.
-Removing a login and saving it again gives it a new id and a new, signed-out
-profile, so the site must switch to the new id. The worker then sees and fills
-only that login, and its browser opens only that login's site: the login's
-host and every host under the same registrable domain, so `login.vendor.com`
-also opens `vendor.com` and `billing.vendor.com`. The password, the
+Every call sends `Authorization: Bearer <token>` and every answer carries
+`cache-control: no-store`. An error is `{"error":"<code>"}` and never echoes
+what the caller sent.
+
+| Call                                          | Answer                                                                                                                                            |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/site/ping`                          | `200 {"ok":true,"site":"teemiq"}`                                                                                                                 |
+| `POST /api/site/logins`                       | body `{"origin","label","identifier","password","totp"}`; `201 {"login":{"loginId","label","origin","hasTotp","createdAt"}}`                      |
+| `GET /api/site/logins`                        | `200 {"logins":[{"loginId","label","origin","hasTotp","createdAt"}]}`, the site's own logins, newest first                                        |
+| `DELETE /api/site/logins/{loginId}`           | `204`, also deleting the login's browser profile; `409 {"error":"login_busy"}` while a task pinned to it is open                                  |
+| `POST /api/site/tasks`                        | body `{"message","loginId"}`, `loginId` optional; `202 {"taskId"}`; `409 {"error":"login_busy","taskId"}`; `429 {"error":"rate_limited"}`         |
+| `GET /api/site/tasks?loginId=...`             | `200 {"tasks":[{"taskId","status","createdAt"}]}`, the site's tasks pinned to that login, newest first, at most 5                                 |
+| `GET /api/site/tasks/{taskId}`                | `200 {"taskId","status","question","questionId","outcome","error","reply"}`                                                                       |
+| `POST /api/site/tasks/{taskId}/input`         | body `{"text"}`, the one-time code; `202 {"taskId"}`; `409 {"error":"not_waiting"}`                                                               |
+| `POST /api/site/tasks/{taskId}/cancel`        | no body; `202 {"taskId"}`, also for a task that has already ended                                                                                 |
+| `GET /api/site/tasks/{taskId}/files`          | `200 {"files":[{"fileId","filename","mediaType","byteSize","sha256","createdAt"}]}`, oldest first                                                 |
+| `GET /api/site/tasks/{taskId}/files/{fileId}` | `200` the PDF's bytes, with `content-type: application/pdf`, `content-length` and `x-content-sha256`; `404 {"error":"not_found"}` once it is gone |
+
+A missing or wrong token answers `401 {"error":"unauthorized"}`, a site whose
+owner is not ready `403 {"error":"forbidden"}`, an invalid body or query
+`400 {"error":"invalid_request"}`, and a task, login or file that is not the
+site's, or an id of the wrong form, `404 {"error":"not_found"}`. Any call can
+answer `503 {"error":"unavailable"}` while the database or the agent runtime
+cannot be reached; it is transient, so retry later. Times are ISO 8601 UTC
+with milliseconds, such as `2026-11-23T10:00:00.000Z`.
+
+#### Logins
+
+A site saves the logins its tasks use. `POST /api/site/logins` keeps a login
+in the owner's vault, encrypted like any saved login and marked with the site
+that saved it; `/vault` shows "Saved by" that site beside it, and its website
+where an owner's login shows a masked username, and the copy button on its row
+copies its id. The username, password and key are never returned, logged, put
+in an error or shown to the model.
+
+- `origin`: the `https:` URL of the sign-in page, such as
+  `https://login.vendor.com/sign-in`, of which only the origin is kept;
+  surrounding spaces are trimmed. Another scheme, an IP address, `localhost` or
+  any `*.localhost` host, a single-label host, a bare public suffix such as
+  `co.uk`, a trailing dot, a port (also `:443`), a username or password in the
+  URL, a control character, or more than 2048 characters answers
+  `invalid_request`.
+- `label`: 1 to 60 characters once trimmed, with no control characters. A
+  second login of the site whose label differs only in case answers
+  `409 {"error":"duplicate_label"}`; this holds within one running service.
+- `identifier`: 1 to 200 characters once trimmed. `password`: 1 to 500
+  characters, kept as sent. Lengths count UTF-16 code units, so an emoji counts
+  as two.
+- `totp`: optional, an authenticator app's base32 setup key or its
+  `otpauth://totp/` link, passed as the site received it. A blank string or
+  `null` saves no key (`hasTotp` false); a key that cannot be read answers
+  `400 {"error":"invalid_totp"}`; anything but a string, or more than 2000
+  characters, answers `invalid_request`.
+- A body over 16 KB answers `invalid_request`.
+
+`GET /api/site/logins` lists only the logins the site saved. `DELETE` removes
+one and its Kernel browser profile, never the owner's own logins or another
+site's (those answer 404). While one of the site's five newest tasks pinned to
+the login runs or waits for a code, it answers `409 {"error":"login_busy"}`;
+a task past its 45 minutes is cancelled first and no longer counts. A start and
+a delete for the same login run one at a time. Removing a login and saving it
+again gives it a new id and a new, signed-out profile.
+
+#### Tasks pinned to a login
+
+A task may be pinned to one login by its `loginId`, which must be a login this
+site saved; any other id, the owner's own logins included, answers
+`invalid_request`. The worker then sees and fills only that login, and its
+browser opens only:
+
+- the login's host and every host under the same registrable domain, so
+  `login.vendor.com` also opens `vendor.com` and `billing.vendor.com`; a
+  private suffix counts as a public one, so `acme.myshopify.com` does not open
+  the other shops there;
+- Stripe's hosted invoice pages, each exact host only: `invoice.stripe.com`,
+  `pay.stripe.com`, `files.stripe.com` and `billing.stripe.com`, since many
+  suppliers bill through Stripe.
+
+Both Chrome's URL policy and every tool that opens or fetches a URL enforce
+this; Amazon sites stay blocked for every task. The password, the
 authenticator code and a relayed code are filled only on the exact origin the
 login was saved with, over https for a relayed code, so save the origin of the
-sign-in form itself, such as `https://login.vendor.com`. A portal whose
-sign-in or invoices live on another registrable domain, such as an identity
-provider or a hosted billing page, cannot be used yet. A task without a pin
-sees no saved login, and its browsers keep no cookies at all.
+sign-in form itself, such as `https://login.vendor.com`. A portal whose sign-in
+lives on another registrable domain, such as a separate identity provider,
+cannot be used. A task without a pin sees no saved login, its browsers keep no
+cookies, and it cannot save files.
 
 A pinned task's browsers keep their cookies in a Kernel profile of that login
 alone, so two accounts on one portal never share a session, and different
 logins can sign in at the same time. A sign-in made from the owner's chat is
 saved to the workspace profile instead, so a login's first pinned task starts
-signed out and signs in itself. Removing the login, at `/vault` or through the
-API, also deletes its profile; the API keeps a login while a task of the site
-pinned to it still runs or waits for a code. A login runs one task at a time:
-while a task of the site pinned to it runs or waits for a code, another start
-for that `loginId` answers `409 {"error":"login_busy","taskId":"..."}` with
-the open task's id. `GET /api/site/tasks?loginId=...` lists the site's five
-newest tasks of a login with their status, so a site that lost the answer to a
-start can find the task.
+signed out and signs in itself.
 
-A saved login with a password may also hold an authenticator app's setup key:
-the vault form takes the key or the `otpauth://totp/` link a site shows during
-setup, and keeps it encrypted with the password. When a sign-in asks for the
-app's code, the worker's `fill_totp_from_vault` computes the current code on
-the server and types it into the focused code field; the model never sees the
-key or the code. An authenticator code the vault cannot fill ends the task.
+A login runs one task at a time: while one of the site's five newest tasks
+pinned to it runs or waits for a code, another start for that `loginId`
+answers `409 {"error":"login_busy","taskId":"..."}` with the open task's id.
+`GET /api/site/tasks?loginId=...` lists those five tasks with their status, so
+a site that lost the answer to a start can find the task; an unknown or
+foreign `loginId` lists none, and a missing one, or one over 200 characters,
+answers `invalid_request`. A site may start 10 tasks in any 10 minutes; the
+next start answers `429 {"error":"rate_limited"}` with `Retry-After` in
+seconds, the count resets when the service restarts, and a `login_busy` or
+`invalid_request` start does not count. A start that answered 503 may still
+run: list the login's tasks before starting it again.
 
-A pinned task may pause for one thing only: a one-time code the login's
-website sent by email or text message. The worker's `fill_code_from_site`
-asks the site for it, and the task status turns `awaiting-input` with a
-`questionId` and the question, such as `Enter the one-time code that
-login.vendor.com just sent by email for the saved login "Vendor".`. The site
-posts the code to the task's `input`; the API seals it before eve sees it, and
-only the worker's fill step opens it and types it into the code field, one
-character per box when the field is split, so no model, log, trace or eve
-record holds the code itself. A `202` means the code reached the task, not
-that the website accepted it. When the website refuses it or it cannot be
-filled, the worker may ask once more: the status turns `awaiting-input` again
-with a new `questionId` and a question that starts `The code sent before could
-not be used`. Treat each new `questionId` as a new request for a code. A code
-that does not arrive within 20 minutes ends the wait, the worker deletes the
-browser and the task fails with `code_failed` or `timed_out`, never
-`completed`; a site task's browsers idle out after 30 minutes, so they outlive
-the wait.
+#### Status
 
-A task has 45 minutes. One whose turn still runs or waits for a code after
-that, or ended later, reads `failed` with `timed_out`, and the API cancels it
-when it next reads it, lists it or starts another task for its login. A site
-stops a task itself with `POST /api/site/tasks/{taskId}/cancel`: a running or
-waiting task then reads `failed` with `cancelled` within moments; a task that
-has ended is left as it is. Cancelling does not delete the task's browser,
-which idles out after 30 minutes; while it was saving the login's sign-in, a
-next task of that login that must sign in fails until then.
+`GET /api/site/tasks/{taskId}` follows the turn the site started; a message
+the owner adds in the chat starts a later turn that does not change it. Poll
+a running task every few seconds.
+
+- `status`: `running`, `awaiting-input`, `completed` or `failed`.
+- `question` and `questionId`: set only while `awaiting-input`; the question
+  is one line of plain text of at most 300 characters.
+- `outcome`: set only while `completed`: `files` when the task keeps at least
+  one saved file, `nothing_found` otherwise. It is counted from the files the
+  task stored, never from what the agent wrote. After a file's 7 days it is
+  gone, so an older task that saved files reads `nothing_found`.
+- `error`: set only while `failed`, one of these codes:
+  - `login_failed`: the website refused the saved username or password.
+  - `code_failed`: a code was wrong or expired, or no code arrived in time.
+  - `blocked`: the website wants something only a person can do, such as a
+    CAPTCHA, a bot check, a device approval, a passkey or a new-device email
+    link, or the task needs a sign-in it has no pinned login for.
+  - `off_site`: what the task needs, such as the invoice file, is on a website
+    the login's fence does not open.
+  - `timed_out`: the task passed its 45 minutes, or its wait for a code ran
+    out.
+  - `usage_limit`: the task reached the $10 usage limit's continue prompt.
+  - `needs_person`: the task stopped at a request a site cannot answer, such
+    as a tool approval or any question other than the code.
+  - `cancelled`: the site, or the owner in the chat, cancelled the task.
+  - `failed`: anything else, such as a runtime failure.
+- `reply`: the agent's last message as plain text, set once the site's turn
+  has completed, also when the task then reads `failed`; it is null while the
+  task runs or waits, and for a turn that was cancelled, stopped or failed in
+  the runtime. A link in it may need the owner's portal session. Do not show
+  or store it as the reason, use `outcome` and `error`.
 
 The agent ends every site task by calling `end_site_task` with one fixed
-result, and the status reads the last one the site's turn gave. A task reads
-`completed` when the agent finished the work, found it had nothing to fetch,
-or ended its turn without the tool; `outcome` then says `files` when the task
-saved at least one file and `nothing_found` otherwise, counted from the files
-it stored, never from what the agent wrote. No tool saves files yet, so every
-completed task reads `nothing_found` for now. `failed` carries one of these
-error codes:
+result: `done` or `nothing_found` complete the task, and `login_failed`,
+`code_failed`, `blocked`, `off_site` and `failed` fail it with that code. The
+last result of the site's turn counts; a turn that ends without the tool reads
+`completed`. A code question that ended without its code, because the 20
+minutes ran out, fails the task as `timed_out` unless the agent gave a failure
+code.
 
-- `login_failed`: the website refused the saved username or password.
-- `code_failed`: a code was wrong or expired, or no code arrived in time.
-- `blocked`: the website wants something only a person can do, such as a
-  CAPTCHA, a bot check, a device approval, a passkey or a new-device email
-  link, or the task needs a sign-in it has no pinned login for.
-- `off_site`: what the task needs is on a website the login's fence does not
-  open.
-- `timed_out`: the task passed its 45 minutes, or its wait for a code ran out.
-- `usage_limit`: the task reached the $10 usage limit's continue prompt.
-- `needs_person`: the task stopped at a request a site cannot answer, such as
-  a tool approval or any question other than the code.
-- `cancelled`: the site, or the owner in the chat, cancelled the task.
-- `failed`: anything else, such as a runtime failure.
+#### One-time codes
 
-Before this release `error` held a short sentence; it now holds only these
-codes. The reply is the agent's last message as plain text; do not show or
-store it as the reason, use `outcome` and `error`. A link in it may need the
-owner's portal session, so a site cannot fetch it.
-
-Every call sends `Authorization: Bearer <token>`:
-
-| Call                                   | Answer                                                                                                                                                                                           |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /api/site/ping`                   | `200 {"ok":true,"site":"teemiq"}`                                                                                                                                                                |
-| `POST /api/site/logins`                | body `{"origin","label","identifier","password","totp"}`, identifier 1 to 200 characters, password 1 to 500, `totp` optional; `201 {"login":{"loginId","label","origin","hasTotp","createdAt"}}` |
-| `GET /api/site/logins`                 | `200 {"logins":[{"loginId","label","origin","hasTotp","createdAt"}]}`, the site's own logins, newest first                                                                                       |
-| `DELETE /api/site/logins/{loginId}`    | `204`, also deleting the login's browser profile; `409 {"error":"login_busy"}` while a task pinned to it is open                                                                                 |
-| `POST /api/site/tasks`                 | body `{"message": "...", "loginId": "..."}`, message 1 to 8000 characters, `loginId` optional; `202 {"taskId": "..."}`; `409 {"error":"login_busy","taskId": "..."}`                             |
-| `GET /api/site/tasks?loginId=...`      | `200 {"tasks":[{"taskId","status","createdAt"}]}`, the site's tasks pinned to that login, newest first, at most 5                                                                                |
-| `GET /api/site/tasks/{taskId}`         | `200 {"taskId","status","question","questionId","outcome","error","reply"}`, status `running`, `awaiting-input`, `completed` or `failed`                                                         |
-| `POST /api/site/tasks/{taskId}/input`  | body `{"text": "..."}`, the one-time code, 1 to 64 characters on one line; `202 {"taskId": "..."}`                                                                                               |
-| `POST /api/site/tasks/{taskId}/cancel` | no body; `202 {"taskId": "..."}`, also for a task that has already ended                                                                                                                         |
-
-A missing or wrong token answers `401 {"error":"unauthorized"}`, an invalid
-body `400 {"error":"invalid_request"}` (also for a `loginId` that is not a
-login the site saved, and for a task list without a `loginId`), and a task or
-login that is not the site's `404 {"error":"not_found"}`. A login whose
-authenticator key cannot be read answers `400 {"error":"invalid_totp"}` (a
-blank key counts as none), and one with a label the site already used answers
-`409 {"error":"duplicate_label"}`. An input for a task that is not
+A pinned task may pause for one thing only: a one-time code the login's
+website sent by email or text message. The worker's `fill_code_from_site` asks
+the site for it, and the status turns `awaiting-input` with a `questionId` and
+the question, such as `Enter the one-time code that login.vendor.com just sent
+by email for the saved login "Vendor".`. The site posts the code to the task's
+`input` as `{"text":"..."}`, 1 to 64 characters on one line; the API seals it
+before eve sees it, and only the worker's fill step opens it and types it into
+the code field, one character per box when the field is split, so no model,
+log, trace or eve record holds the code itself. A `202` means the code reached
+the task, not that the website accepted it. An input for a task that is not
 `awaiting-input` answers `409 {"error":"not_waiting"}`, also once the code has
 been sent and while it is on its way, for a second delivery of the same code,
-and past the task's 45 minutes. A site may start 10 tasks in any 10 minutes;
-the next start answers `429 {"error":"rate_limited"}` with `Retry-After` in
-seconds, and the count resets when the service restarts; a start refused as
-`login_busy` does not count. Any call can answer `503 {"error":"unavailable"}`
-while the database or the agent runtime cannot be reached, and a cancel can
-while the task has not started yet; it is transient, so retry later. A start
-that answered 503 may still run where the site cannot read it: list the
-login's tasks before starting it again. The status follows the turn the site
-started; a message the owner adds in the chat starts a later turn that does
-not change it. `question` and `questionId` are set only while the task is
-`awaiting-input`, the question as one line of plain text of at most 300
-characters; `outcome` only while it is `completed`, and `error` only while it
-is `failed`. Poll a running task every few seconds.
+and past the task's 45 minutes, when the code is never typed. When the website
+refuses the code or it cannot be filled, the worker may ask once more: the
+status turns `awaiting-input` again with a new `questionId` and a question that
+starts `The code sent before could not be used`. Treat each new `questionId`
+as a new request for a code.
+
+An authenticator app's code is never asked for: when the login holds a setup
+key, the worker's `fill_totp_from_vault` computes the current code on the
+server and types it into the focused code field, and the model never sees the
+key or the code. An authenticator code the vault cannot fill ends the task
+with `code_failed`.
+
+#### Files
+
+A pinned task brings files back through the worker's `save_file`, the only way
+a site gets one. For an invoice job the agent signs in, opens the account's
+billing or invoices page, and saves the PDF of every invoice or receipt dated
+in the requested period, preferring the supplier's own Download PDF link and
+opening Stripe's hosted invoice page when that is where the link goes; it
+never pays, buys, upgrades, cancels, submits or changes anything else, and ends
+with `done` when it saved files or `nothing_found` when there were none.
+
+`save_file` fetches the file through the task's own signed-in browser, so the
+request carries that browser's cookies, and keeps it only when:
+
+- the URL is `https:`, on the login's fence or one of Stripe's four invoice
+  hosts; a redirect is followed, at most 5 times, only while it stays there.
+  Any other host is refused and the task ends with `off_site`;
+- the answer is a `200` whose bytes start with `%PDF-`, of at most 20 MB;
+- the task keeps fewer than 10 files and its 45 minutes have not passed.
+
+A file whose bytes the task already keeps is not stored twice. Its `filename`
+is plain: no path, no control characters, at most 200 characters, ending in
+`.pdf`, taken from the name the agent gives, else the answer's
+`Content-Disposition`, else the URL's last segment when that names a PDF, else
+`document.pdf`. `sha256` is the lower-case hex of the exact bytes. The model
+gets back only the file's id, name and size; the bytes and the URL's query
+string reach no model, log or trace.
+
+A file is kept for 7 days from when the task saved it. After that it is no
+longer listed and its download answers 404, and saves, lists and downloads
+delete expired files a batch at a time. The file routes answer only for the
+site's own tasks, like the status: another site's task answers 404.
+
+#### Lifetimes and cancelling
+
+- A task has 45 minutes. One whose turn still runs or waits for a code after
+  that, or ended later, reads `failed` with `timed_out`, and the API cancels it
+  when it next reads it, lists it or checks its login. When that cancel cannot
+  reach the agent runtime the read answers 503 instead.
+- A wait for a relayed code lasts 20 minutes; the worker then deletes its
+  browser and the task fails with `code_failed` or `timed_out`, never
+  `completed`.
+- A site task's browsers idle out after 30 minutes, so they outlive the code
+  wait.
+- A saved file is kept for 7 days.
+
+A site stops a task itself with `POST /api/site/tasks/{taskId}/cancel`: a
+running or waiting task then reads `failed` with `cancelled` within moments,
+and a task that has ended is left as it is. Before the task's turn has started
+the cancel answers 503, so retry it. Cancelling does not delete the task's
+browser, which idles out after 30 minutes; while it was saving the login's
+sign-in, a next task of that login that must sign in fails until then.
 
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to

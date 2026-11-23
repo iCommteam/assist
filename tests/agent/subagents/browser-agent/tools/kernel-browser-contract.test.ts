@@ -229,7 +229,7 @@ describe("Kernel browser contract", () => {
     expect(mocks.createBrowser).not.toHaveBeenCalled();
   });
 
-  it("fences a pinned site task's browser to its login's site", async () => {
+  it("fences a pinned site task's browser to its login's site and Stripe's invoice hosts", async () => {
     const context = siteWorkerContext({
       id: "login-1",
       origin: "https://login.vendor.com",
@@ -243,7 +243,13 @@ describe("Kernel browser contract", () => {
     expect(mocks.createBrowser).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         chrome_policy: {
-          URLAllowlist: ["vendor.com"],
+          URLAllowlist: [
+            "vendor.com",
+            ".billing.stripe.com",
+            ".files.stripe.com",
+            ".invoice.stripe.com",
+            ".pay.stripe.com",
+          ],
           URLBlocklist: ["*", ...amazonUrlBlocklist],
         },
         start_url: "https://billing.vendor.com/invoices",

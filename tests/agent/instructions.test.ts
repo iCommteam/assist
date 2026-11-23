@@ -223,6 +223,20 @@ describe("site task instructions", () => {
     );
   });
 
+  it("tells the coordinator how an invoice job brings its PDFs back and ends", async () => {
+    const selected = await evaluateDynamic(siteTask, siteContext());
+    for (const text of [
+      "A site gets files back only through the browser worker's `save_file`, which keeps a PDF for the site to download; only a task pinned to a saved login has it.",
+      "For an invoice job, a task that asks for the invoices or receipts of a period, assign the worker all of it: sign in, open the account's billing or invoices page, and for every invoice or receipt dated in the requested period save its PDF with `save_file`, preferring the supplier's own Download PDF link and opening Stripe's hosted invoice page when that is where the link goes.",
+      "Tell it to never pay, buy, upgrade, cancel, submit or change anything beyond the sign-in and the search, filter, or download that finds the documents.",
+      "Then end the task with `done` when the worker saved files, or `nothing_found` when the period has no invoice or receipt.",
+      "An invoice job without a pinned login ends with `blocked`.",
+      "Name the saved files in your reply, never their download addresses.",
+    ]) {
+      expect(selected?.content).toContain(text);
+    }
+  });
+
   it("tells the coordinator of a pinned task which result its own limits end with", async () => {
     const selected = await evaluateDynamic(siteTask, pinnedSiteContext());
     expect(selected?.content).toContain(
@@ -233,6 +247,12 @@ describe("site task instructions", () => {
     );
     expect(selected?.content).toContain(
       "Say in your reply that a pinned site task cannot do it, and end the task with `failed`."
+    );
+    expect(selected?.content).toContain(
+      "plus Stripe's hosted invoice pages on `invoice.stripe.com`, `pay.stripe.com`, `files.stripe.com` and `billing.stripe.com`."
+    );
+    expect(selected?.content).toContain(
+      "Tell the worker to save every PDF the task asks for with `save_file` and to report each saved file's name, never its address. When the worker reports that `save_file` refused a file as being on a website this task may not open, end the task with `off_site`."
     );
   });
 
@@ -300,6 +320,19 @@ describe("site task instructions", () => {
       "filled only on the exact origin the login was saved with"
     );
     expect(pinned?.content).not.toContain("and its subdomains");
+    expect(pinned?.content).toContain(
+      "the login's host and every other host under the same registrable domain, plus Stripe's hosted invoice pages on `invoice.stripe.com`, `pay.stripe.com`, `files.stripe.com` and `billing.stripe.com`."
+    );
+    for (const text of [
+      "Bring files back with `save_file`: pass a browser that is signed in and the https address of the PDF itself",
+      "For an invoice job, sign in, open the account's billing or invoices page, and for every invoice or receipt dated in the requested period save its PDF with `save_file`.",
+      "Prefer the supplier's own Download PDF link; when the link goes to Stripe's hosted invoice page, open that page and save the PDF it links to.",
+      "Never pay, buy, upgrade, cancel, submit or change anything beyond the sign-in and the search, filter, or download that finds the documents, even when a page offers it.",
+      "Then return `success` naming each saved file and its id, or saying that the period has no invoice or receipt. Never write a file's address in your result.",
+      "When `save_file` says the file is on a website this task may not open, do not try another route to it: delete the browser and return `failure` saying so.",
+    ]) {
+      expect(pinned?.content).toContain(text);
+    }
 
     expect(await evaluateDynamic(workerSiteLogin, siteContext())).toBeNull();
     expect(

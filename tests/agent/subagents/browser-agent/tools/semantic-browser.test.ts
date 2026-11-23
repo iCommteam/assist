@@ -164,6 +164,18 @@ describe("semantic browser tools", () => {
     );
     await call("browser_navigate", { url: "back" }, auth);
     expect(mocks.executeBrowserLoopTool).toHaveBeenCalledTimes(2);
+
+    // A supplier that bills through Stripe links its hosted invoice page.
+    await call(
+      "browser_navigate",
+      { url: "https://invoice.stripe.com/i/acct_1/live_abc" },
+      auth
+    );
+    expect(mocks.executeBrowserLoopTool).toHaveBeenCalledTimes(3);
+    await expect(
+      call("browser_navigate", { url: "https://dashboard.stripe.com/" }, auth)
+    ).rejects.toThrow(/dashboard\.stripe\.com is outside vendor\.com/u);
+    expect(mocks.executeBrowserLoopTool).toHaveBeenCalledTimes(3);
   });
 
   it("returns the page result after a clear page check", async () => {

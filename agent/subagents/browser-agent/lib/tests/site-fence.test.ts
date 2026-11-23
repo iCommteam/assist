@@ -5,7 +5,9 @@ import {
   amazonUrlBlocklist,
   assertNavigableUrl,
   browserChromePolicy,
+  isInsideFence,
   siteNavigationFence,
+  stripeInvoiceHosts,
   workerNavigationFence,
 } from "../policy/hosts";
 
@@ -105,15 +107,72 @@ describe("site navigation fence", () => {
     }).toThrow("The browser can open only absolute http or https URLs.");
   });
 
-  it("blocks every URL but the fenced site in Chrome, keeping the Amazon list", () => {
+  it("also opens Stripe's four invoice hosts, each exactly", () => {
+    const fence = siteNavigationFence("https://login.vendor.com");
+
+    expect(stripeInvoiceHosts).toEqual([
+      "billing.stripe.com",
+      "files.stripe.com",
+      "invoice.stripe.com",
+      "pay.stripe.com",
+    ]);
+    for (const url of [
+      "https://invoice.stripe.com/i/acct_1/live_abc?s=ap",
+      "https://pay.stripe.com/invoice/acct_1/invst_abc/pdf?s=ap",
+      "https://files.stripe.com/links/abc",
+      "https://billing.stripe.com/p/session/abc",
+      "https://INVOICE.STRIPE.COM./i/x",
+    ]) {
+      expect(() => {
+        assertNavigableUrl(url, fence);
+      }).not.toThrow();
+    }
+    for (const url of [
+      "https://stripe.com/",
+      "https://dashboard.stripe.com/invoices",
+      "https://checkout.stripe.com/c/pay/abc",
+      "https://evil.invoice.stripe.com/",
+      "https://invoice.stripe.com.evil.com/",
+      "https://pay.stripe.co/",
+    ]) {
+      expect(() => {
+        assertNavigableUrl(url, fence);
+      }).toThrow(
+        /is outside vendor\.com, the only site this task may open besides Stripe's invoice pages/u
+      );
+    }
+    expect(isInsideFence("pay.stripe.com", fence)).toBe(true);
+    expect(isInsideFence("Billing.Vendor.com", fence)).toBe(true);
+    expect(isInsideFence("connect.stripe.com", fence)).toBe(false);
+  });
+
+  it("opens no Stripe host for a login on Amazon, and none without a pin", () => {
+    const amazon = siteNavigationFence("https://sellercentral.amazon.com");
+
+    expect(amazon.hosts).toEqual([]);
+    expect(isInsideFence("invoice.stripe.com", amazon)).toBe(false);
+    expect(() => {
+      assertNavigableUrl("https://invoice.stripe.com/i/x", amazon);
+    }).toThrow(
+      /^invoice\.stripe\.com is outside amazon\.com, the only site this task may open\. /u
+    );
+  });
+
+  it("blocks every URL but the fenced site and Stripe's invoice hosts in Chrome, keeping the Amazon list", () => {
+    const stripeFilters = [
+      ".billing.stripe.com",
+      ".files.stripe.com",
+      ".invoice.stripe.com",
+      ".pay.stripe.com",
+    ];
     expect(
       browserChromePolicy(siteNavigationFence("https://login.vendor.com"))
     ).toEqual({
-      URLAllowlist: ["vendor.com"],
+      URLAllowlist: ["vendor.com", ...stripeFilters],
       URLBlocklist: ["*", ...amazonUrlBlocklist],
     });
     expect(browserChromePolicy(siteNavigationFence("https://co.uk"))).toEqual({
-      URLAllowlist: [".co.uk"],
+      URLAllowlist: [".co.uk", ...stripeFilters],
       URLBlocklist: ["*", ...amazonUrlBlocklist],
     });
     // An allowlisted Amazon domain would tie with its blocklist entry and win.

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
@@ -27,9 +28,14 @@ import {
   findSiteTaskSession,
   isAnySiteTaskSession,
   isSiteTaskSession,
+  listSiteTaskFiles,
   listSiteTasksOfLogin,
+  purgeExpiredTaskFiles,
+  readSiteTaskFile,
   recordSiteTask,
   resolveSiteOwner,
+  saveSiteTaskFile,
+  siteTaskFileRoom,
 } from "@db/services/sites";
 import {
   deleteSiteLogin,
@@ -251,6 +257,253 @@ describe("site task files", () => {
     await expect(countSiteTaskFiles("teemiq", other, task)).resolves.toBe(0);
     const empty = await recordSiteTask("teemiq", owner, "wrun_f3", "login-f");
     await expect(countSiteTaskFiles("teemiq", owner, empty)).resolves.toBe(0);
+
+    // An expired file no longer counts, even before it is purged.
+    await database
+      .update(schema.taskFiles)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.taskFiles.taskId, task));
+    await expect(countSiteTaskFiles("teemiq", owner, task)).resolves.toBe(0);
+    await database
+      .delete(schema.taskFiles)
+      .where(eq(schema.taskFiles.taskId, task));
+  });
+});
+
+function pdfOf(text: string) {
+  return Buffer.from(`%PDF-1.7 ${text}`);
+}
+
+function saved(content: Buffer, filename = "invoice.pdf") {
+  return {
+    content,
+    filename,
+    sha256: createHash("sha256").update(content).digest("hex"),
+  };
+}
+
+describe("saving site task files", () => {
+  beforeEach(async () => {
+    await ensureScope(owner);
+    await ensureScope(other);
+  });
+
+  it("keeps a task's PDF for seven days, once per distinct file", async () => {
+    const task = await recordSiteTask("teemiq", owner, "wrun_s1", "login-s");
+    const first = pdfOf("first");
+
+    await expect(siteTaskFileRoom("teemiq", owner, "wrun_s1")).resolves.toBe(
+      "open"
+    );
+    const saving = await saveSiteTaskFile(
+      "teemiq",
+      owner,
+      "wrun_s1",
+      saved(first, "October.pdf")
+    );
+    if (!saving.ok) throw new Error("The file was not saved.");
+    expect(saving.alreadySaved).toBe(false);
+    expect(saving.file).toMatchObject({
+      byteSize: first.byteLength,
+      filename: "October.pdf",
+    });
+    expect(saving.file.fileId).toMatch(/^[0-9a-f-]{36}$/u);
+    const [row] = await database
+      .select()
+      .from(schema.taskFiles)
+      .where(eq(schema.taskFiles.taskId, task));
+    expect(Buffer.from(row?.content ?? []).equals(first)).toBe(true);
+    expect(row).toMatchObject({
+      mediaType: "application/pdf",
+      site: "teemiq",
+      workspaceId: owner.workspaceId,
+    });
+    expect(
+      (row?.expiresAt.getTime() ?? 0) - (row?.createdAt.getTime() ?? 0)
+    ).toBe(7 * 24 * 60 * 60_000);
+
+    // The same bytes under another name are the file already kept.
+    await expect(
+      saveSiteTaskFile("teemiq", owner, "wrun_s1", saved(first, "Copy.pdf"))
+    ).resolves.toEqual({ ...saving, alreadySaved: true });
+    await expect(countSiteTaskFiles("teemiq", owner, task)).resolves.toBe(1);
+  });
+
+  it("keeps at most ten files per task, also when saves race", async () => {
+    const task = await recordSiteTask("teemiq", owner, "wrun_s2", "login-s");
+    for (const index of Array.from({ length: 9 }, (_, value) => value)) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Saved one after another, as a worker does.
+      await saveSiteTaskFile(
+        "teemiq",
+        owner,
+        "wrun_s2",
+        saved(pdfOf(String(index)))
+      );
+    }
+
+    const racing = await Promise.all([
+      saveSiteTaskFile("teemiq", owner, "wrun_s2", saved(pdfOf("tenth"))),
+      saveSiteTaskFile("teemiq", owner, "wrun_s2", saved(pdfOf("eleventh"))),
+    ]);
+    expect(racing.filter(({ ok }) => ok)).toHaveLength(1);
+    expect(racing).toContainEqual({ ok: false, reason: "full" });
+    await expect(countSiteTaskFiles("teemiq", owner, task)).resolves.toBe(10);
+    await expect(siteTaskFileRoom("teemiq", owner, "wrun_s2")).resolves.toBe(
+      "full"
+    );
+    // A file it already keeps is still reported as kept.
+    await expect(
+      saveSiteTaskFile("teemiq", owner, "wrun_s2", saved(pdfOf("0")))
+    ).resolves.toMatchObject({ alreadySaved: true, ok: true });
+
+    const twins = await recordSiteTask("teemiq", owner, "wrun_s3", "login-s");
+    await Promise.all([
+      saveSiteTaskFile("teemiq", owner, "wrun_s3", saved(pdfOf("twin"))),
+      saveSiteTaskFile("teemiq", owner, "wrun_s3", saved(pdfOf("twin"))),
+    ]);
+    await expect(countSiteTaskFiles("teemiq", owner, twins)).resolves.toBe(1);
+  });
+
+  it("saves only to this site's open task in this workspace", async () => {
+    const task = await recordSiteTask("teemiq", owner, "wrun_s4", "login-s");
+    const file = saved(pdfOf("scoped"));
+    const closed = { ok: false, reason: "closed" };
+
+    await expect(siteTaskFileRoom("agents", owner, "wrun_s4")).resolves.toBe(
+      "closed"
+    );
+    await expect(siteTaskFileRoom("teemiq", other, "wrun_s4")).resolves.toBe(
+      "closed"
+    );
+    await expect(siteTaskFileRoom("teemiq", owner, "wrun_none")).resolves.toBe(
+      "closed"
+    );
+    await expect(
+      saveSiteTaskFile("agents", owner, "wrun_s4", file)
+    ).resolves.toEqual(closed);
+    await expect(
+      saveSiteTaskFile("teemiq", other, "wrun_s4", file)
+    ).resolves.toEqual(closed);
+
+    // Past its 45 minutes a task saves nothing more.
+    await database
+      .update(schema.siteTasks)
+      .set({ createdAt: new Date(Date.now() - 45 * 60_000 - 1000) })
+      .where(eq(schema.siteTasks.id, task));
+    await expect(siteTaskFileRoom("teemiq", owner, "wrun_s4")).resolves.toBe(
+      "closed"
+    );
+    await expect(
+      saveSiteTaskFile("teemiq", owner, "wrun_s4", file)
+    ).resolves.toEqual(closed);
+    await expect(countSiteTaskFiles("teemiq", owner, task)).resolves.toBe(0);
+  });
+
+  it("lists and reads only this site's kept files, oldest first, the list without bytes", async () => {
+    const task = await recordSiteTask("teemiq", owner, "wrun_s5", "login-s");
+    const older = pdfOf("older");
+    const newer = pdfOf("newer");
+    const a = await saveSiteTaskFile(
+      "teemiq",
+      owner,
+      "wrun_s5",
+      saved(newer, "B.pdf")
+    );
+    const b = await saveSiteTaskFile(
+      "teemiq",
+      owner,
+      "wrun_s5",
+      saved(older, "A.pdf")
+    );
+    if (!a.ok || !b.ok) throw new Error("The files were not saved.");
+    await database
+      .update(schema.taskFiles)
+      .set({ createdAt: new Date(Date.now() - 60_000) })
+      .where(eq(schema.taskFiles.id, b.file.fileId));
+
+    const listed = await listSiteTaskFiles("teemiq", owner, task);
+    expect(listed.map(({ filename }) => filename)).toEqual(["A.pdf", "B.pdf"]);
+    expect(Object.keys(listed[0] ?? {}).toSorted()).toEqual([
+      "byteSize",
+      "createdAt",
+      "fileId",
+      "filename",
+      "mediaType",
+      "sha256",
+    ]);
+    expect(listed[0]).toMatchObject({
+      byteSize: older.byteLength,
+      mediaType: "application/pdf",
+      sha256: createHash("sha256").update(older).digest("hex"),
+    });
+    const read = await readSiteTaskFile("teemiq", owner, task, b.file.fileId);
+    expect(Buffer.from(read?.content ?? []).equals(older)).toBe(true);
+    expect(read?.byteSize).toBe(older.byteLength);
+
+    await expect(listSiteTaskFiles("agents", owner, task)).resolves.toEqual([]);
+    await expect(listSiteTaskFiles("teemiq", other, task)).resolves.toEqual([]);
+    for (const [site, scope, taskId] of [
+      ["agents", owner, task],
+      ["teemiq", other, task],
+      ["teemiq", owner, "00000000-0000-4000-8000-000000000000"],
+    ] as const) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each read is checked on its own.
+      await expect(
+        readSiteTaskFile(site, scope, taskId, b.file.fileId)
+      ).resolves.toBeUndefined();
+    }
+
+    // Past its seven days a file is gone to every read, then purged.
+    await database
+      .update(schema.taskFiles)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.taskFiles.id, b.file.fileId));
+    await expect(
+      listSiteTaskFiles("teemiq", owner, task)
+    ).resolves.toMatchObject([{ filename: "B.pdf" }]);
+    await expect(
+      readSiteTaskFile("teemiq", owner, task, b.file.fileId)
+    ).resolves.toBeUndefined();
+    await purgeExpiredTaskFiles();
+    const left = await database
+      .select({ id: schema.taskFiles.id })
+      .from(schema.taskFiles)
+      .where(eq(schema.taskFiles.taskId, task));
+    expect(left).toEqual([{ id: a.file.fileId }]);
+  });
+
+  it("purges expired files a batch at a time and keeps the rest", async () => {
+    const task = await recordSiteTask("teemiq", owner, "wrun_s6", "login-s");
+    const content = pdfOf("expired");
+    const row = {
+      byteSize: content.byteLength,
+      content,
+      expiresAt: new Date(Date.now() - 1000),
+      filename: "old.pdf",
+      mediaType: "application/pdf" as const,
+      sha256: "b".repeat(64),
+      site: "teemiq",
+      taskId: task,
+      workspaceId: owner.workspaceId,
+    };
+    await database.insert(schema.taskFiles).values([
+      ...Array.from({ length: 101 }, () => row),
+      {
+        ...row,
+        expiresAt: new Date(Date.now() + 60_000),
+        filename: "kept.pdf",
+      },
+    ]);
+    const remaining = async () =>
+      database
+        .select({ filename: schema.taskFiles.filename })
+        .from(schema.taskFiles)
+        .where(eq(schema.taskFiles.taskId, task));
+
+    await purgeExpiredTaskFiles();
+    expect(await remaining()).toHaveLength(2);
+    await purgeExpiredTaskFiles();
+    expect(await remaining()).toEqual([{ filename: "kept.pdf" }]);
   });
 });
 

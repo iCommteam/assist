@@ -45,6 +45,15 @@ describe("browser benchmark live activity", () => {
         ),
       ])
     ).toBe("Securely filling saved user information");
+    expect(
+      browserBenchmarkActivity([
+        at(
+          toolRequested("call_file", "save_file"),
+          "2026-08-31T17:00:00.000Z",
+          0
+        ),
+      ])
+    ).toBe("Saving a PDF for the site");
   });
 
   it("joins calls requested on the same stored line", () => {

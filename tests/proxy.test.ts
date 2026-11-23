@@ -50,6 +50,11 @@ describe("sign-in proxy", () => {
     ["GET", "/api/site/tasks/00000000-0000-4000-8000-000000000001"],
     ["POST", "/api/site/tasks/00000000-0000-4000-8000-000000000001/input"],
     ["POST", "/api/site/tasks/00000000-0000-4000-8000-000000000001/cancel"],
+    ["GET", "/api/site/tasks/00000000-0000-4000-8000-000000000001/files"],
+    [
+      "GET",
+      "/api/site/tasks/00000000-0000-4000-8000-000000000001/files/00000000-0000-4000-8000-000000000003",
+    ],
   ])(
     "lets the site API's %s %s authenticate its own bearer token",
     async (method, path) => {
@@ -75,6 +80,10 @@ describe("sign-in proxy", () => {
     "/api/site/tasks/one/input/two",
     "/api/site/tasks/one/cancel/two",
     "/api/site/tasks/one/cancelx",
+    "/api/site/tasks/one/files/",
+    "/api/site/tasks/one/files/two/three",
+    "/api/site/tasks/one/filesx",
+    "/api/site/tasks/one/cancel/files",
     "/api/site/pingx",
     "/api/trpc/vault.list",
   ])("keeps the sign-in redirect for %s", async (path) => {

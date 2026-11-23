@@ -66,11 +66,23 @@ describe("root and worker capability boundaries", () => {
       "manage_browsers.ts",
       "personal_info.ts",
       "read_file.ts",
+      "save_file.ts",
       "semantic_browser.ts",
       "web_fetch.ts",
       "web_search.ts",
       "write_file.ts",
     ]);
+    // Only a pinned site task's worker sees it, and it fetches through Kernel.
+    const saveFile = readFileSync(`${workerTools}/save_file.ts`, "utf8");
+    expect(saveFile).toContain("defineDynamic(");
+    expect(saveFile).toContain(
+      "siteLoginOfSession(context.session.auth.initiator)"
+    );
+    expect(saveFile).toContain("requireWorkerScope(context)");
+    expect(saveFile).toContain(
+      'from "@agent/subagents/browser-agent/lib/kernel"'
+    );
+    expect(saveFile).not.toContain("new Kernel(");
     expect(existsSync(`${workerRoot}/tools/sendMessage.ts`)).toBe(false);
     expect(existsSync(`${workerRoot}/tools/request_vault_setup.ts`)).toBe(
       false

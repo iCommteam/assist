@@ -28,6 +28,20 @@ function compactJson(value: Parameters<typeof JSON.stringify>[0]) {
     : serialized;
 }
 
+type RequestedInput = Extract<
+  HookEvent,
+  { type: "call.requested" }
+>["data"]["input"];
+
+// A file's download link may carry a signed token in its query or fragment,
+// so save_file's URL is traced without them.
+function withoutUrlQuery(input: RequestedInput) {
+  const requested = z.looseObject({ url: z.string() }).safeParse(input);
+  if (!requested.success) return input;
+  const [url = ""] = requested.data.url.split(/[?#]/u);
+  return { ...requested.data, url };
+}
+
 export function traceTimelineRows(
   event: HookEvent,
   ctx: Pick<HookContext, "now" | "position" | "view">
@@ -50,7 +64,9 @@ export function traceTimelineRows(
       return [
         row(
           capability.kind === "skill" ? "Load skill" : capability.name,
-          compactJson(input)
+          compactJson(
+            capability.name === "save_file" ? withoutUrlQuery(input) : input
+          )
         ),
       ];
     }

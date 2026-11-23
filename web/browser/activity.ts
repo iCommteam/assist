@@ -31,6 +31,7 @@ const toolActivityKind = new Map<string, BrowserActivityKind>([
   ["manage_browsers", "setup"],
   // No longer offered; kept so earlier traces still classify.
   ["playwright_execute", "playwright"],
+  ["save_file", "web"],
   ["web_fetch", "web"],
   ["web_search", "web"],
 ]);

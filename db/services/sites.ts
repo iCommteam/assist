@@ -1,11 +1,16 @@
-import { and, count, desc, eq, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import { db, siteTasks, taskFiles, user } from "@db";
 import { siteOwnerEmail } from "@shared/environment/sites";
 import {
   accessScopeForUser,
   type AccessScope,
 } from "@shared/identity/access-scope";
+import { siteTaskLifetimeMs } from "@shared/identity/site-task/lifetime";
 import { isAllowedEmail } from "./auth/allowlist";
+
+const maxFilesPerTask = 10;
+// Each save, list or download deletes at most this many expired files.
+const purgeBatchSize = 100;
 
 // A site acts inside the personal workspace of its configured owner, and only
 // while that owner could sign in: listed, registered and enrolled in TOTP.
@@ -77,8 +82,8 @@ export async function listSiteTasksOfLogin(
     .limit(limit);
 }
 
-// How many files a task of this site saved, kept or past their seven days
-// until they are purged.
+// How many files a task of this site saved that are still kept, so the
+// outcome agrees with the file list.
 export async function countSiteTaskFiles(
   site: string,
   scope: AccessScope,
@@ -91,10 +96,174 @@ export async function countSiteTaskFiles(
       and(
         eq(taskFiles.taskId, taskId),
         eq(taskFiles.site, site),
-        eq(taskFiles.workspaceId, scope.workspaceId)
+        eq(taskFiles.workspaceId, scope.workspaceId),
+        isKept()
       )
     );
   return files?.files ?? 0;
+}
+
+// A file is kept for seven days from its save, by the database's clock. An
+// expired file is gone to every read before it is purged.
+function isKept() {
+  return gt(taskFiles.expiresAt, sql`now()`);
+}
+
+export async function purgeExpiredTaskFiles() {
+  await db.delete(taskFiles).where(
+    inArray(
+      taskFiles.id,
+      db
+        .select({ id: taskFiles.id })
+        .from(taskFiles)
+        .where(lte(taskFiles.expiresAt, sql`now()`))
+        .limit(purgeBatchSize)
+    )
+  );
+}
+
+// The task a site session may still save files to: one this site created in
+// this workspace, whose lifetime has not run out. The worker passes its root
+// session, which is the task's session.
+function savingTask(site: string, scope: AccessScope, sessionId: string) {
+  return and(
+    eq(siteTasks.sessionId, sessionId),
+    eq(siteTasks.site, site),
+    eq(siteTasks.workspaceId, scope.workspaceId),
+    gt(siteTasks.createdAt, new Date(Date.now() - siteTaskLifetimeMs))
+  );
+}
+
+// Whether a session's task may save one more file, checked before the
+// download; the save checks again.
+export async function siteTaskFileRoom(
+  site: string,
+  scope: AccessScope,
+  sessionId: string
+) {
+  const [task] = await db
+    .select({ files: count(taskFiles.id) })
+    .from(siteTasks)
+    .leftJoin(taskFiles, and(eq(taskFiles.taskId, siteTasks.id), isKept()))
+    .where(savingTask(site, scope, sessionId))
+    .groupBy(siteTasks.id)
+    .limit(1);
+  if (!task) return "closed" as const;
+  return task.files >= maxFilesPerTask ? ("full" as const) : ("open" as const);
+}
+
+// Saves a PDF the session's task fetched. The task row is locked, so two
+// saves at once neither pass the cap nor store the same bytes twice; a file
+// with the same bytes already kept for the task is returned instead.
+export async function saveSiteTaskFile(
+  site: string,
+  scope: AccessScope,
+  sessionId: string,
+  file: { content: Buffer; filename: string; sha256: string }
+) {
+  return db.transaction(async (transaction) => {
+    const [task] = await transaction
+      .select({ id: siteTasks.id })
+      .from(siteTasks)
+      .where(savingTask(site, scope, sessionId))
+      .limit(1)
+      .for("update");
+    if (!task) return { ok: false as const, reason: "closed" as const };
+    const kept = await transaction
+      .select({
+        byteSize: taskFiles.byteSize,
+        fileId: taskFiles.id,
+        filename: taskFiles.filename,
+        sha256: taskFiles.sha256,
+      })
+      .from(taskFiles)
+      .where(and(eq(taskFiles.taskId, task.id), isKept()));
+    const same = kept.find(({ sha256 }) => sha256 === file.sha256);
+    if (same) {
+      const { byteSize, fileId, filename } = same;
+      return {
+        alreadySaved: true,
+        file: { byteSize, fileId, filename },
+        ok: true as const,
+      };
+    }
+    if (kept.length >= maxFilesPerTask) {
+      return { ok: false as const, reason: "full" as const };
+    }
+    const [saved] = await transaction
+      .insert(taskFiles)
+      .values({
+        byteSize: file.content.byteLength,
+        content: file.content,
+        filename: file.filename,
+        mediaType: "application/pdf",
+        sha256: file.sha256,
+        site,
+        taskId: task.id,
+        workspaceId: scope.workspaceId,
+      })
+      .returning({
+        byteSize: taskFiles.byteSize,
+        fileId: taskFiles.id,
+        filename: taskFiles.filename,
+      });
+    if (!saved) throw new Error("The task file was not saved.");
+    return { alreadySaved: false, file: saved, ok: true as const };
+  });
+}
+
+// The kept files of a task of this site, oldest first, without their bytes.
+export async function listSiteTaskFiles(
+  site: string,
+  scope: AccessScope,
+  taskId: string
+) {
+  return db
+    .select({
+      byteSize: taskFiles.byteSize,
+      createdAt: taskFiles.createdAt,
+      fileId: taskFiles.id,
+      filename: taskFiles.filename,
+      mediaType: taskFiles.mediaType,
+      sha256: taskFiles.sha256,
+    })
+    .from(taskFiles)
+    .where(
+      and(
+        eq(taskFiles.taskId, taskId),
+        eq(taskFiles.site, site),
+        eq(taskFiles.workspaceId, scope.workspaceId),
+        isKept()
+      )
+    )
+    .orderBy(asc(taskFiles.createdAt), asc(taskFiles.id));
+}
+
+// One kept file of a task of this site, with its bytes, or undefined.
+export async function readSiteTaskFile(
+  site: string,
+  scope: AccessScope,
+  taskId: string,
+  fileId: string
+) {
+  const [file] = await db
+    .select({
+      byteSize: taskFiles.byteSize,
+      content: taskFiles.content,
+      sha256: taskFiles.sha256,
+    })
+    .from(taskFiles)
+    .where(
+      and(
+        eq(taskFiles.id, fileId),
+        eq(taskFiles.taskId, taskId),
+        eq(taskFiles.site, site),
+        eq(taskFiles.workspaceId, scope.workspaceId),
+        isKept()
+      )
+    )
+    .limit(1);
+  return file;
 }
 
 // The session and creation time of a task this site created in this

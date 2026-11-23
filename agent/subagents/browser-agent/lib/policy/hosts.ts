@@ -82,18 +82,34 @@ export function amazonPolicyRefusal(host: string) {
   return `${host} is an Amazon site. Amazon sites, including Seller Central, Amazon Ads and Vendor Central, are blocked by policy for now, so iCommAssist cannot open them. Do not try another route to the site. Finish the parts of the assignment that do not need it, or return status "failure" with this blocker.`;
 }
 
+// Many suppliers bill through Stripe, whose hosted invoice page and its PDF
+// live on these hosts. A pinned site task may also open each of them, that
+// exact host alone.
+export const stripeInvoiceHosts: readonly string[] = [
+  "billing.stripe.com",
+  "files.stripe.com",
+  "invoice.stripe.com",
+  "pay.stripe.com",
+];
+
 // A site task pinned to one saved login may open only that login's site: the
-// login's host and every host under its registrable domain. Private suffixes
-// count as public ones, so a portal on shop.myshopify.com does not open every
-// other shop there. An IP address, or a host with no registrable domain such as
-// localhost or a bare public suffix, allows only itself.
+// login's host and every host under its registrable domain, plus Stripe's
+// invoice hosts. Private suffixes count as public ones, so a portal on
+// shop.myshopify.com does not open every other shop there. An IP address, or a
+// host with no registrable domain such as localhost or a bare public suffix,
+// allows only itself. A login on Amazon opens nothing at all.
 export function siteNavigationFence(loginOrigin: string) {
   const host = normalizedHost(new URL(loginOrigin).hostname);
   const { domain, isIp } = parse(host, { allowPrivateDomains: true });
-  if (isIp) return { domain: host, subdomains: false, urlFilter: host };
-  if (!domain)
-    return { domain: host, subdomains: false, urlFilter: `.${host}` };
-  return { domain, subdomains: true, urlFilter: domain };
+  const site = isIp
+    ? { domain: host, subdomains: false, urlFilter: host }
+    : domain
+      ? { domain, subdomains: true, urlFilter: domain }
+      : { domain: host, subdomains: false, urlFilter: `.${host}` };
+  return {
+    ...site,
+    hosts: isAmazonHost(site.domain) ? [] : stripeInvoiceHosts,
+  };
 }
 
 type SiteNavigationFence = ReturnType<typeof siteNavigationFence>;
@@ -109,13 +125,19 @@ export function workerNavigationFence(
 
 // Chrome's policy for a new browser. A fenced browser blocks every URL but its
 // site's (a more specific filter wins, and a tie goes to the allowlist), so it
-// never allowlists an Amazon domain.
+// never allowlists an Amazon domain. A leading dot matches that host alone.
 export function browserChromePolicy(fence: SiteNavigationFence | undefined) {
   if (!fence) return { URLBlocklist: amazonUrlBlocklist };
   const blocklist = ["*", ...amazonUrlBlocklist];
   return isAmazonHost(fence.domain)
     ? { URLBlocklist: blocklist }
-    : { URLAllowlist: [fence.urlFilter], URLBlocklist: blocklist };
+    : {
+        URLAllowlist: [
+          fence.urlFilter,
+          ...fence.hosts.map((host) => `.${host}`),
+        ],
+        URLBlocklist: blocklist,
+      };
 }
 
 // Throws the policy refusal for a URL a tool is about to open. Only web pages
@@ -133,17 +155,22 @@ export function assertNavigableUrl(url: string, fence?: SiteNavigationFence) {
   if (isAmazonHost(parsed.hostname)) {
     throw new Error(amazonPolicyRefusal(parsed.hostname));
   }
-  if (fence && !isInsideFence(normalizedHost(parsed.hostname), fence)) {
+  if (fence && !isInsideFence(parsed.hostname, fence)) {
+    const besides =
+      fence.hosts.length > 0 ? " besides Stripe's invoice pages" : "";
     throw new Error(
-      `${parsed.hostname} is outside ${fence.domain}, the only site this task may open. Do not try another route to it. Finish the parts of the assignment that stay on ${fence.domain}, or return status "failure" with this blocker.`
+      `${parsed.hostname} is outside ${fence.domain}, the only site this task may open${besides}. Do not try another route to it. Finish the parts of the assignment that stay on ${fence.domain}, or return status "failure" with this blocker.`
     );
   }
 }
 
-function isInsideFence(host: string, fence: SiteNavigationFence) {
+// Whether a fenced task may open a host; Amazon is refused before this.
+export function isInsideFence(hostname: string, fence: SiteNavigationFence) {
+  const host = normalizedHost(hostname);
   return (
     host === fence.domain ||
-    (fence.subdomains && host.endsWith(`.${fence.domain}`))
+    (fence.subdomains && host.endsWith(`.${fence.domain}`)) ||
+    fence.hosts.includes(host)
   );
 }
 

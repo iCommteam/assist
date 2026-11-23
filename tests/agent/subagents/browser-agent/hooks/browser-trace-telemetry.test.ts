@@ -352,6 +352,46 @@ describe("trace event persistence", () => {
     );
   });
 
+  it("traces a saved file's URL without its query or fragment", async () => {
+    await fire(
+      "*",
+      requested("call-1", "save_file", {
+        browserSessionId: "browser-1",
+        filename: "October.pdf",
+        url: "https://pay.stripe.com/invoice/acct_1/invst_2/pdf?s=ap&token=signed-secret#page=2",
+      }),
+      contextAt("2026-08-31T00:00:02.000Z", {
+        position: { index: 0, line: 4 },
+      })
+    );
+    await fire(
+      "*",
+      requested("call-2", "browser_navigate", {
+        url: "https://billing.vendor.example/invoices?period=2026-10",
+      }),
+      contextAt("2026-08-31T00:00:03.000Z", {
+        position: { index: 0, line: 5 },
+      })
+    );
+
+    const [[, , saved] = [], [, , navigated] = []] =
+      mocks.recordBrowserTraceEvents.mock.calls;
+    expect(saved).toEqual([
+      expect.objectContaining({
+        detail:
+          '{"url":"https://pay.stripe.com/invoice/acct_1/invst_2/pdf","browserSessionId":"browser-1","filename":"October.pdf"}',
+        label: "save_file",
+      }),
+    ]);
+    // Other tools' inputs are traced as before.
+    expect(navigated).toEqual([
+      expect.objectContaining({
+        detail:
+          '{"url":"https://billing.vendor.example/invoices?period=2026-10"}',
+      }),
+    ]);
+  });
+
   it("labels durable workflow tool calls and skill loads in the trace", async () => {
     await fire(
       "*",

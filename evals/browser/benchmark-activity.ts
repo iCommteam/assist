@@ -18,6 +18,7 @@ const toolActivity = new Map<string, string>([
   ["list_vault", "Checking saved user information"],
   ["browser_navigate", "Opening a page"],
   ["manage_browsers", "Starting the browser"],
+  ["save_file", "Saving a PDF for the site"],
   ["web_fetch", "Reading a public source"],
   ["web_search", "Searching for live options"],
 ]);

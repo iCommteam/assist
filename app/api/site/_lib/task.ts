@@ -8,11 +8,11 @@ import {
   listSiteTasksOfLogin,
 } from "@db/services/sites";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { siteTaskLifetimeMs } from "@shared/identity/site-task/lifetime";
 import { siteError } from "@app/api/site/_lib/site-auth";
 import { siteEveClient } from "@app/api/site/_lib/eve";
 import {
   isOpen,
-  siteTaskLifetimeMs,
   siteTaskState,
   siteTaskStatus,
   type SiteTaskState,
