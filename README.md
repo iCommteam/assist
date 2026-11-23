@@ -135,9 +135,11 @@ upper-case suffix that becomes the site's name:
   authenticator enrolled; otherwise every call from the site answers 403 and
   the reason goes to the server log.
 
-A site works inside its owner's personal workspace, with the owner's tools,
-memory and vault, and each task appears in the owner's chat history. A site
-can read only the tasks it created. Every call sends
+A site works inside its owner's personal workspace, with the owner's tools and
+vault, and each task appears in the owner's chat history. A site task neither
+reads nor changes the owner's Personal Info or workstreams, and its browser
+worker reaches only the browsers it opened. A site can read only the tasks it
+created. Every call sends
 `Authorization: Bearer <token>`:
 
 | Call                           | Answer                                                                                                 |
@@ -148,9 +150,11 @@ can read only the tasks it created. Every call sends
 
 A missing or wrong token answers `401 {"error":"unauthorized"}`, an invalid
 body `400 {"error":"invalid_request"}`, and a task that is not the site's
-`404 {"error":"not_found"}`. The reply is the agent's final message; a failed
-task carries a short error without internal details. Poll a running task
-every few seconds.
+`404 {"error":"not_found"}`. A site may start 10 tasks in any 10 minutes; the
+next start answers `429 {"error":"rate_limited"}` with `Retry-After` in
+seconds, and the count resets when the service restarts. The reply is the
+agent's final message; a failed task carries a short error without internal
+details. Poll a running task every few seconds.
 
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to
