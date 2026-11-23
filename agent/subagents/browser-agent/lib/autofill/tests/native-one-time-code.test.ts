@@ -1,6 +1,7 @@
 import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { trackToolTab } from "@agent/subagents/browser-agent/lib/tool-tabs";
 import { assertKernelOneTimeCodeFocus, fillKernelOneTimeCode } from "../native";
 import {
   frameOriginExpression,
@@ -60,6 +61,8 @@ let pageOrigin = "https://login.vendor.example";
 let frameOrigin = pageOrigin;
 let controls: NativeLoginControlDescriptor[] = [];
 let inputs: CodeInput[] = [];
+// Tabs opened after the sign-in page, newest last.
+let laterTabs: { targetId: string; type: string; url: string }[] = [];
 
 class BrowserSocket extends EventTarget {
   constructor() {
@@ -78,6 +81,7 @@ class BrowserSocket extends EventTarget {
         result = {
           targetInfos: [
             { targetId: "page-1", type: "page", url: `${pageOrigin}/mfa` },
+            ...laterTabs,
           ],
         };
         break;
@@ -195,6 +199,7 @@ beforeEach(() => {
   pageOrigin = "https://login.vendor.example";
   frameOrigin = pageOrigin;
   inputs = [new CodeInput(), new CodeInput()];
+  laterTabs = [];
   controls = [
     control({ index: 0, name: "password", type: "password" }),
     control({ autocomplete: "one-time-code", focused: true, index: 1 }),
@@ -243,6 +248,27 @@ describe("native one-time code injection", () => {
     );
     expect(filledFunctions()).toEqual([]);
     expect(inputs.map(({ value }) => value)).toEqual(["", ""]);
+  });
+
+  it("passes over a newer tab another tool opened for itself", async () => {
+    laterTabs = [
+      {
+        targetId: "download-tab",
+        type: "page",
+        url: `${pageOrigin}/invoices/1.pdf`,
+      },
+    ];
+    const forget = trackToolTab("download-tab");
+    try {
+      await expect(fill()).resolves.toBeUndefined();
+    } finally {
+      forget();
+    }
+
+    expect(
+      commands.find(({ method }) => method === "Target.attachToTarget")?.params
+    ).toEqual({ flatten: true, targetId: "page-1" });
+    expect(inputs[1]?.value).toBe("287082");
   });
 
   it("checks the focused code field without writing into it", async () => {

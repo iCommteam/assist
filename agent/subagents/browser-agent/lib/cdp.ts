@@ -21,6 +21,7 @@ const cdpMessageSchema = z.object({
 });
 
 const commandTimeoutMs = 15_000;
+const closedMessage = "The Kernel CDP connection closed.";
 
 export interface CdpEvent {
   readonly method: string;
@@ -42,6 +43,10 @@ export class CdpConnection {
     }
   >();
   #nextId = 1;
+  // A closed socket drops what is sent on it without an error, so a command
+  // sent once the connection has ended fails at once instead of waiting out
+  // its timeout.
+  #ended = false;
   readonly closed: Promise<void>;
 
   private constructor(
@@ -53,7 +58,7 @@ export class CdpConnection {
     });
     this.closed = new Promise((resolve) => {
       socket.addEventListener("close", () => {
-        this.#rejectPending(new Error("The Kernel CDP connection closed."));
+        this.#end();
         resolve();
       });
     });
@@ -104,6 +109,9 @@ export class CdpConnection {
     sessionId?: string,
     timeoutMs = commandTimeoutMs
   ) {
+    if (this.#ended) {
+      return Promise.reject(new Error(closedMessage));
+    }
     const id = this.#nextId++;
     return new Promise<z.infer<typeof cdpValueSchema> | undefined>(
       (resolve, reject) => {
@@ -138,8 +146,19 @@ export class CdpConnection {
     };
   }
 
+  get isOpen() {
+    return !this.#ended;
+  }
+
   close() {
+    if (this.#ended) return;
+    this.#end();
     this.socket.close();
+  }
+
+  #end() {
+    this.#ended = true;
+    this.#rejectPending(new Error(closedMessage));
   }
 
   #onMessage(event: MessageEvent) {

@@ -271,8 +271,8 @@ a running task every few seconds.
 - `error`: set only while `failed`, one of these codes:
   - `login_failed`: the website refused the saved username or password.
   - `code_failed`: the website refused a relayed code or found it expired,
-    or an authenticator code could not be filled. A code that never arrived
-    reads `timed_out`.
+    or an authenticator code could not be filled. A task that no relayed code
+    ever reached reads `timed_out` instead.
   - `blocked`: the website wants something only a person can do, such as a
     CAPTCHA, a bot check, a device approval, a passkey or a new-device email
     link, or the task needs a sign-in it has no pinned login for.
@@ -296,8 +296,10 @@ result: `done` or `nothing_found` complete the task, and `login_failed`,
 `code_failed`, `blocked`, `off_site` and `failed` fail it with that code. The
 last result of the site's turn counts; a turn that ends without the tool reads
 `completed`. A code question that ended without its code, because the 20
-minutes ran out, fails the task as `timed_out`, also when the agent reported
-`code_failed`; another failure code the agent gave, such as `blocked`, stands.
+minutes ran out, fails the task as `timed_out`. That holds also when the agent
+reported `code_failed`, unless an earlier code of the same task reached the
+worker: the website refused that code, so the task reads `code_failed`.
+Another failure code the agent gave, such as `blocked`, stands.
 
 #### One-time codes
 
@@ -340,13 +342,14 @@ browser, so the request carries that browser's cookies, and keeps it only
 when:
 
 - the URL is `https:`, on the login's fence or one of Stripe's four invoice
-  hosts, and so is every redirect, at most 5: the browser holds each request
-  before it is sent, and `save_file` lets it go only once it has checked it,
-  with Chrome's URL policy checking it too. A hop to any other host is never
-  sent, and the task ends with `off_site`;
-- the answer is a `200` whose bytes start with `%PDF-`, of at most 20 MB: a
-  larger declared length is refused before the bytes are read, and reading
-  stops once they pass 20 MB;
+  hosts, and so is every redirect, at most 5: the tab bypasses the site's
+  service workers, so the browser holds each request before it is sent, and
+  `save_file` lets it go only once it has checked it, with Chrome's URL policy
+  checking it too. A hop to any other host is never sent, and the task ends
+  with `off_site`;
+- the answer is a `200` whose bytes start with `%PDF-`, of at most 20 MB,
+  that arrives within 60 seconds: a larger declared length is refused before
+  the bytes are read, and reading stops once they pass 20 MB;
 - the task keeps fewer than 10 files and its 45 minutes have not passed.
 
 `save_file` takes a link's address. A PDF that only a button running a script
@@ -376,8 +379,9 @@ site's own tasks, like the status: another site's task answers 404.
   when it next reads it, lists it or checks its login. When that cancel cannot
   reach the agent runtime the read answers 503 instead.
 - A wait for a relayed code lasts 20 minutes; the worker then deletes its
-  browser and the task fails with `timed_out`, or another failure code the
-  agent gave such as `blocked`, never `completed`.
+  browser and the task fails with `timed_out`, with `code_failed` when the
+  website refused a code sent earlier in the task, or with another failure
+  code the agent gave such as `blocked`, never `completed`.
 - A site task's browsers idle out after 30 minutes, so they outlive the code
   wait.
 - A saved file is kept for 7 days.
@@ -389,7 +393,8 @@ the cancel answers 503, so retry it. Cancelling does not delete the task's
 browsers, which idle out after 30 minutes. The next start of that login, once
 none of its tasks is open, closes a browser an ended task left saving the
 login's sign-in, so the new task can sign in; the new task also wins over a
-later chat turn of an old task.
+later chat turn of an old task. A start answered `429` leaves the login's
+browsers alone; one answered `503` may already have closed them.
 
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to

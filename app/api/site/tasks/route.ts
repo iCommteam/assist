@@ -48,7 +48,6 @@ export async function POST(request: Request) {
     if (open.taskId) {
       return siteJson({ error: "login_busy", taskId: open.taskId }, 409);
     }
-    await closeLeftLoginWriters(owner.scope, loginId);
     return startTask(owner.scope, site, message, pin.login);
   });
 }
@@ -85,6 +84,9 @@ async function startTask(
     // The task row references the workspace, which the session hook would
     // otherwise create only after eve has accepted the session.
     await ensureScope(scope);
+    // Only a start that goes ahead frees the login's sign-in, still under
+    // the login's lock: a refused one leaves its browsers alone.
+    if (login) await closeLeftLoginWriters(scope, login.id);
     const { session } = await siteEveClient({
       login,
       op: "create",

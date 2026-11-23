@@ -164,8 +164,10 @@ function turnState(
 // The agent ends a site task with the end tool, and its last result decides
 // a failure. A turn that ends without the tool completes. When the last code
 // question ended without the code reaching the worker, the worker's wait ran
-// out, so the task reads timed_out, also when the agent called that
-// code_failed; another failure the agent chose, such as blocked, stands.
+// out, so the task reads timed_out. So does code_failed when no code of the
+// turn ever reached the worker; once one did, the website refused it, and
+// code_failed stands. Another failure the agent chose, such as blocked,
+// stands too.
 function completedState(
   view: SessionView,
   events: readonly ReceivedEvent[],
@@ -177,9 +179,16 @@ function completedState(
     result === undefined || result === "done" || result === "nothing_found"
       ? undefined
       : result;
+  const codes = interactions(view).filter(
+    (interaction) =>
+      interaction.turnId === turnId && isSiteCodeQuestion(interaction.request)
+  );
+  const last = codes.at(-1);
   if (
-    (failedWith === undefined || failedWith === "code_failed") &&
-    lastCodeWentUnused(view, turnId)
+    last !== undefined &&
+    wentUnused(last) &&
+    (failedWith === undefined ||
+      (failedWith === "code_failed" && codes.every(wentUnused)))
   ) {
     return { error: "timed_out", reply, status: "failed" };
   }
@@ -207,15 +216,12 @@ function endResult(
     .at(-1);
 }
 
-function lastCodeWentUnused(view: SessionView, turnId: string) {
-  const last = interactions(view).findLast(
-    (interaction) =>
-      interaction.turnId === turnId && isSiteCodeQuestion(interaction.request)
-  );
+// A code question that settled with no code deciding it.
+function wentUnused(question: ReturnType<typeof interactions>[number]) {
   return (
-    last?.status === "settled" &&
-    last.outcome !== "accepted" &&
-    last.answer === undefined
+    question.status === "settled" &&
+    question.outcome !== "accepted" &&
+    question.answer === undefined
   );
 }
 

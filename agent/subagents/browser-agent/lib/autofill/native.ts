@@ -1,5 +1,6 @@
 import { CdpConnection } from "@agent/subagents/browser-agent/lib/cdp";
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
+import { isToolTab } from "@agent/subagents/browser-agent/lib/tool-tabs";
 import { z } from "zod";
 import type { AutofillClaim } from "./protocol";
 import {
@@ -1413,9 +1414,10 @@ async function withKernelPage<T>(
       await connection.send("Target.getTargets")
     );
     const matchingPages = targetInfos.filter(
-      ({ type, url }) =>
+      ({ targetId, type, url }) =>
         type === "page" &&
         isWebUrl(url) &&
+        !isToolTab(targetId) &&
         (pageUrl === undefined || url === pageUrl)
     );
     if (pageUrl !== undefined && matchingPages.length !== 1) {

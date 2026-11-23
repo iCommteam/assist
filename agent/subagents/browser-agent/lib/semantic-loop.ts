@@ -80,7 +80,9 @@ async function resourcesFor(sessionId: string, signal?: AbortSignal) {
   return resources;
 }
 
-async function withBrowserLoopSessionLock<T>(
+// One Browser Loop action per browser at a time. save_file holds it as well
+// while its download tab is open, so no tab list shows that tab.
+export async function withBrowserLoopSessionLock<T>(
   sessionId: string,
   operation: () => Promise<T>
 ) {

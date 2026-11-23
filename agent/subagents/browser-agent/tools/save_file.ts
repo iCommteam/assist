@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { NotFoundError } from "@onkernel/sdk";
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
@@ -11,6 +12,8 @@ import { CdpConnection } from "@agent/subagents/browser-agent/lib/cdp";
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
 import { requireWorkerScope } from "@agent/subagents/browser-agent/lib/access";
 import { requireOwnedBrowserSession } from "@agent/subagents/browser-agent/lib/owned-browser";
+import { withBrowserLoopSessionLock } from "@agent/subagents/browser-agent/lib/semantic-loop";
+import { trackToolTab } from "@agent/subagents/browser-agent/lib/tool-tabs";
 import {
   amazonPolicyRefusal,
   isAmazonHost,
@@ -26,6 +29,10 @@ const readChunkBytes = 1024 * 1024;
 const maxFilenameLength = 200;
 const maxRedirects = 5;
 const downloadTimeoutMs = 60_000;
+const closeAttempts = 4;
+const closeRetryMs = 250;
+const closeCommandTimeoutMs = 3000;
+const closeBudgetMs = 15_000;
 const redirectStatuses = new Set([301, 302, 303, 307, 308]);
 const pdfSignature = Buffer.from("%PDF-", "latin1");
 
@@ -92,11 +99,12 @@ const saveFile = defineTool({
       if (room !== "open") {
         throw new SaveRefusal(room === "full" ? fullMessage : closedMessage);
       }
-      const fetched = await downloadFile(
+      // No Browser Loop action, whose tab lists would show the download's
+      // tab, runs while that tab is open.
+      const fetched = await withBrowserLoopSessionLock(
         input.browserSessionId,
-        url,
-        fence,
-        context.abortSignal
+        async () =>
+          downloadFile(input.browserSessionId, url, fence, context.abortSignal)
       );
       const content = pdfContent(fetched.content);
       const filename = cleanFilename(
@@ -176,6 +184,9 @@ const pausedRequestSchema = z.object({
     .optional(),
   responseStatusCode: z.number().int().optional(),
 });
+const targetListSchema = z.object({
+  targetInfos: z.array(z.object({ targetId: z.string() })),
+});
 const bodyStreamSchema = z.object({ stream: z.string().min(1) });
 const bodyChunkSchema = z.object({
   base64Encoded: z.boolean().optional(),
@@ -200,6 +211,7 @@ async function downloadFile(
   fence: SiteFence,
   signal: AbortSignal | undefined
 ) {
+  const deadlineAt = Date.now() + downloadTimeoutMs;
   const deadline = AbortSignal.timeout(downloadTimeoutMs);
   const stopped = signal ? AbortSignal.any([signal, deadline]) : deadline;
   const browser = await kernel.browsers.retrieve(
@@ -215,8 +227,7 @@ async function downloadFile(
         url: "about:blank",
       })
     );
-    // The tab is closed whatever happens: a leftover tab would be the newest
-    // page, which other tools take for the worker's own.
+    const forgetTab = trackToolTab(targetId);
     try {
       const { sessionId } = attachedTargetSchema.parse(
         await connection.send("Target.attachToTarget", {
@@ -229,12 +240,15 @@ async function downloadFile(
         sessionId,
         url,
         fence,
-        stopped
+        stopped,
+        deadlineAt
       );
     } finally {
-      await connection
-        .send("Target.closeTarget", { targetId })
-        .catch(() => undefined);
+      if (await closeTab(browser.cdp_ws_url, connection, targetId)) {
+        forgetTab();
+      } else {
+        console.warn("[site] download tab could not be closed");
+      }
     }
   } finally {
     connection.close();
@@ -256,185 +270,290 @@ async function connectUntil(url: string, stopped: AbortSignal) {
   }
 }
 
-function interceptedDownload(
+// The tab is closed whatever happens: a leftover tab would be the newest
+// page, which other tools take for the worker's own. Chrome may drop a close
+// that arrives as a document commits, and a connection that dropped takes the
+// close with it, so the close is sent again, over a new connection once the
+// first one fails, until the browser no longer lists the tab.
+async function closeTab(
+  cdpUrl: string,
+  connection: CdpConnection,
+  targetId: string
+) {
+  const budget = AbortSignal.timeout(closeBudgetMs);
+  let current: CdpConnection | undefined = connection;
+  let replacement: CdpConnection | undefined;
+  try {
+    /* oxlint-disable eslint/no-await-in-loop -- Each close is checked before the next one is sent. */
+    for (
+      let attempt = 0;
+      attempt < closeAttempts && !budget.aborted;
+      attempt += 1
+    ) {
+      if (attempt > 0) await sleep(closeRetryMs);
+      try {
+        if (!current?.isOpen) {
+          replacement?.close();
+          replacement = await CdpConnection.connect(cdpUrl, budget);
+          current = replacement;
+        }
+        // A tab that is already gone has no target left to close.
+        await current
+          .send(
+            "Target.closeTarget",
+            { targetId },
+            undefined,
+            closeCommandTimeoutMs
+          )
+          .catch(() => undefined);
+        const { targetInfos } = targetListSchema.parse(
+          await current.send(
+            "Target.getTargets",
+            undefined,
+            undefined,
+            closeCommandTimeoutMs
+          )
+        );
+        if (!targetInfos.some((target) => target.targetId === targetId)) {
+          return true;
+        }
+      } catch {
+        // The connection did not answer, so the next attempt opens another.
+        current?.close();
+        current = undefined;
+      }
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+    return false;
+  } finally {
+    replacement?.close();
+  }
+}
+
+async function interceptedDownload(
   connection: CdpConnection,
   sessionId: string,
   url: URL,
   fence: SiteFence,
-  stopped: AbortSignal
+  stopped: AbortSignal,
+  deadlineAt: number
 ) {
-  return new Promise<DownloadedFile>((resolve, reject) => {
-    let requests = 0;
-    let settled = false;
-    // A refusal decided before the browser reports the navigation's end.
-    let refused: SaveRefusal | undefined;
+  // The requests paused here that are not yet let go, failed or being read.
+  const held = new Set<string>();
+  try {
+    return await new Promise<DownloadedFile>((resolve, reject) => {
+      let requests = 0;
+      let settled = false;
+      // A refusal decided before the browser reports the navigation's end.
+      let refused: SaveRefusal | undefined;
 
-    const settle = (outcome: () => void) => {
-      if (settled) return;
-      settled = true;
-      unsubscribe();
-      stopped.removeEventListener("abort", onStopped);
-      outcome();
-    };
-    const fail = (error: Error) => {
-      settle(() => {
-        reject(error);
-      });
-    };
-    const onStopped = () => {
-      fail(new Error("The download was stopped."));
-    };
-
-    // A refused request is failed before the refusal settles, so it is never
-    // sent, whatever becomes of the tab.
-    const refuse = async (requestId: string, refusal: SaveRefusal) => {
-      refused = refusal;
-      await connection
-        .send(
-          "Fetch.failRequest",
-          { errorReason: "BlockedByClient", requestId },
-          sessionId
-        )
-        .catch(() => undefined);
-      fail(refusal);
-    };
-
-    // The URL a request is about to be sent to, or the one a redirect names.
-    const checkedHop = async (
-      requestId: string,
-      address: string,
-      base?: URL
-    ) => {
-      try {
-        if (requests > maxRedirects + 1) {
-          throw new SaveRefusal(redirectsMessage);
-        }
-        fileUrl(address, fence, base);
-      } catch (error) {
-        if (!(error instanceof SaveRefusal)) throw error;
-        await refuse(requestId, error);
-        return;
-      }
-      await connection.send("Fetch.continueRequest", { requestId }, sessionId);
-    };
-
-    const onPaused = async (paused: z.infer<typeof pausedRequestSchema>) => {
-      const { requestId } = paused;
-      if (paused.responseErrorReason !== undefined) {
-        fail(new Error("The file's request failed."));
-        return;
-      }
-      if (paused.responseStatusCode === undefined) {
-        requests += 1;
-        await checkedHop(requestId, paused.request.url);
-        return;
-      }
-      const status = paused.responseStatusCode;
-      const headers = paused.responseHeaders ?? [];
-      const location = redirectStatuses.has(status)
-        ? header(headers, "location")
-        : undefined;
-      if (location !== undefined) {
-        await checkedHop(requestId, location, new URL(paused.request.url));
-        return;
-      }
-      if (status !== 200) {
-        throw new SaveRefusal(
-          `The file's URL answered HTTP ${String(status)}, so nothing was saved. The link may have expired: open the page that links to the file again and save the link's current address.`
-        );
-      }
-      const answeredUrl = fileUrl(paused.request.url, fence);
-      const declaredLength = Number(header(headers, "content-length"));
-      if (Number.isFinite(declaredLength) && declaredLength > maxFileBytes) {
-        throw new SaveRefusal(tooLargeMessage);
-      }
-      const content = await readBody(connection, sessionId, requestId);
-      settle(() => {
-        resolve({
-          content,
-          disposition: header(headers, "content-disposition"),
-          url: answeredUrl,
+      const settle = (outcome: () => void) => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        stopped.removeEventListener("abort", onStopped);
+        outcome();
+      };
+      const fail = (error: Error) => {
+        settle(() => {
+          reject(error);
         });
-      });
-    };
+      };
+      const onStopped = () => {
+        fail(new Error("The download was stopped."));
+      };
 
-    const handlePaused = async (
-      paused: z.infer<typeof pausedRequestSchema>
-    ) => {
-      try {
-        await onPaused(paused);
-      } catch (error) {
-        fail(error instanceof Error ? error : new Error("Not fetched."));
-      }
-    };
+      // A refused request is failed before the refusal settles, so it is
+      // never sent, whatever becomes of the tab.
+      const refuse = async (requestId: string, refusal: SaveRefusal) => {
+        refused = refusal;
+        held.delete(requestId);
+        await connection
+          .send(
+            "Fetch.failRequest",
+            { errorReason: "BlockedByClient", requestId },
+            sessionId
+          )
+          .catch(() => undefined);
+        fail(refusal);
+      };
 
-    // Each pause holds its request, so the next one comes only after this
-    // one is answered.
-    const unsubscribe = connection.onEvent((event) => {
-      if (settled || event.sessionId !== sessionId) return;
-      if (event.method !== "Fetch.requestPaused") return;
-      const paused = pausedRequestSchema.safeParse(event.params);
-      if (!paused.success) {
-        fail(new Error("The browser reported an unreadable request."));
-        return;
-      }
-      void handlePaused(paused.data);
-    });
-    stopped.addEventListener("abort", onStopped, { once: true });
-    if (stopped.aborted) {
-      onStopped();
-      return;
-    }
-
-    const watchConnection = async () => {
-      await connection.closed;
-      fail(new Error("The browser connection closed."));
-    };
-    // The navigation ends on its own only when the file was never taken:
-    // Chrome's URL policy blocked a hop, or the request failed.
-    const navigate = async () => {
-      let navigated: Awaited<ReturnType<typeof connection.send>>;
-      try {
+      // The URL a request is about to be sent to, or the one a redirect names.
+      const checkedHop = async (
+        requestId: string,
+        address: string,
+        base?: URL
+      ) => {
+        try {
+          if (requests > maxRedirects + 1) {
+            throw new SaveRefusal(redirectsMessage);
+          }
+          fileUrl(address, fence, base);
+        } catch (error) {
+          if (!(error instanceof SaveRefusal)) throw error;
+          await refuse(requestId, error);
+          return;
+        }
+        held.delete(requestId);
         await connection.send(
-          "Fetch.enable",
-          {
-            patterns: (["Request", "Response"] as const).map(
-              (requestStage) => ({
-                requestStage,
-                resourceType: "Document",
-                urlPattern: "*",
-              })
-            ),
-          },
+          "Fetch.continueRequest",
+          { requestId },
           sessionId
         );
-        navigated = await connection.send(
-          "Page.navigate",
-          { url: url.href },
+      };
+
+      const onPaused = async (paused: z.infer<typeof pausedRequestSchema>) => {
+        const { requestId } = paused;
+        if (paused.responseErrorReason !== undefined) {
+          fail(new Error("The file's request failed."));
+          return;
+        }
+        if (paused.responseStatusCode === undefined) {
+          requests += 1;
+          await checkedHop(requestId, paused.request.url);
+          return;
+        }
+        const status = paused.responseStatusCode;
+        const headers = paused.responseHeaders ?? [];
+        const location = redirectStatuses.has(status)
+          ? header(headers, "location")
+          : undefined;
+        if (location !== undefined) {
+          await checkedHop(requestId, location, new URL(paused.request.url));
+          return;
+        }
+        if (status !== 200) {
+          throw new SaveRefusal(
+            `The file's URL answered HTTP ${String(status)}, so nothing was saved. The link may have expired: open the page that links to the file again and save the link's current address.`
+          );
+        }
+        const answeredUrl = fileUrl(paused.request.url, fence);
+        const declaredLength = Number(header(headers, "content-length"));
+        if (Number.isFinite(declaredLength) && declaredLength > maxFileBytes) {
+          throw new SaveRefusal(tooLargeMessage);
+        }
+        // Once its body is taken, the answer goes with the tab.
+        held.delete(requestId);
+        const content = await readBody(
+          connection,
           sessionId,
-          downloadTimeoutMs
+          requestId,
+          stopped,
+          deadlineAt
         );
-      } catch (error) {
-        fail(error instanceof Error ? error : new Error("Not fetched."));
+        settle(() => {
+          resolve({
+            content,
+            disposition: header(headers, "content-disposition"),
+            url: answeredUrl,
+          });
+        });
+      };
+
+      const handlePaused = async (
+        paused: z.infer<typeof pausedRequestSchema>
+      ) => {
+        try {
+          await onPaused(paused);
+        } catch (error) {
+          fail(error instanceof Error ? error : new Error("Not fetched."));
+        }
+      };
+
+      // Each pause holds its request, so the next one comes only after this
+      // one is answered.
+      const unsubscribe = connection.onEvent((event) => {
+        if (settled || event.sessionId !== sessionId) return;
+        if (event.method !== "Fetch.requestPaused") return;
+        const paused = pausedRequestSchema.safeParse(event.params);
+        if (!paused.success) {
+          fail(new Error("The browser reported an unreadable request."));
+          return;
+        }
+        held.add(paused.data.requestId);
+        void handlePaused(paused.data);
+      });
+      stopped.addEventListener("abort", onStopped, { once: true });
+      if (stopped.aborted) {
+        onStopped();
         return;
       }
-      const errorText = navigatedSchema.safeParse(navigated).data?.errorText;
-      fail(
-        refused ??
-          (errorText?.includes("ERR_BLOCKED_BY_ADMINISTRATOR") === true
-            ? new SaveRefusal(offSiteMessage)
-            : new Error("The navigation ended without the file."))
-      );
-    };
-    void watchConnection();
-    void navigate();
-  });
+
+      const watchConnection = async () => {
+        await connection.closed;
+        fail(new Error("The browser connection closed."));
+      };
+      // The navigation ends on its own only when the file was never taken:
+      // Chrome's URL policy blocked a hop, or the request failed. A service
+      // worker would answer the navigation itself, out of the Fetch domain's
+      // sight, so the tab's requests skip any worker and go to the network,
+      // where each one is held first.
+      const navigate = async () => {
+        let navigated: Awaited<ReturnType<typeof connection.send>>;
+        try {
+          await connection.send("Network.enable", undefined, sessionId);
+          await connection.send(
+            "Network.setBypassServiceWorker",
+            { bypass: true },
+            sessionId
+          );
+          await connection.send(
+            "Fetch.enable",
+            {
+              patterns: (["Request", "Response"] as const).map(
+                (requestStage) => ({
+                  requestStage,
+                  resourceType: "Document",
+                  urlPattern: "*",
+                })
+              ),
+            },
+            sessionId
+          );
+          navigated = await connection.send(
+            "Page.navigate",
+            { url: url.href },
+            sessionId,
+            downloadTimeoutMs
+          );
+        } catch (error) {
+          fail(error instanceof Error ? error : new Error("Not fetched."));
+          return;
+        }
+        const errorText = navigatedSchema.safeParse(navigated).data?.errorText;
+        fail(
+          refused ??
+            (errorText?.includes("ERR_BLOCKED_BY_ADMINISTRATOR") === true
+              ? new SaveRefusal(offSiteMessage)
+              : new Error("The navigation ended without the file."))
+        );
+      };
+      void watchConnection();
+      void navigate();
+    });
+  } finally {
+    // A request still held goes on once the tab's connection ends, so each
+    // is failed before the tab is closed.
+    await Promise.all(
+      [...held].map((requestId) =>
+        connection
+          .send(
+            "Fetch.failRequest",
+            { errorReason: "BlockedByClient", requestId },
+            sessionId
+          )
+          .catch(() => undefined)
+      )
+    );
+  }
 }
 
 async function readBody(
   connection: CdpConnection,
   sessionId: string,
-  requestId: string
+  requestId: string,
+  stopped: AbortSignal,
+  deadlineAt: number
 ) {
   const { stream } = bodyStreamSchema.parse(
     await connection.send(
@@ -448,11 +567,16 @@ async function readBody(
   try {
     /* oxlint-disable eslint/no-await-in-loop -- The stream reads in order, one chunk at a time. */
     for (;;) {
+      if (stopped.aborted) throw new Error("The download was stopped.");
+      // A read waits for its whole chunk or the body's end, which a slow
+      // answer may take longer than one command's usual wait to send, so only
+      // the download's own deadline bounds it.
       const chunk = bodyChunkSchema.parse(
         await connection.send(
           "IO.read",
           { handle: stream, size: readChunkBytes },
-          sessionId
+          sessionId,
+          Math.max(1, deadlineAt - Date.now())
         )
       );
       const bytes = Buffer.from(

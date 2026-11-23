@@ -516,6 +516,18 @@ describe("POST /api/site/tasks rate cap", () => {
     expect(otherSite.status).toBe(202);
   });
 
+  it("leaves the login's sign-in browsers alone at a start it refuses", async () => {
+    await startEveryMinute(10);
+    vi.setSystemTime(clock + 9 * 60_000);
+
+    const refused = await createTask(
+      siteRequest("/tasks", teemiqToken, { loginId: "login-1", message: "hi" })
+    );
+
+    expect(refused.status).toBe(429);
+    expect(services.closeLeftLoginWriters).not.toHaveBeenCalled();
+  });
+
   it("does not count a request it refuses as invalid", async () => {
     const invalid = await Promise.all(
       Array.from({ length: 12 }, () =>
@@ -1246,6 +1258,28 @@ describe("POST /api/site/tasks one task per login", () => {
 
     expect(response.status).toBe(202);
     expect(eve.cancel).not.toHaveBeenCalled();
+  });
+
+  it("frees the login's sign-in only for a start that goes ahead, before eve starts it", async () => {
+    services.ensureScope.mockRejectedValueOnce(new Error("pool timeout"));
+    const unavailable = await createTask(
+      siteRequest("/tasks", teemiqToken, { loginId: "login-1", message: "hi" })
+    );
+    expect(unavailable.status).toBe(503);
+    expect(services.closeLeftLoginWriters).not.toHaveBeenCalled();
+
+    const started = await createTask(
+      siteRequest("/tasks", teemiqToken, { loginId: "login-1", message: "hi" })
+    );
+
+    expect(started.status).toBe(202);
+    expect(services.closeLeftLoginWriters).toHaveBeenCalledExactlyOnceWith(
+      owner,
+      "login-1"
+    );
+    const [closedAt = 0] =
+      services.closeLeftLoginWriters.mock.invocationCallOrder;
+    expect(closedAt).toBeLessThan(eve.create.mock.invocationCallOrder[0] ?? 0);
   });
 
   it("cancels an open task of the login past its lifetime, then starts the new one", async () => {

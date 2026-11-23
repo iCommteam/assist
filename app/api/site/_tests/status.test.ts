@@ -533,6 +533,50 @@ describe("site task code wait", () => {
     });
   });
 
+  it("keeps code_failed when a code reached the worker and the second ask then ran out", () => {
+    const askedAgain = (...end: Fact[][]) =>
+      eventsOf([
+        [turnStarted, runRequested],
+        codeQuestion("interaction-1", "Enter the code."),
+        [codeAnswer("interaction-1"), codeSettled("interaction-1", "accepted")],
+        codeQuestion("interaction-2", "Enter the code."),
+        [codeSettled("interaction-2", "withdrawn")],
+        ...end,
+        [turnSettled("completed")],
+      ]);
+
+    // The website refused the first code, or it could not be typed.
+    expect(
+      statusOf(askedAgain(endTask("call-1", "code_failed")))
+    ).toMatchObject({ error: "code_failed", status: "failed" });
+    // Any other end still reads the wait that ran out.
+    expect(statusOf(askedAgain(endTask("call-1", "done")))).toMatchObject({
+      error: "timed_out",
+      status: "failed",
+    });
+    expect(statusOf(askedAgain())).toMatchObject({
+      error: "timed_out",
+      status: "failed",
+    });
+  });
+
+  it("reads timed out for code_failed when neither of two asks got a code", () => {
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      codeQuestion("interaction-1", "Enter the code."),
+      [codeAnswer("interaction-1"), codeSettled("interaction-1", "withdrawn")],
+      codeQuestion("interaction-2", "Enter the code."),
+      [codeSettled("interaction-2", "withdrawn")],
+      endTask("call-1", "code_failed"),
+      [turnSettled("completed")],
+    ]);
+
+    expect(statusOf(events)).toMatchObject({
+      error: "timed_out",
+      status: "failed",
+    });
+  });
+
   it("completes when a later code reached the worker", () => {
     const events = eventsOf([
       [turnStarted, runRequested],

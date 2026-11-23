@@ -12,6 +12,8 @@ import type {
   siteTaskFileRoom,
 } from "@db/services/sites";
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
+import { withBrowserLoopSessionLock } from "@agent/subagents/browser-agent/lib/semantic-loop";
+import { isToolTab } from "@agent/subagents/browser-agent/lib/tool-tabs";
 import { sitePrincipal } from "@agent/lib/site-principal";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import {
@@ -128,16 +130,36 @@ const downloadSession = "download-session";
 const chrome = {
   // Hosts Chrome's URL policy refuses to open.
   blocked: new Set<string>(),
+  // How many closes Chrome answers but drops, as it may while a document
+  // commits.
+  closesDropped: 0,
   commands: new Array<Command>(),
+  // Commands on which the connection drops once: unanswered, then closed.
+  dropOn: new Set<string>(),
+  // Commands written to a socket that had already closed.
+  dropped: new Array<string>(),
   failing: new Map<string, string>(),
+  mostOpenTabs: 0,
   openTabs: 0,
+  // How long each read of the body waits for its data.
+  readDelayMs: 0,
   routes: new Map<string, Route>(),
   // Every request that left the browser, in order.
   sent: new Array<string>(),
+  // Whether the tab was kept from the tools that act on the worker's page
+  // while it navigated.
+  hiddenWhileOpen: false,
+  // The site's service worker answers navigations in its scope unless the
+  // tab bypasses it, which takes the Network domain first.
+  serviceWorker: false,
+  tabId: downloadTab,
 };
 
 class ChromeSocket extends EventTarget {
+  #bypassesWorker = false;
+  #closed = false;
   #navigation: number | undefined;
+  #networkEnabled = false;
   #nextRequest = 1;
   readonly #requests = new Map<
     string,
@@ -150,13 +172,24 @@ class ChromeSocket extends EventTarget {
     queueMicrotask(() => this.dispatchEvent(new Event("open")));
   }
 
+  // A closed socket drops what is sent on it, without an error.
   close() {
+    if (this.#closed) return;
+    this.#closed = true;
     queueMicrotask(() => this.dispatchEvent(new Event("close")));
   }
 
   send(data: string) {
     const command = commandSchema.parse(JSON.parse(data));
+    if (this.#closed) {
+      chrome.dropped.push(command.method);
+      return;
+    }
     chrome.commands.push(command);
+    if (chrome.dropOn.delete(command.method)) {
+      this.close();
+      return;
+    }
     const failure = chrome.failing.get(command.method);
     if (failure !== undefined) {
       this.#message({ error: { message: failure }, id: command.id });
@@ -166,12 +199,38 @@ class ChromeSocket extends EventTarget {
     switch (command.method) {
       case "Target.createTarget":
         chrome.openTabs += 1;
-        this.#reply(command, { targetId: downloadTab });
+        chrome.mostOpenTabs = Math.max(chrome.mostOpenTabs, chrome.openTabs);
+        this.#reply(command, { targetId: chrome.tabId });
         return;
       case "Target.attachToTarget":
         this.#reply(command, { sessionId: downloadSession });
         return;
+      case "Target.getTargets":
+        this.#reply(command, {
+          targetInfos: [
+            { targetId: "worker-tab", type: "page", url: `${origin}/billing` },
+            ...(chrome.openTabs > 0
+              ? [{ targetId: chrome.tabId, type: "page", url: "about:blank" }]
+              : []),
+          ],
+        });
+        return;
+      case "Network.enable":
+        this.#networkEnabled = true;
+        this.#reply(command, {});
+        return;
+      case "Network.setBypassServiceWorker":
+        this.#bypassesWorker =
+          this.#networkEnabled && command.params?.bypass === true;
+        this.#reply(command, {});
+        return;
       case "Page.navigate":
+        chrome.hiddenWhileOpen = isToolTab(chrome.tabId);
+        if (chrome.serviceWorker && !this.#bypassesWorker) {
+          // The worker answers, the document commits, and no request pauses.
+          this.#reply(command, { frameId: "frame-1", loaderId: "loader-1" });
+          return;
+        }
         this.#navigation = command.id;
         this.#request(text("url"));
         return;
@@ -197,16 +256,31 @@ class ChromeSocket extends EventTarget {
         const size = z.number().parse(command.params?.size);
         const chunk = stream.body.subarray(stream.offset, stream.offset + size);
         stream.offset += chunk.byteLength;
-        this.#reply(command, {
-          base64Encoded: true,
-          data: chunk.toString("base64"),
-          eof: stream.offset >= stream.body.byteLength,
-        });
+        const answer = () => {
+          this.#reply(command, {
+            base64Encoded: true,
+            data: chunk.toString("base64"),
+            eof: stream.offset >= stream.body.byteLength,
+          });
+        };
+        if (chrome.readDelayMs > 0) setTimeout(answer, chrome.readDelayMs);
+        else answer();
         return;
       }
       case "Target.closeTarget":
-        chrome.openTabs -= 1;
+        if (text("targetId") !== chrome.tabId || chrome.openTabs === 0) {
+          this.#message({
+            error: { message: "No target with given id found" },
+            id: command.id,
+          });
+          return;
+        }
         this.#reply(command, { success: true });
+        if (chrome.closesDropped > 0) {
+          chrome.closesDropped -= 1;
+          return;
+        }
+        chrome.openTabs -= 1;
         this.#endNavigation("net::ERR_ABORTED");
         return;
       default:
@@ -278,11 +352,12 @@ class ChromeSocket extends EventTarget {
   }
 
   #message(message: CdpMessage) {
-    queueMicrotask(() =>
+    queueMicrotask(() => {
+      if (this.#closed) return;
       this.dispatchEvent(
         new MessageEvent("message", { data: JSON.stringify(message) })
-      )
-    );
+      );
+    });
   }
 }
 
@@ -377,11 +452,19 @@ beforeEach(() => {
   resetEveState();
   vi.stubGlobal("WebSocket", ChromeSocket);
   chrome.blocked.clear();
+  chrome.closesDropped = 0;
   chrome.commands.length = 0;
+  chrome.dropOn.clear();
+  chrome.dropped.length = 0;
   chrome.failing.clear();
+  chrome.hiddenWhileOpen = false;
+  chrome.mostOpenTabs = 0;
   chrome.openTabs = 0;
+  chrome.readDelayMs = 0;
   chrome.routes.clear();
   chrome.sent.length = 0;
+  chrome.serviceWorker = false;
+  chrome.tabId = downloadTab;
   logged.length = 0;
   for (const spy of consoleSpies) {
     spy.mockImplementation((...values) => {
@@ -439,6 +522,9 @@ afterEach(() => {
   );
   if (leaked) throw new Error("A file's link or bytes reached a log line.");
   if (chrome.openTabs !== 0) throw new Error("A download left its tab open.");
+  if (chrome.dropped.length > 0) {
+    throw new Error("A command was written to a closed connection.");
+  }
 });
 
 async function offered(
@@ -509,6 +595,8 @@ describe("save_file", () => {
     expect(chrome.commands.map(({ method }) => method)).toEqual([
       "Target.createTarget",
       "Target.attachToTarget",
+      "Network.enable",
+      "Network.setBypassServiceWorker",
       "Fetch.enable",
       "Page.navigate",
       "Fetch.continueRequest",
@@ -516,6 +604,7 @@ describe("save_file", () => {
       "IO.read",
       "IO.close",
       "Target.closeTarget",
+      "Target.getTargets",
     ]);
     expect(sentCommands("Target.createTarget")[0]?.params).toEqual({
       background: true,
@@ -538,6 +627,13 @@ describe("save_file", () => {
             },
           ],
         },
+        sessionId: downloadSession,
+      }),
+    ]);
+    // A service worker never answers for the network.
+    expect(sentCommands("Network.setBypassServiceWorker")).toEqual([
+      expect.objectContaining({
+        params: { bypass: true },
         sessionId: downloadSession,
       }),
     ]);
@@ -700,6 +796,17 @@ describe("save_file answers", () => {
     await expect(refusal()).resolves.toBe(
       "The file's URL answered HTTP 403, so nothing was saved. The link may have expired: open the page that links to the file again and save the link's current address."
     );
+    // The held answer is failed before the tab closes, so it never shows.
+    const methods = chrome.commands.map(({ method }) => method);
+    expect(sentCommands("Fetch.failRequest")).toEqual([
+      expect.objectContaining({
+        params: { errorReason: "BlockedByClient", requestId: "request-1" },
+        sessionId: downloadSession,
+      }),
+    ]);
+    expect(methods.indexOf("Fetch.failRequest")).toBeLessThan(
+      methods.indexOf("Target.closeTarget")
+    );
     for (const body of [
       Buffer.from("<!doctype html><title>Invoice</title>"),
       Buffer.from(" %PDF-1.7 leading space"),
@@ -738,6 +845,30 @@ describe("save_file answers", () => {
     await expect(refusal()).resolves.toBe(tooLargeMessage);
     expect(sentCommands("Fetch.takeResponseBodyAsStream")).toEqual([]);
     expect(sentCommands("IO.read")).toEqual([]);
+    expect(sentCommands("Fetch.failRequest")).toHaveLength(1);
+  });
+
+  it("waits for a slow answer until the download's own deadline, not one command's", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      chrome.readDelayMs = 20_000;
+      const saving = save();
+      await vi.waitFor(() => {
+        expect(sentCommands("IO.read")).toHaveLength(1);
+      });
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(saving).resolves.toMatchObject({ fileId });
+
+      chrome.readDelayMs = 70_000;
+      const stalled = refusal();
+      await vi.waitFor(() => {
+        expect(sentCommands("IO.read")).toHaveLength(2);
+      });
+      await vi.advanceTimersByTimeAsync(61_000);
+      await expect(stalled).resolves.toBe(failedMessage);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses an eleventh file, and saves nothing once the task's 45 minutes have passed", async () => {
@@ -824,6 +955,110 @@ describe("save_file answers", () => {
     await expect(refusal({}, context)).resolves.toBe(failedMessage);
     expect(sentCommands("Page.navigate")).toEqual([]);
     expect(mocks.saveSiteTaskFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("save_file tab", () => {
+  it("goes around a service worker that answers navigations, so each hop is still held", async () => {
+    chrome.serviceWorker = true;
+
+    await expect(save()).resolves.toMatchObject({ fileId });
+    // The bypass takes the Network domain, and both come before the hold.
+    expect(chrome.commands.slice(2, 6).map(({ method }) => method)).toEqual([
+      "Network.enable",
+      "Network.setBypassServiceWorker",
+      "Fetch.enable",
+      "Page.navigate",
+    ]);
+    expect(chrome.sent).toEqual([invoiceUrl]);
+  });
+
+  it("fetches nothing when the tab cannot go around the service worker", async () => {
+    chrome.serviceWorker = true;
+    chrome.failing.set(
+      "Network.setBypassServiceWorker",
+      `no bypass for ${invoiceUrl}`
+    );
+
+    await expect(refusal()).resolves.toBe(failedMessage);
+    expect(sentCommands("Fetch.enable")).toEqual([]);
+    expect(sentCommands("Page.navigate")).toEqual([]);
+    expect(chrome.sent).toEqual([]);
+  });
+
+  it("keeps its tab from the tools that act on the worker's page while it is open", async () => {
+    await save();
+
+    expect(chrome.hiddenWhileOpen).toBe(true);
+    expect(isToolTab(downloadTab)).toBe(false);
+  });
+
+  it("closes the tab again when Chrome drops the first close", async () => {
+    chrome.closesDropped = 1;
+
+    await expect(save()).resolves.toMatchObject({ fileId });
+    expect(sentCommands("Target.closeTarget")).toHaveLength(2);
+    expect(chrome.openTabs).toBe(0);
+    expect(isToolTab(downloadTab)).toBe(false);
+  });
+
+  it("keeps a tab it could not close hidden, and logs only that", async () => {
+    chrome.tabId = "stuck-tab";
+    chrome.closesDropped = 10;
+
+    await expect(save()).resolves.toMatchObject({ fileId });
+    expect(sentCommands("Target.closeTarget")).toHaveLength(4);
+    expect(isToolTab("stuck-tab")).toBe(true);
+    expect(logged).toEqual([
+      JSON.stringify(["[site] download tab could not be closed"]),
+    ]);
+    chrome.openTabs = 0;
+  });
+
+  it.each(["IO.read", "Fetch.takeResponseBodyAsStream"])(
+    "closes the tab over a new connection when the connection drops at %s, at once",
+    async (method) => {
+      chrome.dropOn.add(method);
+      const started = Date.now();
+
+      await expect(refusal()).resolves.toBe(failedMessage);
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(chrome.openTabs).toBe(0);
+      expect(sentCommands("Target.closeTarget")).toHaveLength(1);
+    }
+  );
+
+  it("waits for a browser action on the same browser before it opens its tab", async () => {
+    const running = Promise.withResolvers<undefined>();
+    const action = withBrowserLoopSessionLock(
+      "browser-1",
+      async () => running.promise
+    );
+    const saving = save();
+    await vi.waitFor(() => {
+      expect(mocks.siteTaskFileRoom).toHaveBeenCalledOnce();
+    });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 20);
+    });
+
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(chrome.commands).toEqual([]);
+    running.resolve(undefined);
+    await action;
+    await expect(saving).resolves.toMatchObject({ fileId });
+  });
+
+  it("opens one download tab at a time in a browser", async () => {
+    const other = "https://billing.vendor.example/invoices/2026-11.pdf";
+    serve(other);
+
+    await expect(Promise.all([save(), save({ url: other })])).resolves.toEqual([
+      expect.objectContaining({ fileId }),
+      expect.objectContaining({ fileId }),
+    ]);
+    expect(chrome.mostOpenTabs).toBe(1);
+    expect(sentCommands("Target.createTarget")).toHaveLength(2);
   });
 });
 
