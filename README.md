@@ -331,8 +331,9 @@ with `done` when it saved files or `nothing_found` when there were none.
 request carries that browser's cookies, and keeps it only when:
 
 - the URL is `https:`, on the login's fence or one of Stripe's four invoice
-  hosts; a redirect is followed, at most 5 times, only while it stays there.
-  Any other host is refused and the task ends with `off_site`;
+  hosts; a redirect that Kernel hands back is followed, at most 5 times, only
+  while it stays there (one Kernel follows itself is not seen). Any other host
+  is refused and the task ends with `off_site`;
 - the answer is a `200` whose bytes start with `%PDF-`, of at most 20 MB;
 - the task keeps fewer than 10 files and its 45 minutes have not passed.
 
@@ -340,9 +341,11 @@ A file whose bytes the task already keeps is not stored twice. Its `filename`
 is plain: no path, no control characters, at most 200 characters, ending in
 `.pdf`, taken from the name the agent gives, else the answer's
 `Content-Disposition`, else the URL's last segment when that names a PDF, else
-`document.pdf`. `sha256` is the lower-case hex of the exact bytes. The model
-gets back only the file's id, name and size; the bytes and the URL's query
-string reach no model, log or trace.
+`document.pdf`. `sha256` is the lower-case hex of the exact bytes. The tool
+answers the model with only the file's id, name and size, never the bytes or
+the URL; no log line holds either, and the browser trace keeps the URL without
+its query or fragment. The URL the model passed stays in its own session
+record.
 
 A file is kept for 7 days from when the task saved it. After that it is no
 longer listed and its download answers 404, and saves, lists and downloads
