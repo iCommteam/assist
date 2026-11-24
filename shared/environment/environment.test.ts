@@ -60,12 +60,30 @@ describe("environment", () => {
     ["ASSIST_ALLOWED_EMAILS", "alice@example.test, not-an-email"],
     ["ASSIST_ADMIN_EMAILS", "alice"],
     ["ASSIST_SIGNUP_CODE", "too-short"],
+    ["TEEMIQ_FINANCE_MCP_URL", "http://team.example/api/mcp/finance"],
+    ["TEEMIQ_FINANCE_MCP_URL", "team.example/api/mcp/finance"],
   ])("rejects an invalid %s during import", async (name, value) => {
     vi.stubEnv(name, value);
 
     await expect(import("@shared/environment")).rejects.toThrow(
       "Invalid environment variables"
     );
+  });
+
+  it("reads TEEMIQ's finance MCP URL over https, or http on this machine, and leaves it unset by default", async () => {
+    const { env: unset } = await import("@shared/environment");
+    expect(unset.TEEMIQ_FINANCE_MCP_URL).toBeUndefined();
+
+    for (const url of [
+      "https://team.example/api/mcp/finance",
+      "http://localhost:3000/api/mcp/finance",
+    ]) {
+      vi.resetModules();
+      vi.stubEnv("TEEMIQ_FINANCE_MCP_URL", url);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each URL needs a fresh import.
+      const { env } = await import("@shared/environment");
+      expect(env.TEEMIQ_FINANCE_MCP_URL).toBe(url);
+    }
   });
 
   it("provides stable auth and encryption defaults in local development", async () => {

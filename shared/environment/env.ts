@@ -66,6 +66,17 @@ const signupCodeSchema = requiredValue.refine(
   "ASSIST_SIGNUP_CODE must contain at least 16 characters."
 );
 
+// An https URL, or plain http on this machine for local development.
+const financeMcpUrlSchema = requiredValue.refine((value) => {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  return (
+    url.protocol === "https:" ||
+    (url.protocol === "http:" &&
+      ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))
+  );
+}, "TEEMIQ_FINANCE_MCP_URL must be an https URL.");
+
 const scheduledRunSecretSchema = requiredValue.refine(
   (value) => value.trim().length >= 32,
   "SCHEDULED_RUN_SECRET must contain at least 32 characters."
@@ -114,6 +125,10 @@ export const env = createEnv({
     // The bearer secret of the loopback scheduled-run callbacks. Unset means
     // every callback is refused.
     SCHEDULED_RUN_SECRET: scheduledRunSecretSchema.optional(),
+
+    // TEEMIQ's finance MCP route, which a site chat reaches with the token
+    // TEEMIQ gave that chat. Unset means site chats have no finance tools.
+    TEEMIQ_FINANCE_MCP_URL: financeMcpUrlSchema.optional(),
 
     // Optional
     // The co-located eve server's port in production, as `withEve` reads it.

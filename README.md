@@ -77,6 +77,7 @@ only to hand the root-owned volume to the `node` user; both servers run as
 | `ASSIST_SIGNUP_CODE`                    | yes    | at least 16 characters                                   |
 | `ASSIST_SITE_TOKEN_<SITE>`              | yes    | one per site; see [Connected sites](#connected-sites)    |
 | `ASSIST_SITE_OWNER_<SITE>`              | no     | one per site                                             |
+| `TEEMIQ_FINANCE_MCP_URL`                | no     | TEEMIQ's finance tools; see [Site chats](#site-chats)    |
 | `PORT`                                  | no     | `8080`, set explicitly; Teemiq's private address uses it |
 
 Generate each secret locally and paste it straight into Railway as a sealed
