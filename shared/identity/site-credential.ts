@@ -7,7 +7,7 @@ import { loginAlsoHostsSchema, loginOriginSchema } from "@shared/vault/schema";
 // server-only BETTER_AUTH_SECRET, so neither a browser nor a site can mint one,
 // and it is bound to one site, one operation and, for a read or a cancel, one
 // session. A create may pin the task to one saved login, whose origin and
-// the hosts its site also uses the API resolved. An answer is bound to one
+// the hosts its site also uses the API resolved, and make it a look. An answer is bound to one
 // open question of one session. A chat grant names the site's person and the
 // chat as well, and covers only that chat's session.
 const credentialPrefix = "assist-site.v1.";
@@ -58,6 +58,9 @@ const siteGrantSchema = z.discriminatedUnion("op", [
     session: sessionId,
   }),
   z.strictObject({
+    // A look lists what the pinned account holds and saves nothing; a task
+    // without a kind fetches.
+    kind: z.literal("look").optional(),
     login: siteLoginPinSchema.optional(),
     op: z.literal("create"),
     site: z.string().min(1),

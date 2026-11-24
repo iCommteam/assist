@@ -24,7 +24,11 @@ import {
 } from "@agent/subagents/browser-agent/lib/policy/hosts";
 import { isAmazonHost, stripeInvoiceHosts } from "@shared/browser/hosts";
 import { assertWorkerNotBlocked } from "@agent/subagents/browser-agent/lib/policy/page-check";
-import { siteLoginOfSession, siteOfSession } from "@agent/lib/site-principal";
+import {
+  siteLoginOfSession,
+  siteOfSession,
+  siteTaskKindOfSession,
+} from "@agent/lib/site-principal";
 
 const maxFileBytes = 20 * 1024 * 1024;
 const readChunkBytes = 1024 * 1024;
@@ -40,6 +44,8 @@ const pdfSignature = Buffer.from("%PDF-", "latin1");
 
 const notPinnedMessage =
   "Only a site task pinned to a saved login can save files.";
+const lookMessage =
+  "This task is a look, which saves no files. List what you see instead.";
 const notHttpsMessage =
   "save_file saves only an https address. Pass the ref of the PDF's link, such as the invoice's Download PDF link, from browser_snapshot or browser_find; never type, guess or build an address.";
 const oneTargetMessage =
@@ -125,6 +131,9 @@ const saveFile = defineTool({
     // The worker's root session is the site task's session.
     const taskSessionId = context.session.parent?.rootSessionId;
     if (!site || !login || !taskSessionId) throw new Error(notPinnedMessage);
+    if (siteTaskKindOfSession(initiator) !== "fetch") {
+      throw new Error(lookMessage);
+    }
     await requireOwnedBrowserSession(
       scope,
       context.session,
@@ -202,9 +211,11 @@ const saveFile = defineTool({
   },
 });
 
-// Only pinned site tasks have the tool; every other worker never sees it.
+// Only a pinned site task that fetches has the tool; every other worker,
+// a look's included, never sees it.
 export default defineDynamic((context) =>
-  siteLoginOfSession(context.session.auth.initiator)
+  siteLoginOfSession(context.session.auth.initiator) &&
+  siteTaskKindOfSession(context.session.auth.initiator) === "fetch"
     ? { save_file: saveFile }
     : null
 );

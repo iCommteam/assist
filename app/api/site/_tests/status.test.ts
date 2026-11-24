@@ -109,6 +109,54 @@ const idle = {
   status: "running",
 };
 
+describe("site look status", () => {
+  it.each([
+    ["done", "listed"],
+    ["nothing_found", "nothing_found"],
+    [undefined, "listed"],
+  ] as const)(
+    "reads a look the agent ended %s as %s, whatever files it counts",
+    (result, outcome) => {
+      const events = eventsOf([
+        [turnStarted, runRequested],
+        sendMessage("call-1", { kind: "message", text: "INV-1 20.00 USD" }),
+        ...(result ? [endTask("call-2", result)] : []),
+        [turnSettled("completed")],
+      ]);
+
+      expect(
+        siteTaskStatus(
+          siteTaskState(events, createdAt, createdAt.getTime() + minute).state,
+          0,
+          null,
+          "look"
+        )
+      ).toMatchObject({
+        outcome,
+        reply: "INV-1 20.00 USD",
+        status: "completed",
+      });
+    }
+  );
+
+  it("fails a look as a fetch fails", () => {
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      endTask("call-1", "login_failed"),
+      [turnSettled("completed")],
+    ]);
+
+    expect(
+      siteTaskStatus(
+        siteTaskState(events, createdAt, createdAt.getTime() + minute).state,
+        0,
+        null,
+        "look"
+      )
+    ).toMatchObject({ error: "login_failed", outcome: null, status: "failed" });
+  });
+});
+
 describe("site task status", () => {
   it("is running before the first turn starts", () => {
     expect(statusOf([])).toEqual(idle);

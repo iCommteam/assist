@@ -17,6 +17,9 @@ import { listTasksOfLogin, openTaskOfLogin } from "@app/api/site/_lib/task";
 
 const maxBodyBytes = 64 * 1024;
 const taskInputSchema = z.object({
+  // A look lists what the login's account holds and saves nothing, so it
+  // needs a login; leaving it out, as earlier sites do, fetches.
+  kind: z.enum(["fetch", "look"]).default("fetch"),
   loginId: siteLoginPinSchema.shape.id.optional(),
   message: z
     .string()
@@ -35,9 +38,10 @@ export async function POST(request: Request) {
   if (!input.success) return siteError(400, "invalid_request");
 
   const { owner, site } = caller;
-  const { loginId, message } = input.data;
+  const { kind, loginId, message } = input.data;
   if (loginId === undefined) {
-    return startTask(owner.scope, site, message, undefined);
+    if (kind === "look") return siteError(400, "invalid_request");
+    return startTask(owner.scope, site, message, undefined, kind);
   }
   // A login runs one task at a time: its browser profile keeps one sign-in.
   return oneUseOfLoginAtATime(owner.scope, site, loginId, async () => {
@@ -48,7 +52,7 @@ export async function POST(request: Request) {
     if (open.taskId) {
       return siteJson({ error: "login_busy", taskId: open.taskId }, 409);
     }
-    return startTask(owner.scope, site, message, pin.login);
+    return startTask(owner.scope, site, message, pin.login, kind);
   });
 }
 
@@ -71,7 +75,8 @@ async function startTask(
   scope: AccessScope,
   site: string,
   message: string,
-  login: z.infer<typeof siteLoginPinSchema> | undefined
+  login: z.infer<typeof siteLoginPinSchema> | undefined,
+  kind: z.infer<typeof taskInputSchema>["kind"]
 ) {
   const start = claimStartSlot(site);
   if (!start.ok) {
@@ -87,13 +92,13 @@ async function startTask(
     // Only a start that goes ahead frees the login's sign-in, still under
     // the login's lock: a refused one leaves its browsers alone.
     if (login) await closeLeftLoginWriters(scope, login.id);
-    const { session } = await siteEveClient({
-      login,
-      op: "create",
-      site,
-    }).sessions.create({ message });
+    const { session } = await siteEveClient(
+      kind === "look"
+        ? { kind, login, op: "create", site }
+        : { login, op: "create", site }
+    ).sessions.create({ message });
     const taskId = await recordStartedTask(() =>
-      recordSiteTask(site, scope, session.id, login?.id)
+      recordSiteTask(site, scope, session.id, login?.id, kind)
     );
     return siteJson({ taskId }, 202);
   } catch (error) {

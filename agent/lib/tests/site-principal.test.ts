@@ -6,6 +6,7 @@ import {
   siteLoginOfSession,
   siteOfSession,
   sitePrincipal,
+  siteTaskKindOfSession,
 } from "@agent/lib/site-principal";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
@@ -125,6 +126,34 @@ describe("site principal", () => {
       })
     ).toBeUndefined();
     expect(scopeFromPrincipal(principal)).toEqual(owner);
+  });
+
+  it("marks a look on its initiator, and reads every other task as a fetch", () => {
+    const look = sitePrincipal(
+      { kind: "look", login, op: "create", site: "teemiq" },
+      "owner@example.test",
+      owner
+    );
+    const fetch = sitePrincipal(
+      { login, op: "create", site: "teemiq" },
+      "owner@example.test",
+      owner
+    );
+
+    expect(look.attributes).toMatchObject({ siteTaskKind: "look" });
+    expect(siteTaskKindOfSession(look)).toBe("look");
+    expect(siteLoginOfSession(look)).toEqual({ ...login, alsoHosts: [] });
+    expect(Object.keys(fetch.attributes)).not.toContain("siteTaskKind");
+    expect(siteTaskKindOfSession(fetch)).toBe("fetch");
+    expect(
+      siteTaskKindOfSession({ ...look, authenticator: "authjs" })
+    ).toBeUndefined();
+    expect(
+      siteTaskKindOfSession({
+        ...look,
+        authenticator: "assist-site-chat",
+      })
+    ).toBeUndefined();
   });
 
   it("tells a task from a chat and from every other session", () => {

@@ -571,6 +571,28 @@ async function offered(
 }
 
 describe("save_file availability", () => {
+  it("is absent from a look, which saves nothing, and present for a fetch of the same login", async () => {
+    const look = sitePrincipal(
+      {
+        kind: "look",
+        login: { id: "login-1", origin },
+        op: "create",
+        site: "teemiq",
+      },
+      "owner@example.test",
+      owner
+    );
+
+    expect(await offered(look)).toBeNull();
+    expect(await offered(look, member)).toBeNull();
+    expect(Object.keys((await offered(pinned())) ?? {})).toEqual(["save_file"]);
+    await expect(refusal({}, workerContext(look, look))).resolves.toBe(
+      "This task is a look, which saves no files. List what you see instead."
+    );
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(mocks.saveSiteTaskFile).not.toHaveBeenCalled();
+  });
+
   it("is offered only to a site task pinned to a saved login", async () => {
     const scheduled = {
       attributes: { workspaceId: owner.workspaceId },

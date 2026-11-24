@@ -3,9 +3,21 @@ import {
   siteKindOfSession,
   siteLoginOfSession,
   siteOfSession,
+  siteTaskKindOfSession,
 } from "@agent/lib/site-principal";
+import loginFetch from "./content/site-documents/login-fetch.md?raw";
+import loginLook from "./content/site-documents/login-look.md?raw";
+import taskFetch from "./content/site-documents/task-fetch.md?raw";
+import taskLook from "./content/site-documents/task-look.md?raw";
 import siteLogin from "./content/site-login.md?raw";
 import siteTask from "./content/site-task.md?raw";
+
+// A fetch brings files back with the worker's save_file; a look lists what
+// the account holds and has no save_file.
+const documentsOf = {
+  fetch: { login: loginFetch, task: taskFetch },
+  look: { login: loginLook, task: taskLook },
+} as const;
 
 export default defineDynamic((context) => {
   const { initiator } = context.session.auth;
@@ -13,11 +25,15 @@ export default defineDynamic((context) => {
   if (siteKindOfSession(initiator) !== "task") return null;
   const site = siteOfSession(initiator);
   if (!site) return null;
+  const documents = documentsOf[siteTaskKindOfSession(initiator) ?? "fetch"];
   const login = siteLoginOfSession(initiator);
-  const task = siteTask.replaceAll("{{site}}", site);
+  const task = siteTask
+    .replaceAll("{{site}}", site)
+    .replace("{{documents}}", documents.task.trimEnd());
   return defineInstructions({
     content: login
       ? `${task}\n${siteLogin
+          .replace("{{documents}}", documents.login.trimEnd())
           .replaceAll("{{origin}}", login.origin)
           .replaceAll(
             "{{alsoHosts}}",

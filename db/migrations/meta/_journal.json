@@ -141,6 +141,13 @@
       "when": 1795539372578,
       "tag": "0019_chemical_paper_doll",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795541420378,
+      "tag": "0020_calm_toro",
+      "breakpoints": true
     }
   ]
 }

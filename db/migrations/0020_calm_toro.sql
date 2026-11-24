@@ -1,0 +1,2 @@
+ALTER TABLE "site_tasks" ADD COLUMN "kind" text DEFAULT 'fetch' NOT NULL;--> statement-breakpoint
+ALTER TABLE "site_tasks" ADD CONSTRAINT "site_tasks_kind_check" CHECK ("site_tasks"."kind" IN ('fetch', 'look'));

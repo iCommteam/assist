@@ -52,11 +52,13 @@ export async function recordSiteTask(
   site: string,
   scope: AccessScope,
   sessionId: string,
-  loginId: string | undefined
+  loginId: string | undefined,
+  kind: (typeof siteTasks.$inferInsert)["kind"] = "fetch"
 ) {
   const [task] = await db
     .insert(siteTasks)
     .values({
+      kind,
       loginId: loginId ?? null,
       sessionId,
       site,
@@ -334,7 +336,7 @@ export async function readSiteTaskFile(
   return file;
 }
 
-// The session and creation time of a task this site created in this
+// The session, creation time and kind of a task this site created in this
 // workspace, or undefined for an unknown task, another site's task, or one
 // from a previous owner.
 export async function findSiteTaskSession(
@@ -343,7 +345,11 @@ export async function findSiteTaskSession(
   taskId: string
 ) {
   const [task] = await db
-    .select({ createdAt: siteTasks.createdAt, sessionId: siteTasks.sessionId })
+    .select({
+      createdAt: siteTasks.createdAt,
+      kind: siteTasks.kind,
+      sessionId: siteTasks.sessionId,
+    })
     .from(siteTasks)
     .where(
       and(

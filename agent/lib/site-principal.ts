@@ -47,12 +47,16 @@ export function sitePrincipal(
     siteLogin: login.id,
     siteLoginOrigin: login.origin,
   };
+  const withHosts = pinned
+    ? login.alsoHosts?.length
+      ? { ...pinned, siteLoginAlsoHosts: login.alsoHosts }
+      : pinned
+    : attributes;
   return {
-    attributes: pinned
-      ? login.alsoHosts?.length
-        ? { ...pinned, siteLoginAlsoHosts: login.alsoHosts }
-        : pinned
-      : attributes,
+    attributes:
+      grant.op === "create" && grant.kind === "look"
+        ? { ...withHosts, siteTaskKind: "look" }
+        : withHosts,
     authenticator: siteAuthenticator,
     principalId: scope.userId,
     principalType: "user",
@@ -98,6 +102,16 @@ export function siteChatOfSession(initiator: SessionAuthContext | null) {
         siteUser: chat.data.siteUser,
       }
     : undefined;
+}
+
+// Whether a site task is a look, which lists what its account holds and saves
+// nothing, or a fetch, which brings files back; undefined for a chat and for
+// every other session. A task started before looks existed is a fetch.
+export function siteTaskKindOfSession(initiator: SessionAuthContext | null) {
+  if (siteKindOfSession(initiator) !== "task") return undefined;
+  return initiator?.attributes.siteTaskKind === "look"
+    ? ("look" as const)
+    : ("fetch" as const);
 }
 
 // The saved login a site task is pinned to, or undefined when it has none or

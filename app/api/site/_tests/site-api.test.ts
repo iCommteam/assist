@@ -139,6 +139,7 @@ beforeEach(() => {
   services.recordSiteTask.mockResolvedValue(taskId);
   services.findSiteTaskSession.mockResolvedValue({
     createdAt: new Date(),
+    kind: "fetch",
     sessionId: "wrun_1",
   });
   services.readSiteLoginPin.mockResolvedValue({
@@ -280,7 +281,8 @@ describe("POST /api/site/tasks", () => {
       "teemiq",
       owner,
       "wrun_1",
-      undefined
+      undefined,
+      "fetch"
     );
     expect(eve.baseUrls).toEqual(["http://127.0.0.1:4274"]);
     expect(await grantOfLastClient()).toEqual({ op: "create", site: "teemiq" });
@@ -378,6 +380,96 @@ describe("POST /api/site/tasks", () => {
   });
 });
 
+describe("look tasks", () => {
+  it("starts a look pinned to a login, recorded as one, with the kind in its grant", async () => {
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, {
+        kind: "look",
+        loginId: "login-1",
+        message: "Look at the November invoices.",
+      })
+    );
+
+    expect(response.status).toBe(202);
+    expect(services.recordSiteTask).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      "wrun_1",
+      "login-1",
+      "look"
+    );
+    expect(await grantOfLastClient()).toEqual({
+      kind: "look",
+      login: {
+        alsoHosts: [],
+        id: "login-1",
+        origin: "https://login.vendor.example",
+      },
+      op: "create",
+      site: "teemiq",
+    });
+  });
+
+  it("keeps a start that names no kind, or fetch, a fetch with the grant earlier sites got", async () => {
+    await createTask(
+      siteRequest("/tasks", teemiqToken, {
+        kind: "fetch",
+        loginId: "login-1",
+        message: "Fetch the October invoice.",
+      })
+    );
+
+    expect(services.recordSiteTask.mock.calls.at(-1)?.at(-1)).toBe("fetch");
+    expect(await grantOfLastClient()).not.toHaveProperty("kind");
+  });
+
+  it.each([
+    ["a look without a login", { kind: "look", message: "Look." }],
+    [
+      "another kind",
+      { kind: "download", loginId: "login-1", message: "Look." },
+    ],
+  ])("refuses %s", async (_case, body) => {
+    const response = await createTask(siteRequest("/tasks", teemiqToken, body));
+
+    expect(response.status).toBe(400);
+    expect(eve.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["done", "listed"],
+    ["nothing_found", "nothing_found"],
+  ])(
+    "reads a look the agent ended %s as %s, with its list as the reply and no files counted",
+    async (result, outcome) => {
+      services.findSiteTaskSession.mockResolvedValue({
+        createdAt: new Date(),
+        kind: "look",
+        sessionId: "wrun_1",
+      });
+      eve.read.mockResolvedValue(lookEnded(result));
+
+      const response = await readTask(
+        siteRequest(`/tasks/${taskId}`, teemiqToken),
+        params(taskId)
+      );
+
+      await expect(response.json()).resolves.toEqual({
+        error: null,
+        kind: "look",
+        outcome,
+        question: null,
+        questionId: null,
+        reply: "2026-11-03 INV-1 20.00 USD invoice",
+        signInOrigin: null,
+        status: "completed",
+        taskId,
+      });
+      expect(services.countSiteTaskFiles).not.toHaveBeenCalled();
+    }
+  );
+});
+
 describe("POST /api/site/tasks login pin", () => {
   it("pins the task to a saved login of the owner's vault", async () => {
     const response = await createTask(
@@ -401,7 +493,8 @@ describe("POST /api/site/tasks login pin", () => {
       "teemiq",
       owner,
       "wrun_1",
-      "login-1"
+      "login-1",
+      "fetch"
     );
     expect(await grantOfLastClient()).toEqual({
       login: {
@@ -603,6 +696,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
       reply: "pong",
       signInOrigin: null,
       status: "completed",
+      kind: "fetch",
       taskId,
     });
     expect(services.findSiteTaskSession).toHaveBeenCalledExactlyOnceWith(
@@ -649,6 +743,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
 
     await expect(response.json()).resolves.toEqual({
       ...runningStatus,
+      kind: "fetch",
       taskId,
     });
     expect(services.countSiteTaskFiles).not.toHaveBeenCalled();
@@ -671,6 +766,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
       reply: "pong",
       signInOrigin: "https://auth.vendor.example",
       status: "failed",
+      kind: "fetch",
       taskId,
     });
     expect(services.readSiteTaskSignInOrigin).toHaveBeenCalledExactlyOnceWith(
@@ -797,7 +893,11 @@ describe("GET /api/site/tasks/{taskId}", () => {
     );
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ...expected, taskId });
+    await expect(response.json()).resolves.toEqual({
+      ...expected,
+      kind: "fetch",
+      taskId,
+    });
   });
 
   it("reads a task whose run is gone as failed once it is past starting", async () => {
@@ -805,6 +905,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
     // Just inside the start window, eve's 404 still means the run is starting.
     services.findSiteTaskSession.mockResolvedValueOnce({
       createdAt: new Date(Date.now() - 90_000),
+      kind: "fetch",
       sessionId: "wrun_1",
     });
     const starting = await readTask(
@@ -813,12 +914,14 @@ describe("GET /api/site/tasks/{taskId}", () => {
     );
     await expect(starting.json()).resolves.toEqual({
       ...runningStatus,
+      kind: "fetch",
       taskId,
     });
 
     // Ten minutes later the run is missing, not starting: a poller must stop.
     services.findSiteTaskSession.mockResolvedValueOnce({
       createdAt: new Date(Date.now() - 10 * 60_000),
+      kind: "fetch",
       sessionId: "wrun_1",
     });
     const missing = await readTask(
@@ -831,6 +934,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
       ...runningStatus,
       error: "failed",
       status: "failed",
+      kind: "fetch",
       taskId,
     });
     expect(console.warn).toHaveBeenCalledWith("[site] task run is missing", {
@@ -861,6 +965,7 @@ describe("GET /api/site/tasks/{taskId} past the task's lifetime", () => {
       eve.read.mockResolvedValue(events());
       services.findSiteTaskSession.mockResolvedValue({
         createdAt: new Date(Date.now() - 45 * 60_000),
+        kind: "fetch",
         sessionId: "wrun_1",
       });
 
@@ -874,6 +979,7 @@ describe("GET /api/site/tasks/{taskId} past the task's lifetime", () => {
         ...runningStatus,
         error: "timed_out",
         status: "failed",
+        kind: "fetch",
         taskId,
       });
       expect(eve.cancel).toHaveBeenCalledExactlyOnceWith("wrun_1", "turn_0");
@@ -893,6 +999,7 @@ describe("GET /api/site/tasks/{taskId} past the task's lifetime", () => {
     eve.read.mockResolvedValue(runningTask());
     services.findSiteTaskSession.mockResolvedValue({
       createdAt: new Date(Date.now() - 45 * 60_000 + 1),
+      kind: "fetch",
       sessionId: "wrun_1",
     });
 
@@ -911,6 +1018,7 @@ describe("GET /api/site/tasks/{taskId} past the task's lifetime", () => {
     eve.read.mockResolvedValue(completedPong());
     services.findSiteTaskSession.mockResolvedValue({
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      kind: "fetch",
       sessionId: "wrun_1",
     });
 
@@ -931,6 +1039,7 @@ describe("GET /api/site/tasks/{taskId} past the task's lifetime", () => {
     eve.cancel.mockRejectedValue(new SessionNotActiveError());
     services.findSiteTaskSession.mockResolvedValue({
       createdAt: new Date(Date.now() - 50 * 60_000),
+      kind: "fetch",
       sessionId: "wrun_1",
     });
 
@@ -950,6 +1059,7 @@ describe("GET /api/site/tasks/{taskId} past the task's lifetime", () => {
     eve.cancel.mockRejectedValue(new ClientError(500, "{}"));
     services.findSiteTaskSession.mockResolvedValue({
       createdAt: new Date(Date.now() - 50 * 60_000),
+      kind: "fetch",
       sessionId: "wrun_1",
     });
 
@@ -972,6 +1082,7 @@ describe("GET /api/site/tasks/{taskId} past the task's lifetime", () => {
     );
     services.findSiteTaskSession.mockResolvedValue({
       createdAt: new Date(Date.now() - 45 * 60_000),
+      kind: "fetch",
       sessionId: "wrun_1",
     });
 
@@ -1006,6 +1117,7 @@ describe("GET /api/site/tasks/{taskId} while the worker waits for a code", () =>
       reply: null,
       signInOrigin: null,
       status: "awaiting-input",
+      kind: "fetch",
       taskId,
     });
   });
@@ -1241,6 +1353,7 @@ describe("POST /api/site/tasks/{taskId}/input past the task's lifetime", () => {
     eve.read.mockResolvedValue(awaitingCode());
     services.findSiteTaskSession.mockResolvedValue({
       createdAt: new Date(Date.now() - 46 * 60_000),
+      kind: "fetch",
       sessionId: "wrun_1",
     });
 
@@ -1753,7 +1866,7 @@ function inputRequest(token: string, body: string | undefined, id = taskId) {
 function siteRequest(
   path: string,
   token: string,
-  body?: { loginId?: string; message: string }
+  body?: { kind?: string; loginId?: string; message: string }
 ) {
   return new Request(`https://assist.example/api/site${path}`, {
     ...(body
@@ -1881,6 +1994,43 @@ function endedWith(result: string) {
 
 function completedPong() {
   return eventsOf(pongLines());
+}
+
+function toolCall(
+  callId: string,
+  name: string,
+  output: Record<string, string>
+): Fact[] {
+  return [
+    {
+      data: {
+        callId,
+        capability: { kind: "tool", name },
+        input: output,
+        owner: { runId: "run-1" },
+      },
+      scope: { runId: "run-1", turnId: "turn_0" },
+      type: "call.requested",
+    },
+    {
+      data: { callId, outcome: "completed", output },
+      scope: { runId: "run-1", turnId: "turn_0" },
+      type: "call.settled",
+    },
+  ];
+}
+
+function lookEnded(result: string) {
+  const [started = [], , settled = []] = pongLines();
+  return eventsOf([
+    started,
+    toolCall("call-1", "send_message", {
+      kind: "message",
+      text: "2026-11-03 INV-1 20.00 USD invoice",
+    }),
+    toolCall("call-2", "end_site_task", { result }),
+    settled,
+  ]);
 }
 
 function pongLines(): Fact[][] {

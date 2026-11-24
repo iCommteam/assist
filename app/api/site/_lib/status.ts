@@ -54,7 +54,12 @@ export type SiteTaskState =
       readonly question: string;
       readonly status: "awaiting-input";
     }
-  | { readonly reply: string | null; readonly status: "completed" }
+  | {
+      // The result the agent ended the task with, when it was one of these.
+      readonly ended?: "done" | "nothing_found";
+      readonly reply: string | null;
+      readonly status: "completed";
+    }
   | {
       readonly error: SiteTaskError;
       readonly reply: string | null;
@@ -87,21 +92,29 @@ export function isOpen(state: SiteTaskState) {
   return state.status === "running" || state.status === "awaiting-input";
 }
 
-// What a site reads. Whether a completed task found anything comes from the
+// What a site reads. Whether a completed fetch found anything comes from the
 // files it saved, never from what the agent said, and where the website asks
 // for the password from the page the server recorded when it refused a fill
-// there. A sign_in_elsewhere with no page recorded reads login_failed.
+// there. A sign_in_elsewhere with no page recorded reads login_failed. A look
+// saves nothing: what it found is its reply, and it reads nothing_found only
+// when the agent ended it so.
 export function siteTaskStatus(
   state: SiteTaskState,
   savedFiles: number,
-  signInOrigin: string | null
+  signInOrigin: string | null,
+  kind: "fetch" | "look" = "fetch"
 ) {
   const waiting = state.status === "awaiting-input";
   const error = state.status === "failed" ? state.error : null;
   const elsewhere = error === "sign_in_elsewhere" ? signInOrigin : null;
   return {
     error: error === "sign_in_elsewhere" && !elsewhere ? "login_failed" : error,
-    outcome: state.status === "completed" ? outcomeOf(savedFiles) : null,
+    outcome:
+      state.status === "completed"
+        ? kind === "look"
+          ? lookOutcome(state.ended)
+          : outcomeOf(savedFiles)
+        : null,
     question: waiting ? state.question : null,
     // Tells one question from the next, so a site can see it was asked again.
     questionId: waiting ? state.interactionId : null,
@@ -116,6 +129,10 @@ export function siteTaskStatus(
 
 function outcomeOf(savedFiles: number) {
   return savedFiles > 0 ? "files" : "nothing_found";
+}
+
+function lookOutcome(ended: "done" | "nothing_found" | undefined) {
+  return ended === "nothing_found" ? "nothing_found" : "listed";
 }
 
 // A site task is the first turn of its session: the site's message starts
@@ -204,7 +221,9 @@ function completedState(
   if (failedWith !== undefined) {
     return { error: failedWith, reply, status: "failed" };
   }
-  return { reply, status: "completed" };
+  return result === "done" || result === "nothing_found"
+    ? { ended: result, reply, status: "completed" }
+    : { reply, status: "completed" };
 }
 
 // Read from the events, as the reply is.

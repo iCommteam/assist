@@ -48,6 +48,7 @@ describe("database migrations", () => {
     await applyMigration(database, "0017_parallel_hulk.sql");
     await applyMigration(database, "0018_famous_bishop.sql");
     await applyMigration(database, "0019_chemical_paper_doll.sql");
+    await applyMigration(database, "0020_calm_toro.sql");
 
     const tables = await database.query<{ count: number }>(
       `SELECT count(*)::int AS count
@@ -234,6 +235,51 @@ describe("database migrations", () => {
     expect(existing.rows).toEqual([
       { login_id: "login-1", sign_in_origin: null },
     ]);
+  }, 30_000);
+
+  it("reads every earlier site task as a fetch, and takes only fetch or look", async () => {
+    const database = createDatabase();
+    const journal = z
+      .object({ entries: z.array(z.object({ tag: z.string() })) })
+      .parse(
+        JSON.parse(
+          await readFile(
+            new URL("../migrations/meta/_journal.json", import.meta.url),
+            "utf8"
+          )
+        )
+      );
+    const tags = journal.entries.map(({ tag }) => tag);
+    /* oxlint-disable eslint/no-await-in-loop -- Migrations must execute in journal order. */
+    for (const tag of tags.slice(0, tags.indexOf("0020_calm_toro"))) {
+      await applyMigration(database, `${tag}.sql`);
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+    await database.exec(`
+      INSERT INTO workspaces (id) VALUES ('workspace-1');
+      INSERT INTO site_tasks (id, site, workspace_id, session_id)
+      VALUES ('00000000-0000-4000-8000-000000000001', 'teemiq', 'workspace-1', 'wrun_1');
+    `);
+
+    await applyMigration(database, "0020_calm_toro.sql");
+
+    await database.exec(`
+      INSERT INTO site_tasks (id, site, workspace_id, session_id, kind)
+      VALUES ('00000000-0000-4000-8000-000000000002', 'teemiq', 'workspace-1', 'wrun_2', 'look');
+    `);
+    const kinds = await database.query(
+      "SELECT session_id, kind FROM site_tasks ORDER BY session_id"
+    );
+    expect(kinds.rows).toEqual([
+      { kind: "fetch", session_id: "wrun_1" },
+      { kind: "look", session_id: "wrun_2" },
+    ]);
+    await expect(
+      database.exec(`
+        INSERT INTO site_tasks (id, site, workspace_id, session_id, kind)
+        VALUES ('00000000-0000-4000-8000-000000000003', 'teemiq', 'workspace-1', 'wrun_3', 'download');
+      `)
+    ).rejects.toThrow(/constraint/u);
   }, 30_000);
 
   it("adds site chats, whose token and its expiry come and go together", async () => {

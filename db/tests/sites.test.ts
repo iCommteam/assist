@@ -136,6 +136,17 @@ describe("site tasks", () => {
     expect(taskId).toMatch(/^[0-9a-f-]{36}$/u);
     const task = await findSiteTaskSession("teemiq", owner, taskId);
     expect(task?.sessionId).toBe("wrun_teemiq");
+    expect(task?.kind).toBe("fetch");
+    const look = await recordSiteTask(
+      "teemiq",
+      owner,
+      "wrun_look",
+      "login-look",
+      "look"
+    );
+    await expect(
+      findSiteTaskSession("teemiq", owner, look)
+    ).resolves.toMatchObject({ kind: "look", sessionId: "wrun_look" });
     // The task route times eve's "not found" from this creation time.
     expect(task?.createdAt).toBeInstanceOf(Date);
     expect(task?.createdAt.getTime()).toBeGreaterThanOrEqual(before - 1000);

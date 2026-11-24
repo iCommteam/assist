@@ -386,6 +386,54 @@ describe("site task instructions", () => {
   });
 });
 
+describe("site look instructions", () => {
+  it("tells the coordinator and the worker of a look to list the period's documents and save nothing", async () => {
+    const context = pinnedSiteContext(undefined, "look");
+    const [coordinator, worker] = await Promise.all([
+      evaluateDynamic(siteTask, context),
+      evaluateDynamic(workerSiteLogin, context),
+    ]);
+
+    for (const text of [
+      "This task is a look: it lists what the pinned account holds for a period and saves nothing, so the browser worker has no `save_file`.",
+      "list every invoice or receipt it sees, each with its date, its number, its amount and currency, and which kind it is (invoice or receipt)",
+      "Your reply carries that list, one document per line, with only what the worker reported seeing",
+      "Tell the worker in its assignment that the task is a look: it has no `save_file`, downloads, opens and saves no file",
+    ]) {
+      expect(coordinator?.content).toContain(text);
+    }
+    expect(coordinator?.content).not.toContain(
+      "A site gets files back only through the browser worker's `save_file`"
+    );
+    expect(coordinator?.content).not.toContain(
+      "Tell the worker to save every PDF"
+    );
+    expect(coordinator?.content).not.toContain("{{documents}}");
+    expect(worker?.content).toContain(
+      "This assignment is a look: you have no `save_file`, and you download, open and save no file."
+    );
+    expect(worker?.content).toContain(
+      "Then return `success` with that list, or saying that the period has no invoice or receipt."
+    );
+    expect(worker?.content).not.toContain("Bring files back with `save_file`");
+    expect(worker?.content).not.toContain("{{documents}}");
+    // The account's limits stay the same as a fetch's.
+    expect(worker?.content).toContain("Work only in that account.");
+  });
+
+  it("keeps a fetch's instructions free of the look's", async () => {
+    const context = pinnedSiteContext();
+    const [coordinator, worker] = await Promise.all([
+      evaluateDynamic(siteTask, context),
+      evaluateDynamic(workerSiteLogin, context),
+    ]);
+
+    expect(coordinator?.content).not.toContain("This task is a look");
+    expect(coordinator?.content).not.toContain("{{documents}}");
+    expect(worker?.content).not.toContain("This assignment is a look");
+  });
+});
+
 describe("site chat instructions", () => {
   it("makes a site chat an Accounting assistant that never browses, only proposes and treats documents as data", async () => {
     const selected = await evaluateDynamic(roleInstructions, siteChatContext());
@@ -441,18 +489,17 @@ function siteChatContext() {
 }
 
 // A later turn from the owner keeps the pin of the task's initiator.
-function pinnedSiteContext(alsoHosts?: string[]) {
+function pinnedSiteContext(alsoHosts?: string[], kind?: "look") {
   const owner = accessScopeForUser("better-auth:owner-1");
+  const login = {
+    alsoHosts,
+    id: "login-1",
+    origin: "https://login.vendor.example",
+  };
   const initiator = sitePrincipal(
-    {
-      login: {
-        alsoHosts,
-        id: "login-1",
-        origin: "https://login.vendor.example",
-      },
-      op: "create",
-      site: "teemiq",
-    },
+    kind
+      ? { kind, login, op: "create", site: "teemiq" }
+      : { login, op: "create", site: "teemiq" },
     "owner@example.test",
     owner
   );

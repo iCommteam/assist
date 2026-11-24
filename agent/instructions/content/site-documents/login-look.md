@@ -1,0 +1,1 @@
+- Tell the worker in its assignment that the task is a look: it has no `save_file`, downloads, opens and saves no file, and reports, for the requested period, every invoice or receipt the account shows, with its date, number, amount, currency and kind.

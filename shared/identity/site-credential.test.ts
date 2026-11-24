@@ -61,6 +61,24 @@ describe("site channel credential", () => {
     expect(verifySiteCredential(secret, pathOrigin)).toBeUndefined();
   });
 
+  it("carries a look on a create grant, and nothing else as its kind", () => {
+    const login = { id: "login-1", origin: "https://login.vendor.example" };
+    const look = { kind: "look", login, op: "create", site: "teemiq" } as const;
+
+    expect(
+      verifySiteCredential(secret, mintSiteCredential(secret, look))
+    ).toEqual(look);
+    expect(
+      verifySiteCredential(
+        secret,
+        mintSiteCredential(
+          secret,
+          uncheckedGrant.parse({ ...look, kind: "fetch" })
+        )
+      )
+    ).toBeUndefined();
+  });
+
   it("binds an answer grant to one question of one session", () => {
     const answer = mintSiteCredential(secret, {
       interaction: "interaction-1",

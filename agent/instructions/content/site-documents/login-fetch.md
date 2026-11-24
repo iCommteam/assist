@@ -1,0 +1,1 @@
+- Tell the worker to save every PDF the task asks for with `save_file` and to report each saved file's name, never its address. When the worker reports that `save_file` refused a file as being on a website this task may not open, end the task with `off_site`. When it reports a document whose PDF has no address to save, end the task with `failed`, never `nothing_found`.

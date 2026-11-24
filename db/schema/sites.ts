@@ -24,6 +24,11 @@ export const siteTasks = pgTable(
     // The saved login the task is pinned to, or null for a task without one.
     // It outlives the login, so it is not a foreign key.
     loginId: text("login_id"),
+    // A fetch brings files back; a look lists what its account holds and
+    // saves nothing.
+    kind: text("kind", { enum: ["fetch", "look"] })
+      .notNull()
+      .default("fetch"),
     // The https origin of a page on the pinned login's site, other than the
     // origin it was saved with, where the browser worker last tried to fill
     // the login and was refused. The server writes it; a model never does.
@@ -42,6 +47,7 @@ export const siteTasks = pgTable(
       columns: [table.workspaceId],
       foreignColumns: [workspaces.id],
     }).onDelete("cascade"),
+    check("site_tasks_kind_check", sql`${table.kind} IN ('fetch', 'look')`),
     index("site_tasks_site_idx").on(table.site, table.createdAt.desc()),
     index("site_tasks_site_login_idx").on(
       table.site,

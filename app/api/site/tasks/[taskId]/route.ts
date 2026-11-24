@@ -15,7 +15,8 @@ export async function GET(
   const found = await lookupSiteTask(site, owner.scope, taskId);
   if (!found.ok) return found.response;
 
-  const read = await readSiteTaskStatus(site, owner.scope, found.task);
+  const { kind } = found.task;
+  const read = await readSiteTaskStatus(site, owner.scope, found.task, kind);
   if (!read.ok) return read.response;
-  return siteJson({ taskId, ...read.status });
+  return siteJson({ kind, taskId, ...read.status });
 }

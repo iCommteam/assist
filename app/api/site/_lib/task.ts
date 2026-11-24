@@ -132,7 +132,8 @@ function readState(state: SiteTaskState) {
 export async function readSiteTaskStatus(
   site: string,
   scope: AccessScope,
-  task: SiteTask
+  task: SiteTask,
+  kind: "fetch" | "look" = "fetch"
 ) {
   const read = await readSiteTaskState(site, task);
   if (!read.ok) return read;
@@ -157,6 +158,12 @@ export async function readSiteTaskStatus(
   }
   if (read.state.status !== "completed") {
     return { ok: true as const, status: siteTaskStatus(read.state, 0, null) };
+  }
+  if (kind === "look") {
+    return {
+      ok: true as const,
+      status: siteTaskStatus(read.state, 0, null, kind),
+    };
   }
   let savedFiles: number;
   try {
