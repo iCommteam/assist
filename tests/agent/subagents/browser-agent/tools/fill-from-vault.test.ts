@@ -428,8 +428,10 @@ describe("fill_from_vault", () => {
     await expect(fillFromVault.execute(input, siteTask)).rejects.toThrow(
       /^This saved login is restricted to https:\/\/login\.example\.com\.$/u
     );
+    // Stripe says nothing of where the site signs in, so a page recorded
+    // before stays.
     expect(mocks.recordSignInOrigin).not.toHaveBeenCalled();
-    expect(mocks.clearSignInOrigin).toHaveBeenCalledOnce();
+    expect(mocks.clearSignInOrigin).not.toHaveBeenCalled();
     expect(mocks.fill).not.toHaveBeenCalled();
   });
 

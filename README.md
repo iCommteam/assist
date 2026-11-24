@@ -318,8 +318,9 @@ a running task every few seconds.
   sign-in host, even under the login's own domain, and never on a port, so a
   site can save a login there. A fill refused on several such pages records
   the last. A later fill that succeeds on the saved origin, or one refused on
-  a page no login can be saved on, clears it, so a task then ended
-  `sign_in_elsewhere` reads `login_failed`.
+  a page of the login's site no login can be saved on, such as an identity
+  provider's, clears it, so a task then ended `sign_in_elsewhere` reads
+  `login_failed`.
 - `reply`: the agent's last message as plain text, set once the site's turn
   has completed, also when the task then reads `failed`; it is null while the
   task runs or waits, and for a turn that was cancelled, stopped or failed in

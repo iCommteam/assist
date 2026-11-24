@@ -30,19 +30,27 @@ export class SignInElsewhereRefusal extends Error {
 // on Stripe's, that page's origin is recorded for the task: the site then
 // learns where the website asks for the password from the browser, never
 // from a model. Only a page the site could save a login on is recorded; a
-// refusal anywhere else, such as on an identity provider under the login's
-// domain, forgets the page recorded before, as the sign-in has moved on from
-// it. Says whether it was recorded; a failed write only leaves the refusal as
-// it was.
+// refusal on any other page of the login's site, such as an identity
+// provider under its domain, forgets the page recorded before, as the
+// sign-in has moved on from it. A page off the site says nothing of where it
+// signs in. Says whether it was recorded; a failed write only leaves the
+// refusal as it was.
 export async function recordSignInElsewhere(
   session: WorkerSession,
   scope: AccessScope,
   pageOrigin: string
 ) {
   const task = pinnedSiteTask(session);
-  if (!task || pageOrigin === task.login.origin) return false;
+  if (!task || pageOrigin === task.login.origin || !URL.canParse(pageOrigin)) {
+    return false;
+  }
+  const page = new URL(pageOrigin);
+  const { alsoHosts, origin } = task.login;
+  if (!isOnLoginSite(page.hostname, siteNavigationFence(origin, alsoHosts))) {
+    return false;
+  }
   try {
-    if (!isRecordablePage(pageOrigin, task.login)) {
+    if (!isSaveableOrigin(page, pageOrigin)) {
       await clearSiteTaskSignInOrigin(task.site, scope, task.sessionId);
       return false;
     }
@@ -93,21 +101,12 @@ function pinnedSiteTask(session: WorkerSession) {
 // port or trailing dot, and never an identity provider, even one under the
 // login's own registrable domain, such as login.microsoft.com for a login on
 // billing.microsoft.com.
-function isRecordablePage(
-  pageOrigin: string,
-  login: NonNullable<ReturnType<typeof siteLoginOfSession>>
-) {
-  if (!URL.canParse(pageOrigin)) return false;
-  const page = new URL(pageOrigin);
+function isSaveableOrigin(page: URL, pageOrigin: string) {
   return (
     page.protocol === "https:" &&
     page.port === "" &&
     page.origin === pageOrigin &&
     !page.hostname.endsWith(".") &&
-    !isIdentityProviderHost(page.hostname) &&
-    isOnLoginSite(
-      page.hostname,
-      siteNavigationFence(login.origin, login.alsoHosts)
-    )
+    !isIdentityProviderHost(page.hostname)
   );
 }

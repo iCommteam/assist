@@ -370,17 +370,20 @@ describe("fill_totp_from_vault", () => {
     }
   );
 
+  // A page of the login's site no login can be saved on forgets the page
+  // recorded before; a page off the site says nothing of its sign-in.
   it.each([
-    ["Stripe's invoice host", "https://pay.stripe.com"],
-    ["an http page of the login's site", "http://auth.vendor.example"],
+    ["Stripe's invoice host", "https://pay.stripe.com", 0],
+    ["an http page of the login's site", "http://auth.vendor.example", 1],
     [
       "a page of the login's site on a port",
       "https://auth.vendor.example:8443",
+      1,
     ],
-    ["another site", "https://evil.example"],
+    ["another site", "https://evil.example", 0],
   ])(
     "records nothing on %s, keeping the vault's refusal",
-    async (_case, page) => {
+    async (_case, page, cleared) => {
       mocks.currentKernelPageOrigin.mockResolvedValue(page);
 
       await expect(
@@ -389,7 +392,7 @@ describe("fill_totp_from_vault", () => {
         /^This saved login is restricted to https:\/\/login\.vendor\.example\.$/u
       );
       expect(mocks.recordSignInOrigin).not.toHaveBeenCalled();
-      expect(mocks.clearSignInOrigin).toHaveBeenCalledOnce();
+      expect(mocks.clearSignInOrigin).toHaveBeenCalledTimes(cleared);
       expect(mocks.fill).not.toHaveBeenCalled();
     }
   );
