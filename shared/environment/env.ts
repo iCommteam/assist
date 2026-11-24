@@ -77,6 +77,17 @@ const financeMcpUrlSchema = requiredValue.refine((value) => {
   );
 }, "TEEMIQ_FINANCE_MCP_URL must be an https URL.");
 
+const twilioAccountSidSchema = requiredValue.refine(
+  (value) => /^AC[0-9a-f]{32}$/u.test(value),
+  "TWILIO_ACCOUNT_SID must be a Twilio account SID: AC and 32 hex digits."
+);
+
+// The WhatsApp number assist answers from, as Twilio writes it.
+const whatsappSenderSchema = requiredValue.refine(
+  (value) => /^whatsapp:\+[1-9]\d{6,14}$/u.test(value),
+  "TWILIO_WHATSAPP_FROM must be whatsapp: and an E.164 number, such as whatsapp:+15551234567."
+);
+
 const scheduledRunSecretSchema = requiredValue.refine(
   (value) => value.trim().length >= 32,
   "SCHEDULED_RUN_SECRET must contain at least 32 characters."
@@ -129,6 +140,14 @@ export const env = createEnv({
     // TEEMIQ's finance MCP route, which a site chat reaches with the token
     // TEEMIQ gave that chat. Unset means site chats have no finance tools.
     TEEMIQ_FINANCE_MCP_URL: financeMcpUrlSchema.optional(),
+
+    // WhatsApp through Twilio (agent/channels/whatsapp.ts): the account that
+    // signs every webhook and sends every reply, and the WhatsApp number it
+    // sends from. Unset means every WhatsApp webhook is refused. Who may write
+    // is ASSIST_WHATSAPP_NUMBERS, below.
+    TWILIO_ACCOUNT_SID: twilioAccountSidSchema.optional(),
+    TWILIO_AUTH_TOKEN: requiredValue.optional(),
+    TWILIO_WHATSAPP_FROM: whatsappSenderSchema.optional(),
 
     // Optional
     // The co-located eve server's port in production, as `withEve` reads it.
@@ -190,6 +209,16 @@ export function siteVariables() {
       },
     ];
   });
+}
+
+// The team members who may write to assist on WhatsApp are configured as a
+// list rather than validated above: ASSIST_WHATSAPP_NUMBERS maps each
+// member's E.164 number to their assist email, comma-separated, such as
+// "+15551234567=member@example.com,+15557654321=other@example.com". Unset
+// means nobody. Read on every webhook; agent/channels/whatsapp.ts validates
+// each entry.
+export function whatsappNumbersVariable() {
+  return process.env.ASSIST_WHATSAPP_NUMBERS?.trim() ?? "";
 }
 
 function hasValue(value: string | undefined) {

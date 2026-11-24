@@ -477,6 +477,57 @@ describe("site chat instructions", () => {
   });
 });
 
+describe("WhatsApp instructions", () => {
+  it("makes a WhatsApp chat a business assistant for the team, scoped to its work, with short replies and /new", async () => {
+    const selected = await evaluateDynamic(roleInstructions, whatsappContext());
+    for (const text of [
+      "You are iCommAssist, the company's business assistant on WhatsApp, talking with one member of the company's own team",
+      "You are an automated AI agent",
+      "Help with the company's business work",
+      "WhatsApp's business terms allow an assistant for a company's own business, not a general-purpose AI assistant",
+      "on WhatsApp you help with the company's work only",
+      "on WhatsApp you have no browser, no vault or saved logins, no schedules, no Personal Info or saved notes",
+      "Write for a phone. Keep replies short",
+      "Reply /new to start a new chat.",
+    ]) {
+      expect(selected?.content).toContain(text);
+    }
+    expect(selected?.content).not.toContain("root coordinator");
+  });
+
+  it("gives a WhatsApp chat none of the task, browser, execution or chat-app style instructions", async () => {
+    const context = whatsappContext();
+    const selected = await Promise.all(
+      [
+        siteTask,
+        executionSafety,
+        workerCoordination,
+        messageStyle,
+        workerSiteLogin,
+      ].map((definition) => evaluateDynamic(definition, context))
+    );
+    expect(selected).toEqual([null, null, null, null, null]);
+  });
+});
+
+function whatsappContext() {
+  const whatsapp = {
+    attributes: {
+      conversationChannel: "whatsapp",
+      email: "member@example.test",
+      workspaceId: accessScopeForUser("better-auth:member-1").workspaceId,
+    },
+    authenticator: "assist-whatsapp",
+    principalId: "better-auth:member-1",
+    principalType: "user",
+  };
+  return dynamicContextFor({
+    auth: { current: whatsapp, initiator: whatsapp },
+    channel: { kind: "channel:whatsapp", metadata: {} },
+    sessionId: "session-whatsapp",
+  });
+}
+
 function siteChatContext() {
   const chat = sitePrincipal(
     {

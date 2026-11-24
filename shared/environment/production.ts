@@ -31,6 +31,8 @@ const refusedVariables = new Set([
   "WORKFLOW_LOCAL_BASE_URL",
   "WORKFLOW_POSTGRES_URL",
 ]);
+// No refused name or prefix covers TWILIO_* or ASSIST_WHATSAPP_NUMBERS: they
+// configure the WhatsApp channel, and leaving them unset closes it.
 const refusedPrefixes = ["LINK_", "LINQ_", "OTEL_EXPORTER_", "VERCEL_"];
 
 const localAuthSecret = "openinstinct-local-auth-development-secret";

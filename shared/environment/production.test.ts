@@ -84,6 +84,23 @@ describe("production environment guard", () => {
     ).toEqual([`${name} is required.`]);
   });
 
+  it("accepts WhatsApp's Twilio account and member numbers, and runs without them", () => {
+    const whatsapp = {
+      ASSIST_WHATSAPP_NUMBERS: "+15551234567=member@example.test",
+      TWILIO_ACCOUNT_SID: `AC${"0".repeat(32)}`,
+      TWILIO_AUTH_TOKEN: "twilio-auth-token-that-must-not-leak",
+      TWILIO_WHATSAPP_FROM: "whatsapp:+15557654321",
+    };
+    expect(productionEnvironmentProblems({ ...complete, ...whatsapp })).toEqual(
+      []
+    );
+    for (const name of Object.keys(whatsapp)) {
+      expect(
+        productionEnvironmentProblems({ ...complete, ...whatsapp, [name]: "" })
+      ).toEqual([]);
+    }
+  });
+
   it("accepts an unset ASSIST_SIGNUP_CODE, which closes sign-up", () => {
     expect(
       productionEnvironmentProblems({ ...complete, ASSIST_SIGNUP_CODE: " " })

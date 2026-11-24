@@ -78,6 +78,10 @@ only to hand the root-owned volume to the `node` user; both servers run as
 | `ASSIST_SITE_TOKEN_<SITE>`              | yes    | one per site; see [Connected sites](#connected-sites)    |
 | `ASSIST_SITE_OWNER_<SITE>`              | no     | one per site                                             |
 | `TEEMIQ_FINANCE_MCP_URL`                | no     | TEEMIQ's finance tools; see [Site chats](#site-chats)    |
+| `TWILIO_ACCOUNT_SID`                    | no     | the Twilio account; see [WhatsApp](#whatsapp)            |
+| `TWILIO_AUTH_TOKEN`                     | yes    | that account's auth token                                |
+| `TWILIO_WHATSAPP_FROM`                  | no     | `whatsapp:+<number>`, the number assist answers from     |
+| `ASSIST_WHATSAPP_NUMBERS`               | no     | who may write to it; see [WhatsApp](#whatsapp)           |
 | `PORT`                                  | no     | `8080`, set explicitly; Teemiq's private address uses it |
 
 Generate each secret locally and paste it straight into Railway as a sealed
@@ -602,6 +606,58 @@ was waiting for the user's answer when you deploy stores the old request
 format; re-run it after the upgrade.
 
 </details>
+
+### WhatsApp
+
+Team members can write to assist on WhatsApp, through Twilio. Each listed
+member's number reaches assist as that member, in a narrow business mode: it
+replies, asks a question with numbered options, and searches the web, and it
+has no browser, vault, schedules, Personal Info, saved notes, supplier sites or
+Accounting tools. Replies are short text for a phone, split at Twilio's 1,600
+characters per message, and each attachment goes as a message of its own.
+
+| Variable                  | Value                                                                        |
+| ------------------------- | ---------------------------------------------------------------------------- |
+| `TWILIO_ACCOUNT_SID`      | the Twilio account's SID, `AC` and 32 hex digits                             |
+| `TWILIO_AUTH_TOKEN`       | that account's auth token, sealed; it checks every webhook's signature       |
+| `TWILIO_WHATSAPP_FROM`    | the WhatsApp number assist answers from, such as `whatsapp:+14155238886`     |
+| `ASSIST_WHATSAPP_NUMBERS` | each member's number and assist email, `+15551234567=member@example.com,...` |
+
+Leaving any of the three `TWILIO_` variables unset closes the channel: every
+webhook is refused. `ASSIST_WHATSAPP_NUMBERS` is read on every message; a
+number listed for two emails, or an entry that does not parse, reaches nobody,
+and the log says so without the values. A member must also pass assist's own
+sign-in rules: on `ASSIST_ALLOWED_EMAILS`, registered, and enrolled in an
+authenticator. A message from anyone else gets an empty reply and reaches
+nothing, and so does a call.
+
+Set the webhook that Twilio posts each incoming message to (HTTP POST):
+
+```text
+https://assist.icommteam.com/eve/v1/whatsapp/messages
+```
+
+- Twilio Sandbox: Messaging > Try it out > WhatsApp > Sandbox settings, "When
+  a message comes in". Each member first joins the sandbox from their phone
+  with its join code.
+- Production: the WhatsApp sender's webhook for incoming messages.
+
+The signature is checked against that public URL, built from
+`BETTER_AUTH_URL`, so the webhook must use exactly that origin and path.
+
+Each member has one chat. Replying `/new` ends it, and the next message starts
+a fresh one; a message more than 8 hours after the chat's last activity starts
+a new chat by itself. A member may send 30 messages in any hour and 200 in any
+day; past that, messages are dropped and assist says so once an hour. A
+message Twilio posts twice reaches the agent once. These counts live in memory
+and reset when the service restarts. WhatsApp chats also appear in the
+member's chat list in assist's web app.
+
+Meta's WhatsApp Business terms bar general-purpose AI assistants on the
+platform since 15 January 2026; an assistant for the company's own business is
+allowed. assist keeps to business work on WhatsApp and declines anything else,
+and WhatsApp allows free-form replies only within 24 hours of the member's last
+message.
 
 ## Local development
 

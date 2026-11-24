@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { inArray, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { db, user } from "@db";
 import { env } from "@shared/environment";
 
@@ -27,6 +27,19 @@ export async function allowedUserIds() {
     .from(user)
     .where(inArray(sql`lower(${user.email})`, emails));
   return rows.map(({ id }) => id);
+}
+
+// The Better Auth user id (without the `better-auth:` principal prefix) of
+// the member with this email, while they could sign in: on the team list,
+// registered and enrolled in an authenticator. Undefined otherwise.
+export async function enrolledTeamMemberId(email: string) {
+  if (!isAllowedEmail(email)) return undefined;
+  const [member] = await db
+    .select({ id: user.id, twoFactorEnabled: user.twoFactorEnabled })
+    .from(user)
+    .where(eq(sql`lower(${user.email})`, email.trim().toLowerCase()))
+    .limit(1);
+  return member?.twoFactorEnabled ? member.id : undefined;
 }
 
 function digest(value: string) {

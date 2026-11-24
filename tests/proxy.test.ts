@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { getAuthSession } from "@db/services/auth/session";
+import whatsapp from "@agent/channels/whatsapp";
 import { authSessionFor } from "@tests/helpers/auth-session";
 import { proxy } from "../proxy";
 
@@ -198,5 +199,44 @@ describe("cross-site request forgery guard", () => {
       authorization: "Bearer token",
     });
     expect(site.headers.get("x-middleware-next")).toBe("1");
+  });
+});
+
+describe("WhatsApp webhook", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    auth.getSession.mockResolvedValue(null);
+  });
+
+  it("lets Twilio post to the WhatsApp channel's messages route without a sign-in or an Origin, for its signature check", async () => {
+    const messages = whatsapp.routes.find(
+      ({ method, path }) => method === "POST" && path.endsWith("/messages")
+    );
+    expect(messages?.path).toBe("/eve/v1/whatsapp/messages");
+
+    const response = await write("/eve/v1/whatsapp/messages", {
+      "x-twilio-signature": "checked-by-the-channel",
+    });
+
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(auth.getSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["POST", "/eve/v1/whatsapp/voice"],
+    ["POST", "/eve/v1/whatsapp/voice/transcription"],
+    ["POST", "/eve/v1/whatsapp/messages/"],
+    ["POST", "/eve/v1/whatsapp/messagesx"],
+    ["POST", "/eve/v1/whatsapp"],
+    ["PUT", "/eve/v1/whatsapp/messages"],
+  ])("refuses a write without an Origin to %s %s", async (method, path) => {
+    expect((await write(path, {}, method)).status).toBe(403);
+  });
+
+  it("keeps the sign-in redirect for a read of the messages route", async () => {
+    const response = await proxy(
+      new NextRequest("https://example.com/eve/v1/whatsapp/messages")
+    );
+    expect(response.status).toBe(307);
   });
 });

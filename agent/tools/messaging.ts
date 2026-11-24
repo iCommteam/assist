@@ -40,5 +40,6 @@ export default defineDynamic((context) => {
     interactive: { react_to_message, send_message },
     "scheduled-report": { send_message },
     "site-chat": { send_message },
+    whatsapp: { send_message },
   });
 });

@@ -239,6 +239,34 @@ describe("structured browser workflow", () => {
     });
   });
 
+  it("opens no worker for a WhatsApp chat, even on a turn a signed-in member sends into it", async () => {
+    const whatsapp = {
+      attributes: {
+        conversationChannel: "whatsapp",
+        email: "member@example.test",
+        workspaceId: "personal:workspace",
+      },
+      authenticator: "assist-whatsapp",
+      principalId: "user-1",
+      principalType: "user",
+    };
+    const { agent, error, reply, send } = await serveCalls(
+      [serveCall("Open the supplier's billing page")],
+      [],
+      [{ current: callerAuth("authjs").current, initiator: whatsapp }]
+    );
+
+    expect(error).toBeInstanceOf(ReceiveDrained);
+    expect(agent).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledExactlyOnceWith({
+      images: [],
+      message:
+        "Browser work is unavailable on WhatsApp. Suggest doing it in assist's own app.",
+      status: "failure",
+    });
+  });
+
   it("serves scheduled workers", async () => {
     const { error, reply, send } = await serveCalls(
       [serveCall("Inspect the heading")],

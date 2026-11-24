@@ -3,6 +3,7 @@ import type * as CompiledChannel from "../../../node_modules/eve/dist/src/channe
 import { describe, expect, it, vi } from "vitest";
 import eve from "@agent/channels/eve";
 import scheduledRun from "@agent/channels/scheduled-run";
+import whatsapp from "@agent/channels/whatsapp";
 
 const { isCompiledChannel } = await vi.importActual<typeof CompiledChannel>(
   new URL("./channel/compiled-channel.js", import.meta.resolve("eve")).pathname
@@ -18,9 +19,19 @@ describe("compiled channel compatibility", () => {
     expect(eve.adapter["session.ended"]).toBeTypeOf("function");
   });
 
+  it("keeps WhatsApp delivery hooks after wrapping its webhook routes", () => {
+    if (!isCompiledChannel(whatsapp))
+      throw new Error("Expected a compiled channel.");
+
+    expect(whatsapp.adapter["call.settled"]).toBeTypeOf("function");
+    expect(whatsapp.adapter["content.completed"]).toBeTypeOf("function");
+    expect(whatsapp.adapter["interaction.opened"]).toBeTypeOf("function");
+  });
+
   it.each([
     { channel: eve, anonymousAudience: "unknown" },
     { channel: scheduledRun, anonymousAudience: "unknown" },
+    { channel: whatsapp, anonymousAudience: "private" },
   ])(
     "keeps authenticated conversations private",
     ({ channel, anonymousAudience }) => {

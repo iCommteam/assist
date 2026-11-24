@@ -1,4 +1,6 @@
+import { readdirSync } from "node:fs";
 import type * as Eve from "eve";
+import type * as EveConnections from "eve/connections";
 import type * as EveTools from "eve/tools";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -9,13 +11,23 @@ import {
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { sitePrincipal } from "@agent/lib/site-principal";
 
+// With TEEMIQ's tools configured, only the session decides whether a chat
+// gets them. The environment module validates once on import.
+vi.hoisted(() => {
+  vi.stubEnv("TEEMIQ_FINANCE_MCP_URL", "https://team.example/api/mcp/finance");
+});
+
 vi.mock("eve", async (importOriginal) =>
   withEvaluableDynamic(await importOriginal<typeof Eve>())
 );
 vi.mock("eve/tools", async (importOriginal) =>
   withEvaluableDynamic(await importOriginal<typeof EveTools>())
 );
+vi.mock("eve/connections", async (importOriginal) =>
+  withEvaluableDynamic(await importOriginal<typeof EveConnections>())
+);
 
+import teemiq from "@agent/connections/teemiq";
 import personalInfoMemory from "@agent/memory/personal_info";
 import workstreamMemory from "@agent/memory/workstreams";
 import messaging from "@agent/tools/messaging";
@@ -26,6 +38,14 @@ import vault from "@agent/tools/vault";
 const member = accessScopeForUser("better-auth:user-1");
 
 const groupedTools = [messaging, schedules, siteTask, vault];
+// The tool files whose tools depend on the session's mode, which
+// groupedTools evaluates; every other root tool file is static.
+const dynamicToolFiles = new Set([
+  "messaging.ts",
+  "schedules.ts",
+  "site_task.ts",
+  "vault.ts",
+]);
 
 describe("authored mode capability matrix", () => {
   it("gives interactive turns the authored coordinator capabilities", async () => {
@@ -95,6 +115,55 @@ describe("site chat capabilities", () => {
         })
       )
     ).toEqual(["send_message"]);
+  });
+});
+
+describe("WhatsApp capabilities", () => {
+  const whatsapp = {
+    attributes: {
+      conversationChannel: "whatsapp",
+      email: "member@example.test",
+      workspaceId: member.workspaceId,
+    },
+    authenticator: "assist-whatsapp",
+    principalId: member.userId,
+    principalType: "user",
+  };
+
+  it("gives a WhatsApp chat its reply alone among the authored tools: no vault, schedules, memory, site or Accounting tools", async () => {
+    // A turn a signed-in member sends into the chat keeps the chat's mode.
+    for (const current of [
+      whatsapp,
+      dynamicContext("authjs").session.auth.current,
+    ]) {
+      const context = dynamicContextFor({
+        auth: { current, initiator: whatsapp },
+        channel: { kind: "channel:whatsapp", metadata: {} },
+        sessionId: "session-whatsapp",
+      });
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each turn is checked on its own.
+      expect(await capabilitiesOf(context)).toEqual(["send_message"]);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each turn is checked on its own.
+      expect(await evaluateDynamic(teemiq, context)).toBeNull();
+    }
+  });
+
+  it("leaves a WhatsApp chat exactly send_message, ask_question and web_search", async () => {
+    const context = dynamicContextFor({
+      auth: { current: whatsapp, initiator: whatsapp },
+      channel: { kind: "channel:whatsapp", metadata: {} },
+      sessionId: "session-whatsapp",
+    });
+    // run_browser is a workflow tool, which cannot be dynamic: it stays
+    // listed and refuses every call in this mode (tests/agent/tools).
+    const staticTools = readdirSync("agent/tools")
+      .filter((file) => !dynamicToolFiles.has(file))
+      .map((file) => file.replace(/\.ts$/u, ""))
+      .filter((tool) => tool !== "run_browser");
+
+    expect(
+      [...(await capabilitiesOf(context)), ...staticTools].toSorted()
+    ).toEqual(["ask_question", "send_message", "web_search"]);
   });
 });
 

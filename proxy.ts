@@ -17,11 +17,19 @@ const publicPaths = new Set([
 const siteApiPath =
   /^\/api\/site\/(?:ping|logins(?:\/[^/]+)?|tasks(?:\/[^/]+(?:\/(?:input|cancel|files(?:\/[^/]+)?))?)?|chats(?:\/[^/]+\/(?:messages|answers|token|stream|cancel))?)$/u;
 
+// Twilio posts each incoming WhatsApp message here with no cookie and no
+// Origin; the WhatsApp channel checks its signature
+// (agent/channels/whatsapp.ts). Only this exact route, and only its POST.
+const whatsappWebhookPath = "/eve/v1/whatsapp/messages";
+
 const safeMethods = new Set(["GET", "HEAD"]);
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   if (siteApiPath.test(pathname)) return NextResponse.next();
+  if (pathname === whatsappWebhookPath && request.method === "POST") {
+    return NextResponse.next();
+  }
 
   // Cross-site request forgery: a sibling *.icommteam.com site is same-site,
   // so SameSite cookies alone do not stop it from posting here (eve's session

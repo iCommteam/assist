@@ -29,7 +29,8 @@ export default defineWorkflowTool({
         "scheduled-worker": true,
       });
       // Every other mode is refused, the site chat among them: it visits a
-      // supplier's site only through a look or a fetch its site runs.
+      // supplier's site only through a look or a fetch its site runs. A
+      // WhatsApp chat has no browser at all.
       if (!browserAllowed) {
         ctx.reply(
           taskCompletionSchema.parse({
@@ -38,6 +39,8 @@ export default defineWorkflowTool({
               resolveModeValue(ctx, {
                 "site-chat":
                   "Browser work is unavailable in an Accounting chat. Visit a supplier's site only through an Accounting look or fetch.",
+                whatsapp:
+                  "Browser work is unavailable on WhatsApp. Suggest doing it in assist's own app.",
               }) ??
               "Browser work is unavailable while reporting a scheduled result.",
             status: "failure",

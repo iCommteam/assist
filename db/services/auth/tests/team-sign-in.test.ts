@@ -38,6 +38,7 @@ let database: PGlite;
 let auth: Awaited<ReturnType<typeof getAuth>>;
 let session: typeof SessionReaders;
 let allowedUserIds: typeof AllowlistReaders.allowedUserIds;
+let enrolledTeamMemberId: typeof AllowlistReaders.enrolledTeamMemberId;
 
 beforeAll(async () => {
   database = new PGlite();
@@ -74,6 +75,7 @@ beforeAll(async () => {
   auth = await authModule.getAuth();
   session = sessionModule;
   allowedUserIds = allowlistModule.allowedUserIds;
+  enrolledTeamMemberId = allowlistModule.enrolledTeamMemberId;
 }, 30_000);
 
 afterAll(async () => {
@@ -311,6 +313,28 @@ describe("team sign-in", () => {
         })
         .safeParse(auth.options).success
     ).toBe(false);
+  });
+
+  // Reads the members the earlier cases created.
+  it("names a member for WhatsApp only while they could sign in", async () => {
+    const rows = await database.query<{ email: string; id: string }>(
+      'SELECT id, email FROM "user"'
+    );
+    const idFor = (email: string) =>
+      rows.rows.find((row) => row.email === email)?.id;
+
+    expect(await enrolledTeamMemberId(" ALICE@example.test")).toBe(
+      z.string().parse(idFor("alice@example.test"))
+    );
+    expect(await enrolledTeamMemberId("erin@example.test")).toBe(
+      z.string().parse(idFor("erin@example.test"))
+    );
+    // Listed and registered, with no authenticator yet.
+    expect(await enrolledTeamMemberId("dave@example.test")).toBeUndefined();
+    // Listed, with no account any more.
+    expect(await enrolledTeamMemberId("grace@example.test")).toBeUndefined();
+    // Enrolled, and no longer on the team list.
+    expect(await enrolledTeamMemberId("removed@example.test")).toBeUndefined();
   });
 
   // Runs last: it reads the members the earlier cases created.

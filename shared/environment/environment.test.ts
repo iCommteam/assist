@@ -62,6 +62,10 @@ describe("environment", () => {
     ["ASSIST_SIGNUP_CODE", "too-short"],
     ["TEEMIQ_FINANCE_MCP_URL", "http://team.example/api/mcp/finance"],
     ["TEEMIQ_FINANCE_MCP_URL", "team.example/api/mcp/finance"],
+    ["TWILIO_ACCOUNT_SID", "SK00000000000000000000000000000000"],
+    ["TWILIO_ACCOUNT_SID", "AC0000"],
+    ["TWILIO_WHATSAPP_FROM", "+15551234567"],
+    ["TWILIO_WHATSAPP_FROM", "whatsapp:15551234567"],
   ])("rejects an invalid %s during import", async (name, value) => {
     vi.stubEnv(name, value);
 
@@ -84,6 +88,36 @@ describe("environment", () => {
       const { env } = await import("@shared/environment");
       expect(env.TEEMIQ_FINANCE_MCP_URL).toBe(url);
     }
+  });
+
+  it("leaves WhatsApp closed by default and reads its Twilio account when set", async () => {
+    const { env: unset, whatsappNumbersVariable } =
+      await import("@shared/environment");
+    expect(unset.TWILIO_ACCOUNT_SID).toBeUndefined();
+    expect(unset.TWILIO_AUTH_TOKEN).toBeUndefined();
+    expect(unset.TWILIO_WHATSAPP_FROM).toBeUndefined();
+    expect(whatsappNumbersVariable()).toBe("");
+
+    vi.resetModules();
+    const twilio = {
+      TWILIO_ACCOUNT_SID: `AC${"0123456789abcdef".repeat(2)}`,
+      TWILIO_AUTH_TOKEN: "test-twilio-auth-token",
+      TWILIO_WHATSAPP_FROM: "whatsapp:+15551234567",
+    };
+    for (const [name, value] of Object.entries(twilio)) {
+      vi.stubEnv(name, value);
+    }
+    const { env } = await import("@shared/environment");
+    expect(env).toMatchObject(twilio);
+  });
+
+  it("reads the WhatsApp members on every call", async () => {
+    const { whatsappNumbersVariable } = await import("@shared/environment");
+
+    vi.stubEnv("ASSIST_WHATSAPP_NUMBERS", " +15551234567=a@example.test ");
+    expect(whatsappNumbersVariable()).toBe("+15551234567=a@example.test");
+    vi.stubEnv("ASSIST_WHATSAPP_NUMBERS", "");
+    expect(whatsappNumbersVariable()).toBe("");
   });
 
   it("provides stable auth and encryption defaults in local development", async () => {

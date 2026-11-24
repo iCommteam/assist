@@ -16,15 +16,18 @@ function agentMode(authenticator: string | undefined) {
   return "interactive" as const;
 }
 
-// A site chat is a narrow assistant: every capability that does not list it
-// stays off, as for any mode a value leaves out.
-type AgentMode = ReturnType<typeof agentMode> | "site-chat";
+// A site chat and a WhatsApp chat are narrow assistants: every capability
+// that does not list their mode stays off, as for any mode a value leaves
+// out.
+type AgentMode = ReturnType<typeof agentMode> | "site-chat" | "whatsapp";
 
-// A scheduled worker and a site chat keep their mode for every turn of the
-// session, whoever sends it, so the initiator decides them. A site chat's
-// initiator is the eve channel's assist-site-chat principal
-// (agent/lib/site-principal.ts); this file stays free of its imports, which
-// the workflow bundle of run_browser cannot load.
+// A scheduled worker, a site chat and a WhatsApp chat keep their mode for
+// every turn of the session, whoever sends it, so the initiator decides them.
+// A site chat's initiator is the eve channel's assist-site-chat principal
+// (agent/lib/site-principal.ts), and a WhatsApp chat's is the WhatsApp
+// channel's assist-whatsapp principal (agent/channels/whatsapp.ts); this file
+// stays free of their imports, which the workflow bundle of run_browser
+// cannot load.
 function sessionAgentMode(
   auth: AgentModeContext["session"]["auth"]
 ): AgentMode {
@@ -33,6 +36,9 @@ function sessionAgentMode(
   }
   if (auth.initiator?.authenticator === "assist-site-chat") {
     return "site-chat";
+  }
+  if (auth.initiator?.authenticator === "assist-whatsapp") {
+    return "whatsapp";
   }
   const caller = auth.current ?? auth.initiator;
   return agentMode(caller?.authenticator);
