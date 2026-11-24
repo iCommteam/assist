@@ -2,11 +2,16 @@ import type { RouteHandlerArgs } from "eve/channels";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as AuthSession from "@db/services/auth/session";
 import * as SessionService from "@db/services/sessions";
+import * as SiteChatService from "@db/services/site-chats";
 import { authSessionFor } from "@tests/helpers/auth-session";
 import eveChannel, { sessionIdFromPath } from "@agent/channels/eve";
 
 const getAuthSessionMock = vi.spyOn(AuthSession, "getAuthSession");
 const isSessionOwnedMock = vi.spyOn(SessionService, "isSessionOwned");
+const isAnySiteChatSessionMock = vi.spyOn(
+  SiteChatService,
+  "isAnySiteChatSession"
+);
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -15,6 +20,7 @@ beforeEach(() => {
     authSessionFor({ id: "user-1", email: "member@example.test" })
   );
   isSessionOwnedMock.mockResolvedValue(false);
+  isAnySiteChatSessionMock.mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -179,6 +185,56 @@ describe("Eve channel authentication", () => {
       error: "Connection callback not pending.",
       ok: false,
     });
+  });
+
+  it("refuses the owner's own sign-in on every route of a site chat's session", async () => {
+    isSessionOwnedMock.mockResolvedValue(true);
+    isAnySiteChatSessionMock.mockResolvedValue(true);
+    const routes = eveChannel.routes.flatMap((route) => {
+      if (route.transport === "websocket") return [];
+      const path = route.path
+        .replace(":sessionId", "wrun_chat")
+        .replace(":attemptId", "attempt")
+        .replace(":name", "teemiq")
+        .replace(":connectionName", "teemiq")
+        .replace(
+          ":token",
+          route.path.includes("/connections/")
+            ? "wrun_chat:auth"
+            : encodeURIComponent("eve:session:wrun_chat:inbox")
+        );
+      return sessionIdFromPath(path) === "wrun_chat" ? [{ path, route }] : [];
+    });
+    // Stream, message, answer, cancel, clear, compact, end and the callbacks.
+    expect(routes.length).toBeGreaterThanOrEqual(8);
+
+    const statuses = await Promise.all(
+      routes.map(async ({ path, route }) => {
+        const pending = route.handler(
+          new Request(
+            `https://assistant.example${path}`,
+            route.method === "GET"
+              ? { method: route.method }
+              : {
+                  body: JSON.stringify({ message: "Hello" }),
+                  headers: { "content-type": "application/json" },
+                  method: route.method,
+                }
+          ),
+          {
+            ...unexpectedRouteContext(),
+            params: { sessionId: "wrun_chat" },
+          }
+        );
+        await vi.runAllTimersAsync();
+        return `${route.method} ${route.path} ${String((await pending).status)}`;
+      })
+    );
+
+    expect(statuses).toEqual(
+      routes.map(({ route }) => `${route.method} ${route.path} 403`)
+    );
+    expect(isAnySiteChatSessionMock).toHaveBeenCalledWith("wrun_chat");
   });
 
   it("extracts session ids from paths and derived hook tokens", () => {

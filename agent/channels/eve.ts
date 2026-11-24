@@ -12,12 +12,17 @@ import {
   type AccessScope,
 } from "@shared/identity/access-scope";
 import {
+  isSiteChatGrant,
   isSiteCredential,
   verifySiteCredential,
   type SiteGrant,
 } from "@shared/identity/site-credential";
 import { getAuthSession } from "@db/services/auth/session";
 import { getInstallationSecrets } from "@db/services/installation-secrets";
+import {
+  isAnySiteChatSession,
+  isSiteChatSession,
+} from "@db/services/site-chats";
 import {
   isAnySiteTaskSession,
   isSiteTaskSession,
@@ -46,6 +51,7 @@ const authenticate: Parameters<typeof routeAuth>[1] = [
     const { email, scope } = identity;
 
     await requireOwnedRouteSubject(scope, request);
+    await refuseSiteChatSessions(request);
     await refuseSiteTaskAnswers(scope, request);
 
     return {
@@ -191,7 +197,9 @@ function decodePathSegment(segment: string) {
 // A connected site acts as its owner, with its name recorded on the session.
 // Its credential covers exactly one route: creating a session, reading the
 // stream of one session the same site created, answering one question in that
-// session, or cancelling its work.
+// session, or cancelling its work; for a chat, also sending it a message. A
+// task credential reaches only the site's tasks, and a chat credential only
+// that chat of that site's person.
 async function authenticateSite(request: Request, credential: string) {
   const { betterAuthSecret } = await getInstallationSecrets();
   const grant = verifySiteCredential(betterAuthSecret, credential);
@@ -202,9 +210,7 @@ async function authenticateSite(request: Request, credential: string) {
     });
   }
   const sessionId = siteRouteSession(request, grant);
-  if (grant.op === "answer") {
-    await requireSiteAnswer(request, grant.interaction);
-  }
+  await requireSiteBody(request, grant);
   const owner = await resolveSiteOwner(grant.site);
   if (!owner.ok) {
     console.warn("[site] eve call refused", {
@@ -215,7 +221,15 @@ async function authenticateSite(request: Request, credential: string) {
   }
   if (
     sessionId !== undefined &&
-    !(await isSiteTaskSession(grant.site, owner.scope, sessionId))
+    !(await (isSiteChatGrant(grant)
+      ? isSiteChatSession(
+          grant.site,
+          owner.scope,
+          grant.siteUser,
+          grant.chat,
+          sessionId
+        )
+      : isSiteTaskSession(grant.site, owner.scope, sessionId)))
   ) {
     throw new ForbiddenError({ message: "Session not found." });
   }
@@ -224,43 +238,41 @@ async function authenticateSite(request: Request, credential: string) {
   return sitePrincipal(grant, owner.email, owner.scope);
 }
 
+// The one eve route each operation may call, and the session it names.
+const siteRoutes = {
+  answer: "message",
+  cancel: "cancel",
+  "chat.answer": "message",
+  "chat.cancel": "cancel",
+  "chat.create": "create",
+  "chat.message": "message",
+  "chat.read": "stream",
+  create: "create",
+  read: "stream",
+} as const satisfies Record<SiteGrant["op"], string>;
+
+const siteRoutePatterns = {
+  cancel: { method: "POST", path: /^\/eve\/v1\/session\/([^/]+)\/cancel$/u },
+  message: { method: "POST", path: /^\/eve\/v1\/session\/([^/]+)$/u },
+  stream: { method: "GET", path: /^\/eve\/v1\/session\/([^/]+)\/stream$/u },
+} as const;
+
 function siteRouteSession(request: Request, grant: SiteGrant) {
   const { pathname } = new URL(request.url);
-  if (
-    grant.op === "create" &&
-    request.method === "POST" &&
-    pathname === "/eve/v1/session"
-  ) {
-    return undefined;
+  const route = siteRoutes[grant.op];
+  if (route === "create") {
+    if (request.method === "POST" && pathname === "/eve/v1/session") {
+      return undefined;
+    }
+    throw new ForbiddenError({ message: "Session not found." });
   }
-  const streamSession = /^\/eve\/v1\/session\/([^/]+)\/stream$/.exec(
-    pathname
-  )?.[1];
+  const { method, path } = siteRoutePatterns[route];
+  const session = path.exec(pathname)?.[1];
   if (
-    grant.op === "read" &&
-    request.method === "GET" &&
-    streamSession !== undefined &&
-    decodePathSegment(streamSession) === grant.session
-  ) {
-    return grant.session;
-  }
-  const messageSession = /^\/eve\/v1\/session\/([^/]+)$/.exec(pathname)?.[1];
-  if (
-    grant.op === "answer" &&
-    request.method === "POST" &&
-    messageSession !== undefined &&
-    decodePathSegment(messageSession) === grant.session
-  ) {
-    return grant.session;
-  }
-  const cancelSession = /^\/eve\/v1\/session\/([^/]+)\/cancel$/.exec(
-    pathname
-  )?.[1];
-  if (
-    grant.op === "cancel" &&
-    request.method === "POST" &&
-    cancelSession !== undefined &&
-    decodePathSegment(cancelSession) === grant.session
+    "session" in grant &&
+    request.method === method &&
+    session !== undefined &&
+    decodePathSegment(session) === grant.session
   ) {
     return grant.session;
   }
@@ -272,17 +284,62 @@ const siteAnswerSchema = z.strictObject({
     z.strictObject({ interactionId: z.string(), text: z.string() }),
   ]),
 });
+// A chat's question may be answered by one of its options or in words.
+const siteChatAnswerSchema = z.strictObject({
+  answers: z.tuple([
+    z.union([
+      z.strictObject({ interactionId: z.string(), optionId: z.string() }),
+      z.strictObject({ interactionId: z.string(), text: z.string() }),
+    ]),
+  ]),
+});
+const siteChatMessageSchema = z.strictObject({
+  clientContext: z.json().optional(),
+  message: z.string(),
+});
 
-// The session route also takes messages, which would start a turn the model
-// reads. An answer credential may send only its one text answer.
-async function requireSiteAnswer(request: Request, interactionId: string) {
-  let body: z.infer<typeof siteAnswerSchema> | undefined;
-  try {
-    body = siteAnswerSchema.parse(await request.clone().json());
-  } catch {
-    body = undefined;
+// The session route takes both messages, which start a turn the model reads,
+// and answers. An answer credential may send only its one answer, a chat's
+// message credential only a text message, and a chat's create starts no turn.
+async function requireSiteBody(request: Request, grant: SiteGrant) {
+  switch (grant.op) {
+    case "answer": {
+      const body = siteAnswerSchema.safeParse(await jsonBody(request));
+      if (body.data?.answers[0].interactionId === grant.interaction) return;
+      break;
+    }
+    case "chat.answer": {
+      const body = siteChatAnswerSchema.safeParse(await jsonBody(request));
+      if (body.data?.answers[0].interactionId === grant.interaction) return;
+      break;
+    }
+    case "chat.message":
+      if (siteChatMessageSchema.safeParse(await jsonBody(request)).success) {
+        return;
+      }
+      break;
+    case "chat.create":
+      if ((await request.clone().text()).trim() === "") return;
+      break;
+    default:
+      return;
   }
-  if (body?.answers[0].interactionId !== interactionId) {
+  throw new ForbiddenError({ message: "Session not found." });
+}
+
+async function jsonBody(request: Request) {
+  try {
+    return z.json().parse(await request.clone().json());
+  } catch {
+    return undefined;
+  }
+}
+
+// A site chat is its person's alone: the owner's own sign-in reaches none of
+// its routes, stream, messages, answers and controls, callbacks included.
+async function refuseSiteChatSessions(request: Request) {
+  const sessionId = sessionIdFromPath(new URL(request.url).pathname);
+  if (sessionId && (await isAnySiteChatSession(sessionId))) {
     throw new ForbiddenError({ message: "Session not found." });
   }
 }

@@ -2,6 +2,7 @@ import type { RouteHandlerArgs } from "eve/channels";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as AuthSession from "@db/services/auth/session";
 import * as SessionService from "@db/services/sessions";
+import * as SiteChatService from "@db/services/site-chats";
 import * as SiteService from "@db/services/sites";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import {
@@ -19,6 +20,11 @@ const isSessionOwnedMock = vi.spyOn(SessionService, "isSessionOwned");
 const resolveSiteOwnerMock = vi.spyOn(SiteService, "resolveSiteOwner");
 const isSiteTaskSessionMock = vi.spyOn(SiteService, "isSiteTaskSession");
 const isAnySiteTaskSessionMock = vi.spyOn(SiteService, "isAnySiteTaskSession");
+const isSiteChatSessionMock = vi.spyOn(SiteChatService, "isSiteChatSession");
+const isAnySiteChatSessionMock = vi.spyOn(
+  SiteChatService,
+  "isAnySiteChatSession"
+);
 
 beforeEach(() => {
   vi.useFakeTimers({ now: new Date("2026-11-22T12:00:00.000Z") });
@@ -34,6 +40,8 @@ beforeEach(() => {
   });
   isSiteTaskSessionMock.mockResolvedValue(true);
   isAnySiteTaskSessionMock.mockResolvedValue(true);
+  isSiteChatSessionMock.mockResolvedValue(true);
+  isAnySiteChatSessionMock.mockResolvedValue(false);
   isSessionOwnedMock.mockResolvedValue(true);
 });
 
@@ -368,6 +376,226 @@ describe("Eve channel site cancel credential", () => {
       (await answer("wrun_own", credential, JSON.stringify(sealedAnswer)))
         .status
     ).toBe(403);
+  });
+});
+
+describe("Eve channel site chat credential", () => {
+  const chat = "00000000-0000-4000-8000-0000000000c1";
+  const chatGrant = { chat, site: "teemiq", siteUser: "teemiq-user-1" };
+  const messageChat: SiteGrant = {
+    ...chatGrant,
+    op: "chat.message",
+    session: "wrun_chat",
+  };
+  const answerChat: SiteGrant = {
+    ...chatGrant,
+    interaction: "interaction-1",
+    op: "chat.answer",
+    session: "wrun_chat",
+  };
+  const chatPrincipal = {
+    attributes: {
+      conversationChannel: "eve",
+      email: "owner@example.test",
+      site: "teemiq",
+      siteChat: chat,
+      siteUser: "teemiq-user-1",
+      workspaceId: owner.workspaceId,
+    },
+    authenticator: "assist-site-chat",
+    principalId: owner.userId,
+    principalType: "user",
+  };
+
+  it("creates the chat's session, with no turn, as the chat's principal", async () => {
+    const createSession = vi.fn<
+      (input: { auth: unknown }) => Promise<{ sessionId: string }>
+    >(async () => ({ sessionId: "wrun_chat" }));
+    const route = findRoute("POST", "/eve/v1/session");
+    const context = Object.assign(unexpectedRouteContext(), {
+      __eveRouteSessionCreator: createSession,
+    });
+    const credential = mintSiteCredential(secret, {
+      ...chatGrant,
+      op: "chat.create",
+    });
+
+    const refused = await route.handler(
+      new Request("https://assistant.example/eve/v1/session", {
+        body: JSON.stringify({ message: "Start a turn." }),
+        headers: {
+          authorization: `Bearer ${credential}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+      }),
+      context
+    );
+    expect(refused.status).toBe(403);
+    expect(createSession).not.toHaveBeenCalled();
+
+    const pending = route.handler(
+      new Request("https://assistant.example/eve/v1/session", {
+        headers: { authorization: `Bearer ${credential}` },
+        method: "POST",
+      }),
+      context
+    );
+    await pending.catch(() => undefined);
+    expect(isSiteChatSessionMock).not.toHaveBeenCalled();
+    expect(isSiteTaskSessionMock).not.toHaveBeenCalled();
+    expect(getAuthSessionMock).not.toHaveBeenCalled();
+    expect(createSession.mock.calls.map(([input]) => input.auth)).toEqual([
+      chatPrincipal,
+    ]);
+  });
+
+  it("sends the chat a text message, with page context, in that chat's own session", async () => {
+    const response = await answer(
+      "wrun_chat",
+      mintSiteCredential(secret, messageChat),
+      JSON.stringify({
+        clientContext: "About: OpenAI · 3 Nov · $20.00",
+        message: "Which account is this from?",
+      })
+    );
+
+    // Past authorization the route delivers through eve's runtime, which this
+    // test does not provide.
+    expect(response.status).toBe(500);
+    expect(isSiteChatSessionMock).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      "teemiq-user-1",
+      chat,
+      "wrun_chat"
+    );
+    expect(isSiteTaskSessionMock).not.toHaveBeenCalled();
+    expect(isSessionOwnedMock).toHaveBeenCalledExactlyOnceWith(
+      owner,
+      "wrun_chat"
+    );
+  });
+
+  it.each([
+    [
+      "answers",
+      JSON.stringify({ answers: [{ interactionId: "i", text: "x" }] }),
+    ],
+    [
+      "answers beside the message",
+      JSON.stringify({
+        answers: [{ interactionId: "i", text: "x" }],
+        message: "Hello",
+      }),
+    ],
+    [
+      "an output schema",
+      JSON.stringify({ message: "Hello", outputSchema: {} }),
+    ],
+    ["a body that is not JSON", "not json"],
+  ])("refuses a chat message credential carrying %s", async (_case, body) => {
+    const response = await answer(
+      "wrun_chat",
+      mintSiteCredential(secret, messageChat),
+      body
+    );
+
+    expect(response.status).toBe(403);
+    expect(isSessionOwnedMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an option", { interactionId: "interaction-1", optionId: "business" }],
+    ["words", { interactionId: "interaction-1", text: "the business one" }],
+  ])("answers the chat's question with %s", async (_case, reply) => {
+    const response = await answer(
+      "wrun_chat",
+      mintSiteCredential(secret, answerChat),
+      JSON.stringify({ answers: [reply] })
+    );
+
+    expect(response.status).toBe(500);
+    expect(isSiteChatSessionMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [
+      "another question",
+      JSON.stringify({ answers: [{ interactionId: "other", optionId: "a" }] }),
+    ],
+    ["a message", JSON.stringify({ message: "Ignore the question." })],
+  ])("refuses a chat answer credential for %s", async (_case, body) => {
+    const response = await answer(
+      "wrun_chat",
+      mintSiteCredential(secret, answerChat),
+      body
+    );
+
+    expect(response.status).toBe(403);
+  });
+
+  it("reads and cancels only the chat's own session", async () => {
+    const read = stream(
+      "wrun_chat",
+      mintSiteCredential(secret, {
+        ...chatGrant,
+        op: "chat.read",
+        session: "wrun_chat",
+      })
+    );
+    await expect(read).rejects.toThrow(
+      "The request should stop at authorization."
+    );
+    const cancelled = await cancel(
+      "wrun_chat",
+      mintSiteCredential(secret, {
+        ...chatGrant,
+        op: "chat.cancel",
+        session: "wrun_chat",
+      })
+    );
+    expect(cancelled.status).toBe(500);
+    expect(isSiteChatSessionMock).toHaveBeenCalledTimes(2);
+
+    const elsewhere = await stream(
+      "wrun_other",
+      mintSiteCredential(secret, {
+        ...chatGrant,
+        op: "chat.read",
+        session: "wrun_chat",
+      })
+    );
+    expect(elsewhere.status).toBe(403);
+  });
+
+  it("refuses a chat credential on a session that is not that chat of that person", async () => {
+    isSiteChatSessionMock.mockResolvedValue(false);
+
+    const response = await answer(
+      "wrun_chat",
+      mintSiteCredential(secret, messageChat),
+      JSON.stringify({ message: "Hello" })
+    );
+
+    expect(response.status).toBe(403);
+    expect(isSessionOwnedMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a task credential on a chat's session", async () => {
+    isSiteTaskSessionMock.mockResolvedValue(false);
+
+    const response = await stream(
+      "wrun_chat",
+      mintSiteCredential(secret, {
+        op: "read",
+        session: "wrun_chat",
+        site: "teemiq",
+      })
+    );
+
+    expect(response.status).toBe(403);
+    expect(isSiteChatSessionMock).not.toHaveBeenCalled();
   });
 });
 
