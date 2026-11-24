@@ -543,6 +543,13 @@ stream replays the chat from its start, or from after the `after` cursor,
 then follows it live; it closes after 10 minutes or when the chat ends, and
 the site opens it again with the last cursor it read.
 
+A chat opened without a message has nothing to replay until its first
+message, so its stream answers `200` within about 2 seconds, starts with a
+heartbeat, and follows the chat live from there. A refusal or an ended chat
+that assist learns while it opens the stream answers with its status, such
+as `410`; one it learns later ends the stream, and the next open answers
+with it.
+
 | `type`      | Fields                                                                                                         |
 | ----------- | -------------------------------------------------------------------------------------------------------------- |
 | `message`   | `from`: `person`, `result` or `assistant`; `text`                                                              |
@@ -552,7 +559,7 @@ the site opens it again with the last cursor it read.
 | `proposal`  | `txnId`, `documentId`, `why`: a pairing the agent proposed, for a person to confirm                            |
 | `done`      | a turn ended                                                                                                   |
 | `error`     | `code`: `usage_limit`, `needs_person` (stopped at an approval or a sign-in), `cancelled`, `failed`, or `ended` |
-| `heartbeat` | none; sent after 15 quiet seconds                                                                              |
+| `heartbeat` | none; sent first when the chat has no message yet, and after 15 quiet seconds                                  |
 
 No tool's input or output leaves assist beyond those fields.
 

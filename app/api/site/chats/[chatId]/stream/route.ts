@@ -21,15 +21,20 @@ import {
 // another after the last cursor it read.
 const maxStreamMs = 10 * 60_000;
 const heartbeatMs = 15_000;
-// The first event, which every session has, is awaited at most this long.
-const firstEventMs = 20_000;
+// eve refuses a stream, or reports an ended chat, at once, and a chat with a
+// message replays its first stored line at once, so either arrives within
+// this window and is answered as it is. A chat with no message yet has no
+// event until its first message, so past the window it streams live from a
+// heartbeat: the site must see the stream open well within its own wait.
+const openWindowMs = 2000;
 const streamInputSchema = z.object({
   after: z.coerce.number().int().min(-1).default(-1),
   siteUser: siteUserSchema,
 });
 
 // The chat's conversation as NDJSON: what came after `after`, then live,
-// with a heartbeat after every 15 quiet seconds.
+// with a heartbeat first when the chat has no message yet, and after every
+// 15 quiet seconds.
 export async function GET(
   request: Request,
   context: RouteContext<"/api/site/chats/[chatId]/stream">
@@ -66,19 +71,25 @@ export async function GET(
     .sessions.attach(chat.sessionId)
     .stream({ follow: true, signal: stop.signal });
   const events = stream[Symbol.asyncIterator]();
-  // The first event is read before answering, so a chat eve cannot stream
-  // answers an error rather than an empty stream.
-  const firstDeadline = setTimeout(() => {
-    stop.abort();
-  }, firstEventMs);
-  const opened = await callChatEve(site, async () => events.next());
-  clearTimeout(firstDeadline);
-  if (!opened.ok || stop.signal.aborted) {
+  // The first read is awaited for a moment before answering, so a chat eve
+  // cannot stream answers an error rather than an empty stream. When the
+  // window passes first, the same read goes on inside the stream.
+  const firstRead = callChatEve(site, async () => events.next());
+  let openTimer: ReturnType<typeof setTimeout> | undefined;
+  const first = await Promise.race([
+    firstRead,
+    new Promise<"quiet">((resolve) => {
+      openTimer = setTimeout(() => {
+        resolve("quiet");
+      }, openWindowMs);
+    }),
+  ]);
+  clearTimeout(openTimer);
+  if (first !== "quiet" && !first.ok) {
     request.signal.removeEventListener("abort", onAbort);
     stop.abort();
-    return opened.ok ? siteError(503, "unavailable") : opened.response;
+    return first.response;
   }
-  const first: IteratorResult<ReceivedEvent> = opened.value;
 
   const fold = chatFold();
   const { after } = input.data;
@@ -100,9 +111,16 @@ export async function GET(
         stop.abort();
       }, maxStreamMs);
       try {
+        // Headers leave only with the first line, so a quiet chat's stream
+        // opens with a heartbeat.
+        if (first === "quiet") write(heartbeatLine());
+        const opened = first === "quiet" ? await firstRead : first;
+        // A read that fails after the window ends the stream; the site's
+        // next open answers with the reason.
+        if (!opened.ok) return;
         /* oxlint-disable eslint/no-await-in-loop -- The stream is read in order, one event at a time. */
         for (
-          let next = first;
+          let next: IteratorResult<ReceivedEvent> = opened.value;
           !next.done && !stop.signal.aborted;
           next = await events.next()
         ) {

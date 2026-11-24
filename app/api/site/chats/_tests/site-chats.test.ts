@@ -109,7 +109,7 @@ const { POST: cancelChat } =
   await import("@app/api/site/chats/[chatId]/cancel/route");
 const { GET: streamChat } =
   await import("@app/api/site/chats/[chatId]/stream/route");
-const { SessionNotActiveError } = await import("eve/client");
+const { ClientError, SessionNotActiveError } = await import("eve/client");
 
 const siteToken = "teemiq-test-token-0123456789abcdef";
 const teemiqToken = "teemiq-chat-token-0123456789abcdef";
@@ -569,19 +569,86 @@ describe("site chat stream", () => {
     });
   });
 
-  it("answers 503 when the chat's first event does not arrive in time", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    eve.read.mockReturnValue(new Promise(() => undefined));
+  it("streams a chat with no message yet live from a heartbeat, then its first message's lines", async () => {
+    vi.useFakeTimers({
+      toFake: [
+        "Date",
+        "setTimeout",
+        "clearTimeout",
+        "setInterval",
+        "clearInterval",
+      ],
+    });
+    // eve's stream of a chat opened without a message stays empty until the
+    // first message, whose line also starts the session.
+    const firstMessage = Promise.withResolvers<ReceivedEvent[]>();
+    eve.read.mockReturnValue(firstMessage.promise);
 
     const pending = streamChat(
       get(`/chats/${chatId}/stream?siteUser=user-1`),
       params()
     );
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(2000);
     const response = await pending;
 
-    expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({ error: "unavailable" });
+    expect(response.status).toBe(200);
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("The stream has no body.");
+    await expect(nextLines(reader)).resolves.toEqual([
+      { type: "heartbeat", v: 1 },
+    ]);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expect(nextLines(reader)).resolves.toEqual([
+      { type: "heartbeat", v: 1 },
+    ]);
+
+    firstMessage.resolve(
+      eventsOf([
+        [sessionStarted, turnStarted, consumed("Hello")],
+        [runRequested],
+        sendMessageCall("call-1", "Hi, how can I help?"),
+        [turnSettled],
+      ])
+    );
+
+    await expect(restOf(reader)).resolves.toEqual([
+      { cursor: 0, from: "person", text: "Hello", type: "message", v: 1 },
+      {
+        cursor: 2,
+        from: "assistant",
+        text: "Hi, how can I help?",
+        type: "message",
+        v: 1,
+      },
+      { cursor: 3, type: "done", v: 1 },
+    ]);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("ends a quiet stream when eve then fails it, so the next open answers why", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const read = Promise.withResolvers<ReceivedEvent[]>();
+    eve.read.mockReturnValue(read.promise);
+
+    const pending = streamChat(
+      get(`/chats/${chatId}/stream?siteUser=user-1`),
+      params()
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    const response = await pending;
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("The stream has no body.");
+    await expect(nextLines(reader)).resolves.toEqual([
+      { type: "heartbeat", v: 1 },
+    ]);
+    read.reject(new ClientError(503, "{}"));
+
+    expect(response.status).toBe(200);
+    await expect(restOf(reader)).resolves.toEqual([]);
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith(
+      "[site] chat call to the agent runtime failed",
+      { error: "http_error", site: "teemiq" }
+    );
   });
 
   it("answers another person's stream as not found, and an ended chat as 410", async () => {
@@ -687,4 +754,28 @@ async function grantOfLastClient() {
   const bearer = eve.bearers.at(-1);
   if (!bearer) throw new Error("No eve client was created.");
   return verifySiteCredential(authSecret, await bearer());
+}
+
+// The stream's lines one chunk at a time, as they are written.
+async function nextLines(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  const { done, value } = await reader.read();
+  return done ? [] : linesOf(new TextDecoder().decode(value));
+}
+
+// Every line the stream writes until it closes.
+async function restOf(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  text = ""
+): Promise<z.core.util.JSONType[]> {
+  const { done, value } = await reader.read();
+  return done
+    ? linesOf(text)
+    : restOf(reader, text + new TextDecoder().decode(value));
+}
+
+function linesOf(text: string) {
+  return text
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => z.json().parse(JSON.parse(line)));
 }
