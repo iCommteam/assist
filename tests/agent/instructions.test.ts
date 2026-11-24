@@ -399,9 +399,14 @@ describe("site look instructions", () => {
       "list every invoice or receipt it sees, each with its date, its number, its amount and currency, and which kind it is (invoice or receipt)",
       "Your reply carries that list, one document per line, with only what the worker reported seeing",
       "Tell the worker in its assignment that the task is a look: it has no `save_file`, downloads, opens and saves no file",
+      "What a look found is decided by its end result, never by your message: only `done` makes your reply the site's list, and a look not ended with `end_site_task` reads as failed.",
     ]) {
       expect(coordinator?.content).toContain(text);
     }
+    // A look saves nothing, so what it saved decides nothing.
+    expect(coordinator?.content).not.toContain(
+      "decided by what it actually saved"
+    );
     expect(coordinator?.content).not.toContain(
       "A site gets files back only through the browser worker's `save_file`"
     );
@@ -429,6 +434,8 @@ describe("site look instructions", () => {
     ]);
 
     expect(coordinator?.content).not.toContain("This task is a look");
+    expect(coordinator?.content).not.toContain("What a look found");
+    expect(coordinator?.content).toContain("decided by what it actually saved");
     expect(coordinator?.content).not.toContain("{{documents}}");
     expect(worker?.content).not.toContain("This assignment is a look");
   });

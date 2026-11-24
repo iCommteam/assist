@@ -81,6 +81,7 @@ export async function listSiteTasksOfLogin(
     .select({
       createdAt: siteTasks.createdAt,
       id: siteTasks.id,
+      kind: siteTasks.kind,
       sessionId: siteTasks.sessionId,
     })
     .from(siteTasks)

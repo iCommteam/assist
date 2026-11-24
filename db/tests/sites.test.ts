@@ -205,16 +205,24 @@ describe("site tasks of a login", () => {
       scope: typeof owner,
       sessionId: string,
       loginId: string | undefined,
-      minutesAgo: number
+      minutesAgo: number,
+      kind: "fetch" | "look" = "fetch"
     ) => {
-      const id = await recordSiteTask(site, scope, sessionId, loginId);
+      const id = await recordSiteTask(site, scope, sessionId, loginId, kind);
       await database
         .update(schema.siteTasks)
         .set({ createdAt: new Date(now - minutesAgo * 60_000) })
         .where(eq(schema.siteTasks.id, id));
       return id;
     };
-    const older = await pinned("teemiq", owner, "wrun_l1", "login-a", 20);
+    const older = await pinned(
+      "teemiq",
+      owner,
+      "wrun_l1",
+      "login-a",
+      20,
+      "look"
+    );
     const newer = await pinned("teemiq", owner, "wrun_l2", "login-a", 5);
     const oldest = await pinned("teemiq", owner, "wrun_l3", "login-a", 50);
     await pinned("teemiq", owner, "wrun_l4", "login-b", 5);
@@ -231,6 +239,8 @@ describe("site tasks of a login", () => {
       "wrun_l1",
       "wrun_l3",
     ]);
+    // Each task's kind, which decides how it reads.
+    expect(tasks.map(({ kind }) => kind)).toEqual(["fetch", "look", "fetch"]);
     expect(tasks[0]?.createdAt).toBeInstanceOf(Date);
     expect(newest.map(({ id }) => id)).toEqual([newer, older]);
   });

@@ -26,6 +26,17 @@ function statusOf(
   );
 }
 
+// A look's status, a minute in; the files counted must not change it.
+function lookStatusOf(events: readonly ReceivedEvent[], savedFiles: number) {
+  return siteTaskStatus(
+    siteTaskState(events, createdAt, createdAt.getTime() + minute, "look")
+      .state,
+    savedFiles,
+    null,
+    "look"
+  );
+}
+
 const turnStarted: Fact = {
   data: {
     cause: { deliveryId: "delivery-1" },
@@ -113,31 +124,44 @@ describe("site look status", () => {
   it.each([
     ["done", "listed"],
     ["nothing_found", "nothing_found"],
-    [undefined, "listed"],
   ] as const)(
     "reads a look the agent ended %s as %s, whatever files it counts",
     (result, outcome) => {
       const events = eventsOf([
         [turnStarted, runRequested],
         sendMessage("call-1", { kind: "message", text: "INV-1 20.00 USD" }),
-        ...(result ? [endTask("call-2", result)] : []),
+        endTask("call-2", result),
         [turnSettled("completed")],
       ]);
 
-      expect(
-        siteTaskStatus(
-          siteTaskState(events, createdAt, createdAt.getTime() + minute).state,
-          0,
-          null,
-          "look"
-        )
-      ).toMatchObject({
+      expect(lookStatusOf(events, 3)).toMatchObject({
         outcome,
         reply: "INV-1 20.00 USD",
         status: "completed",
       });
     }
   );
+
+  it("reads a look the agent never ended as failed, keeping its reply, never as a list", () => {
+    const reply = "I could not sign in, the site showed a bot check.";
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      sendMessage("call-1", { kind: "message", text: reply }),
+      [turnSettled("completed")],
+    ]);
+
+    expect(lookStatusOf(events, 0)).toMatchObject({
+      error: "failed",
+      outcome: null,
+      reply,
+      status: "failed",
+    });
+    // A fetch the agent never ended still reads by its files.
+    expect(statusOf(events)).toMatchObject({
+      outcome: "nothing_found",
+      status: "completed",
+    });
+  });
 
   it("fails a look as a fetch fails", () => {
     const events = eventsOf([
@@ -146,14 +170,11 @@ describe("site look status", () => {
       [turnSettled("completed")],
     ]);
 
-    expect(
-      siteTaskStatus(
-        siteTaskState(events, createdAt, createdAt.getTime() + minute).state,
-        0,
-        null,
-        "look"
-      )
-    ).toMatchObject({ error: "login_failed", outcome: null, status: "failed" });
+    expect(lookStatusOf(events, 0)).toMatchObject({
+      error: "login_failed",
+      outcome: null,
+      status: "failed",
+    });
   });
 });
 

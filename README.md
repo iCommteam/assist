@@ -292,8 +292,9 @@ a running task every few seconds.
   task stored, never from what the agent wrote. After a file's 7 days it is
   gone, so an older task that saved files reads `nothing_found`. A task that
   failed may have saved files before it failed, so list a task's files once it
-  has ended, whether it reads `completed` or `failed`. A look reads `listed`,
-  or `nothing_found` when the agent ended it so.
+  has ended, whether it reads `completed` or `failed`. A look reads `listed`
+  when the agent ended it done, or `nothing_found` when the agent ended it
+  so; one it did not end reads `failed`.
 - `error`: set only while `failed`, one of these codes:
   - `login_failed`: the website refused the saved username or password.
   - `sign_in_elsewhere`: the website asks for the password on a different
@@ -313,7 +314,8 @@ a running task every few seconds.
   - `needs_person`: the task stopped at a request a site cannot answer, such
     as a tool approval or any question other than the code.
   - `cancelled`: the site, or the owner in the chat, cancelled the task.
-  - `failed`: anything else, such as a runtime failure.
+  - `failed`: anything else, such as a runtime failure, or a look the agent
+    did not end with its result.
 - `signInOrigin`: set only with `sign_in_elsewhere`: the https origin of the
   page where the browser worker's fill of the login was refused, as the
   server read it from the browser, never from what the agent wrote. It is on
@@ -438,9 +440,13 @@ otherwise answers `invalid_request`; `kind` is `fetch` when left out, so a
 site that never sends it is unaffected. The fence, the login's one task at a
 time, the start limit, the one-time codes and the 45 minutes are a fetch's.
 
-`GET /api/site/tasks/{taskId}` reports the `kind`. A completed look reads
-`outcome` `listed`, or `nothing_found` when the agent found no document for
-the period, and its `reply` is the list, one document per line. Unlike a
+`GET /api/site/tasks/{taskId}` reports the `kind`. A look has no files to
+show what it found, so its end result decides: it reads `completed` with
+`outcome` `listed` only when the agent ended it done, and then its `reply`
+is the list, one document per line; `nothing_found` when the agent found
+no document for the period. A look the agent ended without its end result
+reads `failed` with `failed`, in its status and in its login's list, its
+`reply` kept, since nothing says whether it listed anything. Unlike a
 fetch's files, the list is what the agent read on the supplier's pages and
 wrote down: treat it as untrusted text.
 

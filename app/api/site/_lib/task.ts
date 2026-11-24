@@ -29,7 +29,7 @@ const loginTaskLimit = 5;
 
 export type SiteTask = Pick<
   typeof siteTasks.$inferSelect,
-  "createdAt" | "id" | "sessionId"
+  "createdAt" | "id" | "kind" | "sessionId"
 >;
 
 // A task this site created in its owner's workspace. Anything else, including
@@ -84,7 +84,12 @@ export async function readSiteTaskState(site: string, task: SiteTask) {
       ClientError.is(error) ? error : undefined
     );
   }
-  const { openTurn, state } = siteTaskState(events, task.createdAt, Date.now());
+  const { openTurn, state } = siteTaskState(
+    events,
+    task.createdAt,
+    Date.now(),
+    task.kind
+  );
   if (openTurn !== undefined && !isOpen(state)) {
     const cancelled = await cancelSiteTurn(site, task.sessionId, openTurn);
     if (!cancelled.ok) return cancelled;
@@ -132,8 +137,7 @@ function readState(state: SiteTaskState) {
 export async function readSiteTaskStatus(
   site: string,
   scope: AccessScope,
-  task: SiteTask,
-  kind: "fetch" | "look" = "fetch"
+  task: SiteTask
 ) {
   const read = await readSiteTaskState(site, task);
   if (!read.ok) return read;
@@ -159,10 +163,10 @@ export async function readSiteTaskStatus(
   if (read.state.status !== "completed") {
     return { ok: true as const, status: siteTaskStatus(read.state, 0, null) };
   }
-  if (kind === "look") {
+  if (task.kind === "look") {
     return {
       ok: true as const,
-      status: siteTaskStatus(read.state, 0, null, kind),
+      status: siteTaskStatus(read.state, 0, null, task.kind),
     };
   }
   let savedFiles: number;

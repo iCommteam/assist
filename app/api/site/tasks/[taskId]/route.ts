@@ -16,7 +16,7 @@ export async function GET(
   if (!found.ok) return found.response;
 
   const { kind } = found.task;
-  const read = await readSiteTaskStatus(site, owner.scope, found.task, kind);
+  const read = await readSiteTaskStatus(site, owner.scope, found.task);
   if (!read.ok) return read.response;
   return siteJson({ kind, taskId, ...read.status });
 }

@@ -66,18 +66,19 @@ export type SiteTaskState =
       readonly status: "failed";
     };
 
-// Where a site task stands, from its session's events alone, so every read
-// agrees. A task whose turn is still open at the end of its lifetime, or ended
-// after it, reads timed_out; `openTurn` names a turn that is still open, which
-// the API cancels once it reads failed.
+// Where a site task stands, from its session's events and its kind alone, so
+// every read agrees. A task whose turn is still open at the end of its
+// lifetime, or ended after it, reads timed_out; `openTurn` names a turn that
+// is still open, which the API cancels once it reads failed.
 export function siteTaskState(
   events: readonly ReceivedEvent[],
   createdAt: Date,
-  now: number
+  now: number,
+  kind: "fetch" | "look" = "fetch"
 ) {
   const view = foldEvents(emptySessionView(), events);
   const [task] = turns(view);
-  const reached = turnState(view, events);
+  const reached = turnState(view, events, kind);
   const open = isOpen(reached);
   const deadline = createdAt.getTime() + siteTaskLifetimeMs;
   const endedAt = task?.endedAt ? Date.parse(task.endedAt) : Number.NaN;
@@ -96,8 +97,8 @@ export function isOpen(state: SiteTaskState) {
 // files it saved, never from what the agent said, and where the website asks
 // for the password from the page the server recorded when it refused a fill
 // there. A sign_in_elsewhere with no page recorded reads login_failed. A look
-// saves nothing: what it found is its reply, and it reads nothing_found only
-// when the agent ended it so.
+// saves nothing: its end result decides, so it reads listed, with its reply
+// as the list, only when the agent ended it done.
 export function siteTaskStatus(
   state: SiteTaskState,
   savedFiles: number,
@@ -132,7 +133,7 @@ function outcomeOf(savedFiles: number) {
 }
 
 function lookOutcome(ended: "done" | "nothing_found" | undefined) {
-  return ended === "nothing_found" ? "nothing_found" : "listed";
+  return ended === "done" ? "listed" : "nothing_found";
 }
 
 // A site task is the first turn of its session: the site's message starts
@@ -142,7 +143,8 @@ function lookOutcome(ended: "done" | "nothing_found" | undefined) {
 // The one thing a site can answer is a code question.
 function turnState(
   view: SessionView,
-  events: readonly ReceivedEvent[]
+  events: readonly ReceivedEvent[],
+  kind: "fetch" | "look"
 ): SiteTaskState {
   const [task] = turns(view);
   const ended = session(view).status === "ended";
@@ -150,7 +152,7 @@ function turnState(
   if (failure(view, task.turnId)) return failed("failed");
   if (task.status === "settled") {
     if (task.outcome === "completed") {
-      return completedState(view, events, task.turnId);
+      return completedState(view, events, task.turnId, kind);
     }
     if (task.outcome === "cancelled") {
       return failed(stoppedError(view, task.turnId));
@@ -188,7 +190,9 @@ function turnState(
 }
 
 // The agent ends a site task with the end tool, and its last result decides
-// a failure. A turn that ends without the tool completes. When the last code
+// a failure. A fetch whose turn ends without the tool completes, its files
+// deciding what it found; a look has only its end result to say that, so one
+// that ends without the tool reads failed, its reply kept. When the last code
 // question ended without the code reaching the worker, the worker's wait ran
 // out, so the task reads timed_out. So does code_failed when no code of the
 // turn ever reached the worker; once one did, the website refused it, and
@@ -197,7 +201,8 @@ function turnState(
 function completedState(
   view: SessionView,
   events: readonly ReceivedEvent[],
-  turnId: string
+  turnId: string,
+  kind: "fetch" | "look"
 ): SiteTaskState {
   const reply = lastSentText(view, events, turnId);
   const result = endResult(view, events, turnId);
@@ -221,8 +226,11 @@ function completedState(
   if (failedWith !== undefined) {
     return { error: failedWith, reply, status: "failed" };
   }
-  return result === "done" || result === "nothing_found"
-    ? { ended: result, reply, status: "completed" }
+  if (result === "done" || result === "nothing_found") {
+    return { ended: result, reply, status: "completed" };
+  }
+  return kind === "look"
+    ? { error: "failed", reply, status: "failed" }
     : { reply, status: "completed" };
 }
 

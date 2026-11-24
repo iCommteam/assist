@@ -468,6 +468,36 @@ describe("look tasks", () => {
       expect(services.countSiteTaskFiles).not.toHaveBeenCalled();
     }
   );
+
+  it("reads a look the agent never ended as failed, keeping its reply, in its status and its login's list", async () => {
+    const look = loginTask(taskId, "wrun_1", 1, "look");
+    services.findSiteTaskSession.mockResolvedValue(look);
+    services.listSiteTasksOfLogin.mockResolvedValue([look]);
+    eve.read.mockResolvedValue(lookEnded(undefined));
+
+    const read = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+    const listed = await listTasks(
+      siteRequest("/tasks?loginId=login-1", teemiqToken)
+    );
+
+    await expect(read.json()).resolves.toEqual({
+      error: "failed",
+      kind: "look",
+      outcome: null,
+      question: null,
+      questionId: null,
+      reply: "2026-11-03 INV-1 20.00 USD invoice",
+      signInOrigin: null,
+      status: "failed",
+      taskId,
+    });
+    await expect(listed.json()).resolves.toMatchObject({
+      tasks: [{ status: "failed", taskId }],
+    });
+  });
 });
 
 describe("POST /api/site/tasks login pin", () => {
@@ -1382,9 +1412,15 @@ describe("POST /api/site/tasks/{taskId}/input past the task's lifetime", () => {
   });
 });
 
-const loginTask = (id: string, sessionId: string, minutesAgo = 1) => ({
+const loginTask = (
+  id: string,
+  sessionId: string,
+  minutesAgo = 1,
+  kind: "fetch" | "look" = "fetch"
+) => ({
   createdAt: new Date(Date.now() - minutesAgo * 60_000),
   id,
+  kind,
   sessionId,
 });
 const openTaskId = "00000000-0000-4000-8000-0000000000aa";
@@ -2020,7 +2056,8 @@ function toolCall(
   ];
 }
 
-function lookEnded(result: string) {
+// A look's reply, ended with this result, or not ended with the tool at all.
+function lookEnded(result: string | undefined) {
   const [started = [], , settled = []] = pongLines();
   return eventsOf([
     started,
@@ -2028,7 +2065,9 @@ function lookEnded(result: string) {
       kind: "message",
       text: "2026-11-03 INV-1 20.00 USD invoice",
     }),
-    toolCall("call-2", "end_site_task", { result }),
+    ...(result === undefined
+      ? []
+      : [toolCall("call-2", "end_site_task", { result })]),
     settled,
   ]);
 }
