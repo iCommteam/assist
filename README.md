@@ -555,10 +555,11 @@ the site opens it again with the last cursor it read.
 
 A chat opened without a message has nothing to replay until its first
 message, so its stream answers `200` within about 2 seconds, starts with a
-heartbeat, and follows the chat live from there. A refusal or an ended chat
-that assist learns while it opens the stream answers with its status, such
-as `410`; one it learns later ends the stream, and the next open answers
-with it.
+heartbeat, and follows the chat live from there. A refusal or an expired
+chat, which the agent runtime answers at once, answers with its status, such
+as `410`. While the runtime is still starting or cannot be reached, the
+stream also opens with a heartbeat, keeps trying for about 40 seconds, and
+then closes: open it again after a short wait.
 
 | `type`      | Fields                                                                                                         |
 | ----------- | -------------------------------------------------------------------------------------------------------------- |

@@ -625,7 +625,7 @@ describe("site chat stream", () => {
     expect(console.warn).not.toHaveBeenCalled();
   });
 
-  it("ends a quiet stream when eve then fails it, so the next open answers why", async () => {
+  it("ends a quiet stream when its read fails after the window, such as eve's client giving up on a runtime out of reach", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const read = Promise.withResolvers<ReceivedEvent[]>();
     eve.read.mockReturnValue(read.promise);

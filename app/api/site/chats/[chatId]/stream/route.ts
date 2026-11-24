@@ -21,11 +21,13 @@ import {
 // another after the last cursor it read.
 const maxStreamMs = 10 * 60_000;
 const heartbeatMs = 15_000;
-// eve refuses a stream, or reports an ended chat, at once, and a chat with a
-// message replays its first stored line at once, so either arrives within
-// this window and is answered as it is. A chat with no message yet has no
-// event until its first message, so past the window it streams live from a
-// heartbeat: the site must see the stream open well within its own wait.
+// eve answers a refusal or an expired chat at once, and a chat with a message
+// replays its first stored line at once, so either arrives within this window
+// and is answered as it is. A chat with no message yet has no event until its
+// first message, so past the window it streams live from a heartbeat: the
+// site must see the stream open well within its own wait. eve's client keeps
+// retrying what may pass (a runtime still starting or out of reach) longer
+// than the window, so that too streams from a heartbeat, until it gives up.
 const openWindowMs = 2000;
 const streamInputSchema = z.object({
   after: z.coerce.number().int().min(-1).default(-1),
@@ -115,8 +117,8 @@ export async function GET(
         // opens with a heartbeat.
         if (first === "quiet") write(heartbeatLine());
         const opened = first === "quiet" ? await firstRead : first;
-        // A read that fails after the window ends the stream; the site's
-        // next open answers with the reason.
+        // A read that fails after the window ends the stream, and the site
+        // opens it again; a refusal eve gives at once then answers as such.
         if (!opened.ok) return;
         /* oxlint-disable eslint/no-await-in-loop -- The stream is read in order, one event at a time. */
         for (
