@@ -12,7 +12,10 @@ import { CdpConnection } from "@agent/subagents/browser-agent/lib/cdp";
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
 import { requireWorkerScope } from "@agent/subagents/browser-agent/lib/access";
 import { requireOwnedBrowserSession } from "@agent/subagents/browser-agent/lib/owned-browser";
-import { withBrowserLoopSessionLock } from "@agent/subagents/browser-agent/lib/semantic-loop";
+import {
+  linkAddressHeld,
+  withBrowserLoopSessionLock,
+} from "@agent/subagents/browser-agent/lib/semantic-loop";
 import { trackToolTab } from "@agent/subagents/browser-agent/lib/tool-tabs";
 import {
   amazonPolicyRefusal,
@@ -39,14 +42,26 @@ const pdfSignature = Buffer.from("%PDF-", "latin1");
 const notPinnedMessage =
   "Only a site task pinned to a saved login can save files.";
 const notHttpsMessage =
-  "save_file takes the absolute https URL of the PDF itself, such as the address of the invoice's Download PDF link.";
+  "save_file saves only an https address. Pass the ref of the PDF's link, such as the invoice's Download PDF link, from browser_snapshot or browser_find; never type, guess or build an address.";
+const oneTargetMessage =
+  "Pass save_file either the ref of the PDF's link, from browser_snapshot or browser_find, or a url the browser showed, not both.";
+const staleRefMessage =
+  "That ref no longer names the element it was taken from, because the page has changed since, so nothing was saved. Take a fresh browser_snapshot or browser_find and pass the link's new ref.";
+const unknownTabMessage =
+  "That tab is not open in the browser, so nothing was saved. Pass the ref without a tabId: a ref is read in the tab it came from.";
+const noAddressMessage =
+  'That element is not a link with an address, so nothing was saved. Pass the ref of the PDF\'s own link. When the PDF opens only through a button that runs a script or sends a form, delete the browser and return status "failure" saying the document exists but its PDF has no address to save.';
 const offSiteMessage = `This file is neither on the pinned login's site nor on Stripe's invoice pages (${stripeInvoiceHosts.join(", ")}), so it was not fetched. Do not try another route to it. Delete the browser, then return status "failure" saying the invoice file is on a website this task may not open, so the task ends as off_site.`;
 const closedMessage =
   'This site task has passed its 45 minutes, so it can save no more files. Delete the browser, then return status "failure" saying the task ran out of time.';
 const fullMessage =
   "This task already keeps 10 files, the most it may save, so this one was not saved. Finish with the files saved so far.";
 const notPdfMessage =
-  "The URL did not return a PDF, so nothing was saved. It may be a web page: open it in the browser, find its Download PDF link, and save that link's address.";
+  "The URL did not return a PDF, so nothing was saved. It may be a web page: open it in the browser, find its Download PDF link, and pass that link's ref.";
+const linkNotPdfMessage =
+  "That link opens a web page, not a PDF, so nothing was saved. Open the page by clicking the link with browser_act, take a fresh browser_snapshot there, and pass the ref of the PDF's own link.";
+const linkNotHttpsMessage =
+  "That link's address is not https, so the file cannot be saved. Do not try another address for it: delete the browser and return status \"failure\" saying the PDF's link is not secure.";
 const tooLargeMessage =
   "The file is larger than 20 MB, the most a task may save, so it was not saved.";
 const redirectsMessage =
@@ -63,7 +78,33 @@ class SaveRefusal extends Error {}
 const inputSchema = z.object({
   browserSessionId: z.string().trim().min(1).max(500),
   filename: z.string().trim().min(1).max(500).optional(),
-  url: z.string().trim().min(1).max(8000),
+  ref: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe(
+      "The element ref of the PDF's link, such as e12, from browser_snapshot or browser_find."
+    ),
+  tabId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe(
+      "Rarely needed: a ref is read in the tab it came from. Names a tab_id to read the ref in."
+    ),
+  url: z
+    .string()
+    .trim()
+    .min(1)
+    .max(8000)
+    .optional()
+    .describe(
+      "Only instead of ref, and only an address the browser showed, such as a tab's."
+    ),
 });
 
 const outputSchema = z.object({
@@ -74,7 +115,7 @@ const outputSchema = z.object({
 });
 
 const saveFile = defineTool({
-  description: `In a site task pinned to a saved login, save one PDF, such as an invoice or a receipt, for the site to collect. Pass the browser that is signed in, the absolute https URL of the PDF itself (the address of its Download PDF link), and optionally a file name. The file is fetched through that browser, with its sign-in. The URL must be on the login's site or on one of Stripe's invoice hosts: ${stripeInvoiceHosts.join(", ")}. Only a PDF of at most 20 MB is kept, at most 10 per task, and the same file is kept once. Returns only the saved file's id, name and size.`,
+  description: `In a site task pinned to a saved login, save one PDF, such as an invoice or a receipt, for the site to collect. Pass the browser that is signed in, the ref of the PDF's link from browser_snapshot or browser_find (such as the invoice's Download PDF link), and optionally a file name. save_file reads the link's address in the browser itself, in the tab the ref came from: never type, guess or build an address, and pass url instead of ref only for an address the browser showed, such as a tab's. Do not click a PDF's link to download it, which saves nothing; clicking a link that opens a page, such as Stripe's hosted invoice page, is fine. The file is fetched through that browser, with its sign-in. The address must be on the login's site or on one of Stripe's invoice hosts: ${stripeInvoiceHosts.join(", ")}. Only a PDF of at most 20 MB is kept, at most 10 per task, and the same file is kept once. Returns only the saved file's id, name and size.`,
   inputSchema,
   outputSchema,
   async execute(input, context) {
@@ -94,19 +135,39 @@ const saveFile = defineTool({
     const fence = siteNavigationFence(login.origin);
 
     try {
-      const url = fileUrl(input.url, fence);
+      const target = targetOf(input, fence);
       const room = await siteTaskFileRoom(site, scope, taskSessionId);
       if (room !== "open") {
         throw new SaveRefusal(room === "full" ? fullMessage : closedMessage);
       }
       // No Browser Loop action, whose tab lists would show the download's
-      // tab, runs while that tab is open.
+      // tab, runs while that tab is open, nor between reading a ref's address
+      // and fetching it.
       const fetched = await withBrowserLoopSessionLock(
         input.browserSessionId,
-        async () =>
-          downloadFile(input.browserSessionId, url, fence, context.abortSignal)
+        async () => {
+          const url =
+            target instanceof URL
+              ? target
+              : await linkUrl(
+                  input.browserSessionId,
+                  target,
+                  input.tabId,
+                  fence,
+                  context.abortSignal
+                );
+          return downloadFile(
+            input.browserSessionId,
+            url,
+            fence,
+            context.abortSignal
+          );
+        }
       );
-      const content = pdfContent(fetched.content);
+      const content = pdfContent(
+        fetched.content,
+        target instanceof URL ? notPdfMessage : linkNotPdfMessage
+      );
       const filename = cleanFilename(
         input.filename ??
           dispositionFilename(fetched.disposition) ??
@@ -150,6 +211,46 @@ export default defineDynamic((context) =>
 );
 
 type SiteFence = ReturnType<typeof siteNavigationFence>;
+
+// A url is checked at once; a ref is read in the browser under its lock.
+function targetOf(input: { ref?: string; url?: string }, fence: SiteFence) {
+  if (input.url !== undefined && input.ref === undefined) {
+    return fileUrl(input.url, fence);
+  }
+  if (input.ref !== undefined && input.url === undefined) return input.ref;
+  throw new SaveRefusal(oneTargetMessage);
+}
+
+const staleRefError = /^ref \S+ is stale or not on the current page\./u;
+const unknownTabError = /^unknown tab_id /u;
+
+// The address of the link a ref names, read in the browser, never typed by
+// the model. A ref whose element is gone is refused, never matched to another.
+async function linkUrl(
+  sessionId: string,
+  ref: string,
+  tabId: string | undefined,
+  fence: SiteFence,
+  stopped: AbortSignal
+) {
+  let address: string | null;
+  try {
+    address = await linkAddressHeld(sessionId, ref, tabId, stopped);
+  } catch (error) {
+    if (error instanceof Error && staleRefError.test(error.message)) {
+      throw new SaveRefusal(staleRefMessage);
+    }
+    if (error instanceof Error && unknownTabError.test(error.message)) {
+      throw new SaveRefusal(unknownTabMessage);
+    }
+    throw error;
+  }
+  if (address === null || !/^https?:/iu.test(address)) {
+    throw new SaveRefusal(noAddressMessage);
+  }
+  if (!/^https:/iu.test(address)) throw new SaveRefusal(linkNotHttpsMessage);
+  return fileUrl(address, fence);
+}
 
 // An https URL on the login's site or a Stripe invoice host, resolved against
 // the URL that redirected to it.
@@ -427,7 +528,7 @@ async function interceptedDownload(
         }
         if (status !== 200) {
           throw new SaveRefusal(
-            `The file's URL answered HTTP ${String(status)}, so nothing was saved. The link may have expired: open the page that links to the file again and save the link's current address.`
+            `The file's URL answered HTTP ${String(status)}, so nothing was saved. The link may have expired: open the page that links to the file again, take a fresh browser_snapshot, and pass the link's new ref. Never guess or build an address.`
           );
         }
         const answeredUrl = fileUrl(paused.request.url, fence);
@@ -607,9 +708,9 @@ function header(
   return headers.find((entry) => entry.name.toLowerCase() === name)?.value;
 }
 
-function pdfContent(content: Buffer) {
+function pdfContent(content: Buffer, refusal: string) {
   if (!content.subarray(0, pdfSignature.byteLength).equals(pdfSignature)) {
-    throw new SaveRefusal(notPdfMessage);
+    throw new SaveRefusal(refusal);
   }
   return content;
 }

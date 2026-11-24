@@ -323,8 +323,13 @@ describe("site task instructions", () => {
     expect(pinned?.content).toContain(
       "the login's host and every other host under the same registrable domain, plus Stripe's hosted invoice pages on `invoice.stripe.com`, `pay.stripe.com`, `files.stripe.com` and `billing.stripe.com`."
     );
+    expect(pinned?.content).not.toContain(
+      "the https address of the PDF itself"
+    );
     for (const text of [
-      "Bring files back with `save_file`: pass a browser that is signed in and the https address of the PDF itself",
+      "Bring files back with `save_file`: pass a browser that is signed in and the ref of the PDF's link from `browser_snapshot` or `browser_find`",
+      "Never type, guess or build an address, and never click a PDF's link to download it: a click saves nothing for the site. Clicking a link that opens a page, such as Stripe's hosted invoice page, is fine.",
+      "Pass `url` instead of a ref only for an address the browser showed, such as a tab's.",
       "For an invoice job, sign in, open the account's billing or invoices page, and for every invoice or receipt dated in the requested period save its PDF with `save_file`.",
       "Prefer the supplier's own Download PDF link; when the link goes to Stripe's hosted invoice page, open that page and save the PDF it links to.",
       "Never pay, buy, upgrade, cancel, submit or change anything beyond the sign-in and the search, filter, or download that finds the documents, even when a page offers it.",

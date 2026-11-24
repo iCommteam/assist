@@ -12,7 +12,11 @@ import type {
   siteTaskFileRoom,
 } from "@db/services/sites";
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
-import { withBrowserLoopSessionLock } from "@agent/subagents/browser-agent/lib/semantic-loop";
+import {
+  type linkAddressHeld,
+  withBrowserLoopSessionLock,
+} from "@agent/subagents/browser-agent/lib/semantic-loop";
+import type * as SemanticLoop from "@agent/subagents/browser-agent/lib/semantic-loop";
 import { isToolTab } from "@agent/subagents/browser-agent/lib/tool-tabs";
 import { sitePrincipal } from "@agent/lib/site-principal";
 import { accessScopeForUser } from "@shared/identity/access-scope";
@@ -26,6 +30,7 @@ import { resetEveState } from "@tests/helpers/eve-state";
 import { toolContextFor } from "@tests/helpers/tool-context";
 
 const mocks = vi.hoisted(() => ({
+  linkAddressHeld: vi.fn<typeof linkAddressHeld>(),
   purgeExpiredTaskFiles: vi.fn<typeof purgeExpiredTaskFiles>(),
   requireOwnedBrowserSession: vi.fn<typeof requireOwnedBrowserSession>(),
   requireWorkerScope: vi.fn<typeof requireWorkerScope>(),
@@ -48,6 +53,15 @@ vi.mock("@db/services/sites", () => ({
   saveSiteTaskFile: mocks.saveSiteTaskFile,
   siteTaskFileRoom: mocks.siteTaskFileRoom,
 }));
+// The browser's lock stays real; only Browser Loop's read of a ref's address
+// is stubbed (it is run against a real Chrome outside this suite).
+vi.mock(
+  "@agent/subagents/browser-agent/lib/semantic-loop",
+  async (importOriginal) => ({
+    ...(await importOriginal<typeof SemanticLoop>()),
+    linkAddressHeld: mocks.linkAddressHeld,
+  })
+);
 
 import saveFileTools from "@agent/subagents/browser-agent/tools/save_file";
 
@@ -71,9 +85,21 @@ const member = {
 const offSiteMessage =
   "This file is neither on the pinned login's site nor on Stripe's invoice pages (billing.stripe.com, files.stripe.com, invoice.stripe.com, pay.stripe.com), so it was not fetched. Do not try another route to it. Delete the browser, then return status \"failure\" saying the invoice file is on a website this task may not open, so the task ends as off_site.";
 const notHttpsMessage =
-  "save_file takes the absolute https URL of the PDF itself, such as the address of the invoice's Download PDF link.";
+  "save_file saves only an https address. Pass the ref of the PDF's link, such as the invoice's Download PDF link, from browser_snapshot or browser_find; never type, guess or build an address.";
 const notPdfMessage =
-  "The URL did not return a PDF, so nothing was saved. It may be a web page: open it in the browser, find its Download PDF link, and save that link's address.";
+  "The URL did not return a PDF, so nothing was saved. It may be a web page: open it in the browser, find its Download PDF link, and pass that link's ref.";
+const oneTargetMessage =
+  "Pass save_file either the ref of the PDF's link, from browser_snapshot or browser_find, or a url the browser showed, not both.";
+const staleRefMessage =
+  "That ref no longer names the element it was taken from, because the page has changed since, so nothing was saved. Take a fresh browser_snapshot or browser_find and pass the link's new ref.";
+const linkNotPdfMessage =
+  "That link opens a web page, not a PDF, so nothing was saved. Open the page by clicking the link with browser_act, take a fresh browser_snapshot there, and pass the ref of the PDF's own link.";
+const linkNotHttpsMessage =
+  "That link's address is not https, so the file cannot be saved. Do not try another address for it: delete the browser and return status \"failure\" saying the PDF's link is not secure.";
+const unknownTabMessage =
+  "That tab is not open in the browser, so nothing was saved. Pass the ref without a tabId: a ref is read in the tab it came from.";
+const noAddressMessage =
+  'That element is not a link with an address, so nothing was saved. Pass the ref of the PDF\'s own link. When the PDF opens only through a button that runs a script or sends a form, delete the browser and return status "failure" saying the document exists but its PDF has no address to save.';
 const tooLargeMessage =
   "The file is larger than 20 MB, the most a task may save, so it was not saved.";
 const redirectsMessage =
@@ -413,10 +439,15 @@ const outputSchema = z.strictObject({
   filename: z.string(),
 });
 
-async function save(
-  input: { browserSessionId?: string; filename?: string; url?: string } = {},
-  context = workerContext()
-) {
+interface SaveInput {
+  browserSessionId?: string;
+  filename?: string;
+  ref?: string;
+  tabId?: string;
+  url?: string;
+}
+
+async function save(input: SaveInput = {}, context = workerContext()) {
   const tool = await saveFileTool();
   return outputSchema.parse(
     await tool.execute(
@@ -426,10 +457,7 @@ async function save(
   );
 }
 
-async function refusal(
-  input: { filename?: string; url?: string } = {},
-  context = workerContext()
-) {
+async function refusal(input: SaveInput = {}, context = workerContext()) {
   const tool = await saveFileTool();
   try {
     await tool.execute(
@@ -719,6 +747,162 @@ describe("save_file", () => {
   });
 });
 
+function byRef(ref: string, more: SaveInput = {}): SaveInput {
+  return { ref, url: undefined, ...more };
+}
+
+describe("save_file refs", () => {
+  const goneMessage =
+    'The browser closed before the file was fetched. Return status "failure" saying the browser expired before the file was saved.';
+
+  it("reads the address of the link a ref names in the browser, in the same hold of its lock as the download", async () => {
+    const order: string[] = [];
+    mocks.linkAddressHeld.mockImplementation(async () => {
+      order.push("read");
+      // A browser action asked for now waits until the download is done.
+      void withBrowserLoopSessionLock("browser-1", async () => {
+        order.push(`action after ${String(chrome.commands.length)} commands`);
+      });
+      return invoiceUrl;
+    });
+
+    const result = await save(byRef("e12"));
+
+    expect(result).toEqual({
+      alreadySaved: false,
+      byteSize: pdf.byteLength,
+      fileId,
+      filename: "Invoice 2026-10.pdf",
+    });
+    expect(mocks.linkAddressHeld).toHaveBeenCalledExactlyOnceWith(
+      "browser-1",
+      "e12",
+      undefined,
+      expect.any(AbortSignal)
+    );
+    expect(chrome.sent).toEqual([invoiceUrl]);
+    await vi.waitFor(() => {
+      expect(order).toHaveLength(2);
+    });
+    expect(order).toEqual([
+      "read",
+      `action after ${String(chrome.commands.length)} commands`,
+    ]);
+    expect(JSON.stringify(result)).not.toContain("signed-download-secret");
+  });
+
+  it("passes the ref's tab on", async () => {
+    mocks.linkAddressHeld.mockResolvedValue(invoiceUrl);
+
+    await save(byRef("e3", { tabId: "A1B2" }));
+
+    expect(mocks.linkAddressHeld).toHaveBeenCalledExactlyOnceWith(
+      "browser-1",
+      "e3",
+      "A1B2",
+      expect.any(AbortSignal)
+    );
+  });
+
+  it("holds a ref's address to the same fence as a url, and sends nothing outside it", async () => {
+    mocks.linkAddressHeld.mockResolvedValue(
+      "https://attacker.example/invoice.pdf?leak=signed-download-secret"
+    );
+    await expect(refusal(byRef("e4"))).resolves.toBe(offSiteMessage);
+    mocks.linkAddressHeld.mockResolvedValue(
+      "http://billing.vendor.example/invoice.pdf"
+    );
+    await expect(refusal(byRef("e4"))).resolves.toBe(linkNotHttpsMessage);
+    mocks.linkAddressHeld.mockResolvedValue(
+      "https://sellercentral.amazon.com/invoice.pdf"
+    );
+    await expect(refusal(byRef("e4"))).resolves.toMatch(
+      /^sellercentral\.amazon\.com is an Amazon site/u
+    );
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(chrome.commands).toEqual([]);
+  });
+
+  it("refuses an element that is not a link with an address", async () => {
+    for (const address of [
+      null,
+      "javascript:void(0)",
+      "blob:https://login.vendor.example/1",
+      "about:blank",
+    ]) {
+      mocks.linkAddressHeld.mockResolvedValue(address);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each element is refused on its own.
+      await expect(refusal(byRef("e5"))).resolves.toBe(noAddressMessage);
+    }
+    expect(chrome.commands).toEqual([]);
+  });
+
+  it("refuses a stale ref or a closed tab with what to do next, and withholds anything else", async () => {
+    mocks.linkAddressHeld.mockRejectedValueOnce(
+      new Error(
+        "ref e9 is stale or not on the current page. Call snapshot (or find) to get fresh element references."
+      )
+    );
+    await expect(refusal(byRef("e9"))).resolves.toBe(staleRefMessage);
+
+    mocks.linkAddressHeld.mockRejectedValueOnce(
+      new Error('unknown tab_id "ZZ". Call list_tabs for current tabs.')
+    );
+    await expect(refusal(byRef("e9", { tabId: "ZZ" }))).resolves.toBe(
+      unknownTabMessage
+    );
+    expect(logged).toEqual([]);
+
+    mocks.linkAddressHeld.mockRejectedValueOnce(
+      new Error(`CDP failed on ${invoiceUrl}`)
+    );
+    await expect(refusal(byRef("e9"))).resolves.toBe(failedMessage);
+    expect(logged).toEqual([
+      JSON.stringify([
+        "[site] task file not saved",
+        { error: "Error", site: "teemiq" },
+      ]),
+    ]);
+
+    mocks.linkAddressHeld.mockRejectedValueOnce(
+      new NotFoundError(404, { error: "gone" }, "browser", new Headers())
+    );
+    await expect(refusal(byRef("e9"))).resolves.toBe(goneMessage);
+    expect(chrome.commands).toEqual([]);
+  });
+
+  it("tells the worker to open a link that leads to a web page and save the PDF there", async () => {
+    const hosted = "https://pay.stripe.com/invoice/acct_1/invst_9";
+    serve(hosted, {
+      body: Buffer.from("<html>Invoice</html>"),
+      headers: { "Content-Type": "text/html" },
+    });
+    mocks.linkAddressHeld.mockResolvedValue(hosted);
+
+    await expect(refusal(byRef("e7"))).resolves.toBe(linkNotPdfMessage);
+    // A url the worker passed keeps the url's wording.
+    await expect(refusal({ url: hosted })).resolves.toBe(notPdfMessage);
+    expect(mocks.saveSiteTaskFile).not.toHaveBeenCalled();
+  });
+
+  it("checks the task's room before reading a ref", async () => {
+    mocks.siteTaskFileRoom.mockResolvedValue("full");
+
+    await expect(refusal(byRef("e6"))).resolves.toBe(
+      "This task already keeps 10 files, the most it may save, so this one was not saved. Finish with the files saved so far."
+    );
+    expect(mocks.linkAddressHeld).not.toHaveBeenCalled();
+  });
+
+  it("takes either a ref or a url, not both and not neither", async () => {
+    await expect(refusal({ ref: "e1" })).resolves.toBe(oneTargetMessage);
+    await expect(refusal({ url: undefined })).resolves.toBe(oneTargetMessage);
+    expect(mocks.linkAddressHeld).not.toHaveBeenCalled();
+    expect(mocks.siteTaskFileRoom).not.toHaveBeenCalled();
+    expect(chrome.commands).toEqual([]);
+  });
+});
+
 describe("save_file redirects", () => {
   const stripeInvoice = "https://pay.stripe.com/invoice/acct_1/invst_2/pdf";
 
@@ -803,7 +987,7 @@ describe("save_file answers", () => {
   it("keeps only a 200 answer whose bytes start with %PDF-", async () => {
     serve(invoiceUrl, { status: 403 });
     await expect(refusal()).resolves.toBe(
-      "The file's URL answered HTTP 403, so nothing was saved. The link may have expired: open the page that links to the file again and save the link's current address."
+      "The file's URL answered HTTP 403, so nothing was saved. The link may have expired: open the page that links to the file again, take a fresh browser_snapshot, and pass the link's new ref. Never guess or build an address."
     );
     // The held answer is failed before the tab closes, so it never shows.
     const methods = chrome.commands.map(({ method }) => method);

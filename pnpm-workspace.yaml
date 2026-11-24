@@ -21,6 +21,7 @@ allowBuilds:
   protobufjs: false
   sharp: true
 patchedDependencies:
+  "@onkernel/browser-loop@0.12.0": patches/@onkernel__browser-loop@0.12.0.patch
   eve@1.0.0-rc.1: patches/eve@1.0.0-rc.1.patch
 ignoredOptionalDependencies:
   # Optional native codecs of just-bash; the sandbox only stores files, so they are not needed.

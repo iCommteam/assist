@@ -337,6 +337,19 @@ opening Stripe's hosted invoice page when that is where the link goes; it
 never pays, buys, upgrades, cancels, submits or changes anything else, and ends
 with `done` when it saved files or `nothing_found` when there were none.
 
+The worker passes `save_file` the ref of the PDF's link from its page snapshot,
+and `save_file` reads that link's address in the browser itself, so the model
+never types, guesses or copies an address. Browser Loop's snapshots show a
+link's role and name but not its address, so `patches/` adds a `linkAddress`
+method that resolves a ref through Browser Loop's own checks, in the tab the
+ref came from. A ref whose page has since changed is refused, never matched to
+another link: that covers a new page, a link removed or replaced, a ref a
+click or snapshot re-pointed to another link of the same name, and a page that
+changes while the address is read. A link with no address of its own (an
+empty href, or only a `#` fragment, as a script's often is) is refused as
+having none. A `url` is still taken for an address the browser showed, such as
+a tab's.
+
 `save_file` opens the file in a background tab of the task's own signed-in
 browser, so the request carries that browser's cookies, and keeps it only
 when:
@@ -354,9 +367,9 @@ when:
   the bytes are read, and reading stops once they pass 20 MB;
 - the task keeps fewer than 10 files and its 45 minutes have not passed.
 
-`save_file` takes a link's address. A PDF that only a button running a script
-or sending a form produces, with no address, cannot be saved; the task then
-ends `failed`, not `nothing_found`.
+`save_file` saves only a link that has an address. A PDF that only a button
+running a script or sending a form produces, with no address, cannot be saved;
+the task then ends `failed`, not `nothing_found`.
 
 A file whose bytes the task already keeps is not stored twice. Its `filename`
 is plain: no path, no control characters, at most 200 characters, ending in

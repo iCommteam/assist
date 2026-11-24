@@ -37,6 +37,25 @@ export async function executeBrowserLoopTool(
   });
 }
 
+// The address of the link a ref names, read through Browser Loop's own ref
+// checks (patches/README.md). The caller holds the browser's lock, so the
+// address is read and used in one hold of it.
+export async function linkAddressHeld(
+  sessionId: string,
+  ref: string,
+  tabId: string | undefined,
+  signal?: AbortSignal
+) {
+  const resources = await resourcesFor(sessionId, signal);
+  const executor = resources.browserExecutor();
+  try {
+    return await executor.linkAddress(ref, tabId, signal);
+  } finally {
+    const state = executor.exportRefState();
+    refStates.update((current) => ({ ...current, [sessionId]: state }));
+  }
+}
+
 export async function disposeBrowserLoopSession(sessionId: string) {
   await withBrowserLoopSessionLock(sessionId, async () => {
     const resources = resourcesBySession.get(sessionId);

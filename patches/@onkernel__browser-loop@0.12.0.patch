@@ -1,0 +1,107 @@
+diff --git a/dist/resources-24-Sa_uF.js b/dist/resources-24-Sa_uF.js
+index 9d0c6eb..8250a1d 100644
+--- a/dist/resources-24-Sa_uF.js
++++ b/dist/resources-24-Sa_uF.js
+@@ -3865,6 +3865,20 @@ var RefGenerationLifecycle = class {
+ 		if (frame.captures === 0 && frame.refs === 0 && this.frames.get(frame.frameId) === frame) this.frames.delete(frame.frameId);
+ 	}
+ };
++/**
++* Reads the address of the link an element is or sits in, and whether it is
++* still in the page. A link to its own page (an empty href, or one that is only
++* a fragment, as a script's "#" is) has no address (assist patch).
++*/
++const LINK_ADDRESS_FUNCTION = `function() {
++	const element = this.nodeType === 1 ? this : this.parentElement;
++	if (!element || !element.isConnected) return { connected: false, address: null };
++	const link = element.closest("a[href], area[href]");
++	if (!link) return { connected: true, address: null };
++	const raw = (link.getAttribute("href") || "").trim();
++	if (raw === "" || raw.startsWith("#")) return { connected: true, address: null };
++	return { connected: true, address: typeof link.href === "string" ? link.href : null };
++}`;
+ function staleRefError(ref, cause) {
+ 	return new Error(`ref ${ref} is stale or not on the current page. ${STALE_REF_HINT}`, cause === void 0 ? void 0 : { cause });
+ }
+@@ -5326,6 +5340,7 @@ var BrowserExecutor = class {
+ 		const ref = `e${this.refCounter}`;
+ 		this.lifecycle.retainRef(ref, {
+ 			backendNodeId: node.backendDOMNodeId,
++			mintedNodeId: node.backendDOMNodeId,
+ 			targetId: ctx.targetId,
+ 			frameId: ctx.frameKey,
+ 			sessionId: ctx.sessionId,
+@@ -5352,6 +5367,53 @@ var BrowserExecutor = class {
+ 		if (!entry || entry.targetId !== targetId || !this.lifecycle.isRefCurrent(entry)) throw staleRefError(ref);
+ 		return entry;
+ 	}
++	/**
++	* The resolved address of the link a ref names: the element's own, or its
++	* nearest enclosing link's; null when it is not a link with an address.
++	* A ref is read in its own tab unless a tab is named. It throws as stale,
++	* never answering for another element, when its node is gone or no longer
++	* in the page, when an earlier action healed it onto another element with
++	* the same role and name, or when the page changes while it is read
++	* (assist patch).
++	*/
++	async linkAddress(ref, tabId, signal) {
++		throwIfAborted$1(signal);
++		const owner = tabId === void 0 ? this.refs.get(ref)?.targetId : void 0;
++		let targetId;
++		if (owner === void 0) targetId = await this.resolveTarget(tabId);
++		else try {
++			targetId = await this.resolveTarget(owner);
++		} catch (err) {
++			throw staleRefError(ref, err);
++		}
++		await this.attach(targetId);
++		throwIfAborted$1(signal);
++		const entry = this.resolveRef(ref, targetId);
++		if (entry.mintedNodeId === void 0 || entry.mintedNodeId !== entry.backendNodeId) throw staleRefError(ref);
++		const session = await this.refSession(entry);
++		throwIfAborted$1(signal);
++		let objectId;
++		try {
++			({ object: { objectId } } = await this.cdp.send("DOM.resolveNode", { backendNodeId: entry.backendNodeId }, session));
++		} catch (err) {
++			throw staleRefError(ref, err);
++		}
++		if (!objectId) throw staleRefError(ref);
++		try {
++			const { result, exceptionDetails } = await this.cdp.send("Runtime.callFunctionOn", {
++				objectId,
++				functionDeclaration: LINK_ADDRESS_FUNCTION,
++				returnByValue: true
++			}, session);
++			if (this.refs.get(ref) !== entry || !this.lifecycle.isRefCurrent(entry)) throw staleRefError(ref);
++			if (exceptionDetails) return null;
++			const read = result?.value;
++			if (!read || read.connected !== true) throw staleRefError(ref);
++			return typeof read.address === "string" && read.address !== "" ? read.address : null;
++		} finally {
++			await this.cdp.send("Runtime.releaseObject", { objectId }, session).catch(() => {});
++		}
++	}
+ 	ownerForFrameTarget(frameTargetId) {
+ 		const mapped = this.frameOwners.get(frameTargetId);
+ 		if (mapped) return mapped;
+diff --git a/dist/tool-manager-B2jTsEQ-.d.ts b/dist/tool-manager-B2jTsEQ-.d.ts
+index 18aa4b1..be32dc6 100644
+--- a/dist/tool-manager-B2jTsEQ-.d.ts
++++ b/dist/tool-manager-B2jTsEQ-.d.ts
+@@ -1182,6 +1182,15 @@ declare class BrowserExecutor {
+   exportRefState(): BrowserRefState;
+   /** Restore a ref table exported by a previous invocation against the same browser. */
+   importRefState(state: BrowserRefState): void;
++  /**
++   * The resolved address of the link a ref names: the element's own, or its
++   * nearest enclosing link's; null when it is not a link with an address. A
++   * ref is read in its own tab unless tabId names one. A ref whose node is
++   * gone or no longer in the page, that an earlier action healed onto another
++   * element, or whose page changes while it is read throws as stale (assist
++   * patch).
++   */
++  linkAddress(ref: string, tabId?: string, signal?: AbortSignal): Promise<string | null>;
+   execute(action: BrowserAction, signal?: AbortSignal): Promise<BatchReadResult[]>;
+   private dispatch;
+   screenshot(region?: [number, number, number, number], tabId?: string): Promise<{
