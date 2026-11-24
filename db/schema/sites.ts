@@ -74,8 +74,8 @@ export const siteChats = pgTable(
     topic: text("topic"),
     title: text("title"),
     // The site's current token for its own tools, encrypted for this chat,
-    // and when assist stops using it. Each call overwrites it, and the end of
-    // every turn clears it.
+    // and when assist stops using it, 15 minutes after it arrived. Each call
+    // overwrites it, and the end of the turn that took its message clears it.
     teemiqToken: text("teemiq_token"),
     teemiqTokenExpiresAt: timestamp("teemiq_token_expires_at", {
       mode: "date",

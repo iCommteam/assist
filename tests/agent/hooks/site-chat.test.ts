@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { InteractionOpened, TurnSettled } from "eve/events";
+import type { Fact, InteractionOpened, TurnSettled } from "eve/events";
 import type { HookContext } from "eve/hooks";
 import type { clearSiteChatToken } from "@db/services/site-chats";
 
@@ -14,6 +14,7 @@ import siteChat from "@agent/hooks/site-chat";
 import { sitePrincipal } from "@agent/lib/site-principal";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { hookContextFor } from "@tests/helpers/hook-context";
+import { viewAt } from "@tests/helpers/session-view";
 
 const owner = accessScopeForUser("better-auth:owner-1");
 const chat = sitePrincipal(
@@ -113,10 +114,25 @@ describe("site chat token", () => {
     type: "turn.settled",
   } satisfies TurnSettled;
 
-  it("forgets the site's token at the end of every turn and of the session", async () => {
+  it("forgets at a turn's end the token of the last message it took, and at the session's end any", async () => {
     const context = hookContextFor({
       auth: { current: chat, initiator: chat },
       sessionId: "wrun_chat",
+      view: viewAt([
+        [
+          "2026-01-01T10:00:00.000Z",
+          [admitted("d1"), turnStarted("d1"), consumed("d1")],
+        ],
+        // The person wrote again while the turn ran, and the turn took it.
+        ["2026-01-01T10:00:20.000Z", [admitted("d2")]],
+        ["2026-01-01T10:00:21.000Z", [consumed("d2")]],
+        // A result the site posted as the turn ended waits for the next turn.
+        ["2026-01-01T10:00:40.000Z", [admitted("d3")]],
+        [
+          "2026-01-01T10:00:41.000Z",
+          [settled, deliverySettled("d1"), deliverySettled("d2")],
+        ],
+      ]),
     });
 
     await siteChat.events["turn.settled"]?.(settled, context);
@@ -126,9 +142,27 @@ describe("site chat token", () => {
     );
 
     expect(mocks.clearSiteChatToken.mock.calls).toEqual([
-      ["wrun_chat"],
-      ["wrun_chat"],
+      ["wrun_chat", new Date("2026-01-01T10:00:20.000Z")],
+      ["wrun_chat", undefined],
     ]);
+  });
+
+  it("forgets at a turn's end what arrived by the settle when the view names no message of the turn", async () => {
+    const now = new Date("2026-01-01T10:01:00.000Z");
+
+    await siteChat.events["turn.settled"]?.(
+      settled,
+      hookContextFor({
+        auth: { current: chat, initiator: chat },
+        now,
+        sessionId: "wrun_chat",
+      })
+    );
+
+    expect(mocks.clearSiteChatToken).toHaveBeenCalledExactlyOnceWith(
+      "wrun_chat",
+      now
+    );
   });
 
   it("keeps the turn when the token cannot be cleared, which runs out by itself", async () => {
@@ -155,6 +189,32 @@ describe("site chat token", () => {
     expect(mocks.clearSiteChatToken).not.toHaveBeenCalled();
   });
 });
+
+function admitted(deliveryId: string): Fact {
+  return { data: { deliveryId }, type: "delivery.admitted" };
+}
+
+function turnStarted(deliveryId: string): Fact {
+  return {
+    data: { cause: { deliveryId }, follows: null, turnId: "t" },
+    type: "turn.started",
+  };
+}
+
+function consumed(deliveryId: string): Fact {
+  return {
+    data: { deliveryId, parts: [{ kind: "text", text: "Hi" }], turnId: "t" },
+    scope: { turnId: "t" },
+    type: "delivery.consumed",
+  };
+}
+
+function deliverySettled(deliveryId: string): Fact {
+  return {
+    data: { deliveryId, outcome: "handled", turnId: "t" },
+    type: "delivery.settled",
+  };
+}
 
 function opened(request: InteractionOpened["data"]["request"]) {
   return {

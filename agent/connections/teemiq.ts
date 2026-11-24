@@ -10,10 +10,10 @@ import { env } from "@shared/environment";
 
 // TEEMIQ's finance tools, as the person a site chat belongs to. TEEMIQ mints
 // a short-lived token for each chat and sends it with every message; the
-// chat's row keeps it until the turn ends. The connection exists only in a
-// site chat, only while that chat holds a live token, and only when
-// TEEMIQ_FINANCE_MCP_URL is set, so a turn without a token has no finance
-// tools at all and nothing ever asks anyone to sign in.
+// chat's row keeps it until the turn that took the message ends. The
+// connection exists only in a site chat, only while that chat holds a live
+// token, and only when TEEMIQ_FINANCE_MCP_URL is set, so a turn without a
+// token has no finance tools at all and nothing ever asks anyone to sign in.
 const financeTools = [
   "finance_find_transactions",
   "finance_get_transaction",

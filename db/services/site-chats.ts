@@ -4,7 +4,7 @@ import {
   hkdfSync,
   randomBytes,
 } from "node:crypto";
-import { and, desc, eq, gt, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, lte, sql } from "drizzle-orm";
 import { db, siteChats } from "@db";
 import { getInstallationSecrets } from "@db/services/installation-secrets";
 import type { AccessScope } from "@shared/identity/access-scope";
@@ -185,13 +185,27 @@ export async function readSiteChatToken(
     : { expiresAt: chat.expiresAt.getTime(), token };
 }
 
-// Forgets the token of a chat's session, at the end of each of its turns.
-export async function clearSiteChatToken(sessionId: string) {
+// Forgets the token of a chat's session. At the end of a turn, only one that
+// arrived by `arrivedBy`, when the turn took its last message: one that
+// arrived later came with a message the turn never took, and stays for that
+// message's turn. At the end of the session, any. One update decides it, so a
+// token stored meanwhile is never cleared by a stale read.
+export async function clearSiteChatToken(sessionId: string, arrivedBy?: Date) {
   await db
     .update(siteChats)
     .set({ teemiqToken: null, teemiqTokenExpiresAt: null })
     .where(
-      and(eq(siteChats.sessionId, sessionId), isNotNull(siteChats.teemiqToken))
+      and(
+        eq(siteChats.sessionId, sessionId),
+        isNotNull(siteChats.teemiqToken),
+        // A token runs out its lifetime after it arrived.
+        arrivedBy === undefined
+          ? undefined
+          : lte(
+              siteChats.teemiqTokenExpiresAt,
+              new Date(arrivedBy.getTime() + siteChatTokenLifetimeMs)
+            )
+      )
     );
 }
 

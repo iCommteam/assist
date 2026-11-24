@@ -515,8 +515,12 @@ A message or an answer while the session is still starting can answer
   printable characters, opaque to assist. Every message and answer carries
   one, and `/token` replaces it while a long turn runs, every 5 minutes for
   TEEMIQ. It is kept only on the chat's row, encrypted for that chat, used for
-  at most 15 minutes from when it arrived, and cleared when each turn ends; it
-  never reaches the model, the session's records or a log.
+  at most 15 minutes from when it arrived, and cleared when the turn that
+  took its message ends, or when the session ends; it never reaches the
+  model, the session's records or a log. A token that arrives after a turn
+  took its last message, such as one sent with a result posted as the turn
+  ends, or a `/token` renewal sent later in the turn, outlives that turn: the
+  next turn's end, or its own 15 minutes, clears it.
 
 The agent of a chat is an Accounting assistant for the company. It answers,
 searches the web and asks the person questions; it has no browser, vault,

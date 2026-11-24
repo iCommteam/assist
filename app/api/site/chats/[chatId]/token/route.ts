@@ -19,7 +19,9 @@ const tokenInputSchema = z.object({
 });
 
 // Replaces the chat's token while a turn runs, so the agent's tools outlast a
-// token's own lifetime. The end of the turn clears it.
+// token's own lifetime. A renewal that arrives after the turn took its last
+// message outlives that turn: the next turn's end, or its own expiry, clears
+// it.
 export async function POST(
   request: Request,
   context: RouteContext<"/api/site/chats/[chatId]/token">

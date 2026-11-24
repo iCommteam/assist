@@ -17,6 +17,25 @@ export function viewOf(
   return foldEvents(emptySessionView(), eventsOf(lines, at));
 }
 
+/** As `viewOf`, with the time eve recorded each line. */
+export function viewAt(
+  lines: readonly (readonly [at: string, facts: readonly Fact[]])[]
+): SessionView {
+  return foldEvents(
+    emptySessionView(),
+    lines.flatMap(([at, facts], line) =>
+      facts.map((fact, index) => ({
+        ...fact,
+        meta: {
+          at,
+          endOfLine: index === facts.length - 1,
+          position: { index, line },
+        },
+      }))
+    )
+  );
+}
+
 /** The stream events a reader receives for these committed lines. */
 export function eventsOf(
   lines: readonly (readonly Fact[])[],

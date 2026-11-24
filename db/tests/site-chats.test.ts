@@ -174,6 +174,22 @@ describe("site chats", () => {
     expect(cleared).toEqual({ expiresAt: null, sealed: null });
   });
 
+  it("clears at a turn's end only a token that arrived by the turn's last message", async () => {
+    const before = Date.now();
+    await storeSiteChatToken("teemiq", owner, "user-1", chatB, token);
+
+    // The turn took its last message before this token arrived.
+    await clearSiteChatToken("wrun_b", new Date(before - 1));
+    await expect(
+      readSiteChatToken(owner, chatB, "wrun_b")
+    ).resolves.toMatchObject({ token });
+
+    await clearSiteChatToken("wrun_b", new Date());
+    await expect(
+      readSiteChatToken(owner, chatB, "wrun_b")
+    ).resolves.toBeUndefined();
+  });
+
   it("reads a token that has run out as none", async () => {
     await storeSiteChatToken("teemiq", owner, "user-2", chatC, token);
     await database
