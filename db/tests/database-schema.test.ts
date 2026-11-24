@@ -16,6 +16,7 @@ import {
   scheduledAgentRuns,
   session,
   settings,
+  siteChats,
   siteTasks,
   taskFiles,
   twoFactor,
@@ -37,6 +38,7 @@ describe("database schema", () => {
         settings,
         agentSessions,
         siteTasks,
+        siteChats,
         taskFiles,
         browserImageArtifacts,
         browserSessions,
@@ -60,6 +62,7 @@ describe("database schema", () => {
       "settings",
       "agent_sessions",
       "site_tasks",
+      "site_chats",
       "task_files",
       "browser_image_artifacts",
       "browser_sessions",
@@ -170,6 +173,7 @@ describe("database schema", () => {
       chats,
       encryptedSecrets,
       siteTasks,
+      siteChats,
       taskFiles,
     ]) {
       expect(

@@ -9,6 +9,7 @@ import {
 import { chats, db } from "@db";
 import { ensureScope } from "./scope";
 import { waitForSessionOwnership } from "./sessions";
+import { isAnySiteChatSession } from "./site-chats";
 
 const chatRowSchema = z.object({
   channel: z.string().min(1).nullable(),
@@ -66,6 +67,9 @@ export async function saveChat(
 ) {
   // A session outside this workspace is indistinguishable from an unknown one.
   if (!(await waitForSessionOwnership(scope, chat.sessionId))) return;
+  // A site chat belongs to the site's person, so it never joins the owner's
+  // chat list, whoever asks.
+  if (await isAnySiteChatSession(chat.sessionId)) return;
   await ensureScope(scope);
   const now = new Date();
   const existing = await db

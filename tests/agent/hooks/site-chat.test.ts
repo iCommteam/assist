@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { InteractionOpened } from "eve/events";
+import type { InteractionOpened, TurnSettled } from "eve/events";
 import type { HookContext } from "eve/hooks";
+import type { clearSiteChatToken } from "@db/services/site-chats";
+
+const mocks = vi.hoisted(() => ({
+  clearSiteChatToken: vi.fn<typeof clearSiteChatToken>(),
+}));
+vi.mock("@db/services/site-chats", () => ({
+  clearSiteChatToken: mocks.clearSiteChatToken,
+}));
+
 import siteChat from "@agent/hooks/site-chat";
 import { sitePrincipal } from "@agent/lib/site-principal";
 import { accessScopeForUser } from "@shared/identity/access-scope";
@@ -94,6 +103,56 @@ describe("site chat input hook", () => {
 
     expect(await fire(budget, task)).not.toHaveBeenCalled();
     expect(await fire(budget, member)).not.toHaveBeenCalled();
+  });
+});
+
+describe("site chat token", () => {
+  const settled = {
+    data: { outcome: "completed", turnId: "t" },
+    scope: { turnId: "t" },
+    type: "turn.settled",
+  } satisfies TurnSettled;
+
+  it("forgets the site's token at the end of every turn and of the session", async () => {
+    const context = hookContextFor({
+      auth: { current: chat, initiator: chat },
+      sessionId: "wrun_chat",
+    });
+
+    await siteChat.events["turn.settled"]?.(settled, context);
+    await siteChat.events["session.ended"]?.(
+      { data: { outcome: "completed" }, type: "session.ended" },
+      context
+    );
+
+    expect(mocks.clearSiteChatToken.mock.calls).toEqual([
+      ["wrun_chat"],
+      ["wrun_chat"],
+    ]);
+  });
+
+  it("keeps the turn when the token cannot be cleared, which runs out by itself", async () => {
+    mocks.clearSiteChatToken.mockRejectedValueOnce(new Error("db down"));
+
+    await expect(
+      siteChat.events["turn.settled"]?.(
+        settled,
+        hookContextFor({ auth: { current: chat, initiator: chat } })
+      )
+    ).resolves.toBeUndefined();
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith(
+      "[site] chat token could not be cleared",
+      { error: "Error", site: "teemiq" }
+    );
+  });
+
+  it("touches no row for a site task", async () => {
+    await siteChat.events["turn.settled"]?.(
+      settled,
+      hookContextFor({ auth: { current: task, initiator: task } })
+    );
+
+    expect(mocks.clearSiteChatToken).not.toHaveBeenCalled();
   });
 });
 

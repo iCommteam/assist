@@ -47,6 +47,7 @@ describe("database migrations", () => {
     await applyMigration(database, "0016_fair_psylocke.sql");
     await applyMigration(database, "0017_parallel_hulk.sql");
     await applyMigration(database, "0018_famous_bishop.sql");
+    await applyMigration(database, "0019_chemical_paper_doll.sql");
 
     const tables = await database.query<{ count: number }>(
       `SELECT count(*)::int AS count
@@ -61,6 +62,7 @@ describe("database migrations", () => {
            'user_profiles',
            'agent_sessions',
            'site_tasks',
+           'site_chats',
            'task_files',
            'browser_image_artifacts',
            'browser_sessions',
@@ -80,7 +82,7 @@ describe("database migrations", () => {
     );
     const pendingConstraints = await pendingConstraintCount(database);
 
-    expect(tables.rows[0]?.count).toBe(23);
+    expect(tables.rows[0]?.count).toBe(24);
     expect(pendingConstraints).toBe(0);
     await expect(
       database.query("SELECT id FROM vault_items WHERE id = 'contact-1'")
@@ -232,6 +234,56 @@ describe("database migrations", () => {
     expect(existing.rows).toEqual([
       { login_id: "login-1", sign_in_origin: null },
     ]);
+  }, 30_000);
+
+  it("adds site chats, whose token and its expiry come and go together", async () => {
+    const database = createDatabase();
+    const journal = z
+      .object({ entries: z.array(z.object({ tag: z.string() })) })
+      .parse(
+        JSON.parse(
+          await readFile(
+            new URL("../migrations/meta/_journal.json", import.meta.url),
+            "utf8"
+          )
+        )
+      );
+    const tags = journal.entries.map(({ tag }) => tag);
+    /* oxlint-disable eslint/no-await-in-loop -- Migrations must execute in journal order. */
+    for (const tag of tags.slice(0, tags.indexOf("0019_chemical_paper_doll"))) {
+      await applyMigration(database, `${tag}.sql`);
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+    await database.exec(`
+      INSERT INTO workspaces (id) VALUES ('workspace-1');
+      INSERT INTO site_tasks (id, site, workspace_id, session_id)
+      VALUES ('00000000-0000-4000-8000-000000000001', 'teemiq', 'workspace-1', 'wrun_task');
+    `);
+
+    await applyMigration(database, "0019_chemical_paper_doll.sql");
+
+    const chat =
+      "'00000000-0000-4000-8000-0000000000c1', 'teemiq', 'workspace-1', 'user-1'";
+    await database.exec(`
+      INSERT INTO site_chats (id, site, workspace_id, site_user, session_id)
+      VALUES (${chat}, 'wrun_chat');
+    `);
+    for (const refused of [
+      `UPDATE site_chats SET teemiq_token = 'v1.sealed'`,
+      `UPDATE site_chats SET teemiq_token_expires_at = now()`,
+      `INSERT INTO site_chats (id, site, workspace_id, site_user, session_id)
+       VALUES ('00000000-0000-4000-8000-0000000000c2', 'teemiq', 'workspace-1', 'user-1', 'wrun_chat')`,
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each refused statement is its own.
+      await expect(database.exec(refused)).rejects.toThrow(
+        /constraint|duplicate/u
+      );
+    }
+    await database.exec("DELETE FROM workspaces");
+    const left = await database.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM site_chats"
+    );
+    expect(left.rows[0]?.count).toBe(0);
   }, 30_000);
 
   it("reconciles the pre-merge reply-anchor migration", async () => {

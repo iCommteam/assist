@@ -51,6 +51,58 @@ export const siteTasks = pgTable(
   ]
 );
 
+// The chats a connected site holds with its people, each in its own agent
+// session. The session belongs to the site owner's workspace, but only the
+// site, for the same person, reaches it: the owner's own sign-in never does.
+export const siteChats = pgTable(
+  "site_chats",
+  {
+    // Chosen by the API before eve creates the session, which records it.
+    id: uuid("id").primaryKey(),
+    site: text("site").notNull(),
+    workspaceId: text("workspace_id").notNull(),
+    // The site's own id for the person, such as a TEEMIQ user id.
+    siteUser: text("site_user").notNull(),
+    sessionId: text("session_id").notNull().unique(),
+    // An opaque key the site sets to find a chat again, such as `txn:<id>`.
+    topic: text("topic"),
+    title: text("title"),
+    // The site's current token for its own tools, encrypted for this chat,
+    // and when assist stops using it. Each call overwrites it, and the end of
+    // every turn clears it.
+    teemiqToken: text("teemiq_token"),
+    teemiqTokenExpiresAt: timestamp("teemiq_token_expires_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "site_chats_workspace_id_fkey",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaces.id],
+    }).onDelete("cascade"),
+    check(
+      "site_chats_teemiq_token_check",
+      sql`(${table.teemiqToken} IS NULL) = (${table.teemiqTokenExpiresAt} IS NULL)`
+    ),
+    index("site_chats_site_user_idx").on(
+      table.site,
+      table.workspaceId,
+      table.siteUser,
+      table.createdAt.desc()
+    ),
+  ]
+);
+
 const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
   dataType: () => "bytea",
 });
@@ -114,6 +166,13 @@ export const siteTasksRelations = relations(siteTasks, ({ many, one }) => ({
   files: many(taskFiles),
   workspace: one(workspaces, {
     fields: [siteTasks.workspaceId],
+    references: [workspaces.id],
+  }),
+}));
+
+export const siteChatsRelations = relations(siteChats, ({ one }) => ({
+  workspace: one(workspaces, {
+    fields: [siteChats.workspaceId],
     references: [workspaces.id],
   }),
 }));

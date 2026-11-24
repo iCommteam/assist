@@ -411,7 +411,11 @@ async function applyNativeTypesMigration(database: PGlite) {
 
 async function applySiteMigrations(database: PGlite) {
   /* oxlint-disable eslint/no-await-in-loop -- Migrations and their statements must execute in order. */
-  for (const name of ["0016_fair_psylocke.sql", "0017_parallel_hulk.sql"]) {
+  for (const name of [
+    "0016_fair_psylocke.sql",
+    "0017_parallel_hulk.sql",
+    "0019_chemical_paper_doll.sql",
+  ]) {
     const migration = await readFile(
       new URL(`../migrations/${name}`, import.meta.url),
       "utf8"

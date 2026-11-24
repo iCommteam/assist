@@ -134,6 +134,13 @@
       "when": 1795530152164,
       "tag": "0018_famous_bishop",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795539372578,
+      "tag": "0019_chemical_paper_doll",
+      "breakpoints": true
     }
   ]
 }
