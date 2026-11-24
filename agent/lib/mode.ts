@@ -1,6 +1,5 @@
 import type { DynamicContext } from "eve";
 import { defineInstructions } from "eve/instructions";
-import { siteChatAuthenticator } from "@agent/lib/site-principal";
 
 interface AgentModeContext {
   readonly session: {
@@ -22,14 +21,17 @@ function agentMode(authenticator: string | undefined) {
 type AgentMode = ReturnType<typeof agentMode> | "site-chat";
 
 // A scheduled worker and a site chat keep their mode for every turn of the
-// session, whoever sends it, so the initiator decides them.
+// session, whoever sends it, so the initiator decides them. A site chat's
+// initiator is the eve channel's assist-site-chat principal
+// (agent/lib/site-principal.ts); this file stays free of its imports, which
+// the workflow bundle of run_browser cannot load.
 function sessionAgentMode(
   auth: AgentModeContext["session"]["auth"]
 ): AgentMode {
   if (auth.initiator?.authenticator === "scheduled-worker") {
     return "scheduled-worker";
   }
-  if (auth.initiator?.authenticator === siteChatAuthenticator) {
+  if (auth.initiator?.authenticator === "assist-site-chat") {
     return "site-chat";
   }
   const caller = auth.current ?? auth.initiator;

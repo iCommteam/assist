@@ -12,7 +12,7 @@ import {
 // task, one for a chat with one of the site's people. The eve channel is the
 // only issuer; the `site` attribute records which site sent it.
 const siteAuthenticator = "assist-site";
-export const siteChatAuthenticator = "assist-site-chat";
+const siteChatAuthenticator = "assist-site-chat";
 
 // The principal the eve channel gives a verified site credential. A create
 // grant's login pin becomes attributes of the session's initiator: its id, its
