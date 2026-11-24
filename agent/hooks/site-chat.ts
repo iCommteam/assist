@@ -25,10 +25,10 @@ export default defineHook({
       );
     },
     async "turn.settled"(event, ctx) {
-      await forgetToken(ctx, lastArrivalOf(ctx, event.data.turnId));
+      await forgetToken(ctx, () => lastArrivalOf(ctx, event.data.turnId));
     },
     async "session.ended"(_event, ctx) {
-      await forgetToken(ctx, undefined);
+      await forgetToken(ctx, () => undefined);
     },
   },
 });
@@ -45,11 +45,16 @@ function lastArrivalOf(ctx: HookContext, turnId: string) {
   return arrivals.length > 0 ? new Date(Math.max(...arrivals)) : ctx.now;
 }
 
-async function forgetToken(ctx: HookContext, arrivedBy: Date | undefined) {
+// Only a site chat's session reads its view for the cutoff, and a cutoff that
+// cannot be read fails no turn.
+async function forgetToken(
+  ctx: HookContext,
+  arrivedBy: () => Date | undefined
+) {
   const chat = siteChatOfSession(ctx.session.auth.initiator);
   if (!chat) return;
   try {
-    await clearSiteChatToken(ctx.session.id, arrivedBy);
+    await clearSiteChatToken(ctx.session.id, arrivedBy());
   } catch (error) {
     // The token runs out by itself; a failed clear must not fail the turn.
     console.warn("[site] chat token could not be cleared", {
