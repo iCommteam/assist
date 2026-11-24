@@ -21,6 +21,8 @@ import {
 // another after the last cursor it read.
 const maxStreamMs = 10 * 60_000;
 const heartbeatMs = 15_000;
+// The first event, which every session has, is awaited at most this long.
+const firstEventMs = 20_000;
 const streamInputSchema = z.object({
   after: z.coerce.number().int().min(-1).default(-1),
   siteUser: siteUserSchema,
@@ -66,11 +68,15 @@ export async function GET(
   const events = stream[Symbol.asyncIterator]();
   // The first event is read before answering, so a chat eve cannot stream
   // answers an error rather than an empty stream.
+  const firstDeadline = setTimeout(() => {
+    stop.abort();
+  }, firstEventMs);
   const opened = await callChatEve(site, async () => events.next());
-  if (!opened.ok) {
+  clearTimeout(firstDeadline);
+  if (!opened.ok || stop.signal.aborted) {
     request.signal.removeEventListener("abort", onAbort);
     stop.abort();
-    return opened.response;
+    return opened.ok ? siteError(503, "unavailable") : opened.response;
   }
   const first: IteratorResult<ReceivedEvent> = opened.value;
 

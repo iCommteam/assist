@@ -10,6 +10,7 @@ import {
   type SiteGrant,
 } from "@shared/identity/site-credential";
 import { authSessionFor } from "@tests/helpers/auth-session";
+import { Client } from "eve/client";
 import eveChannel from "@agent/channels/eve";
 
 const secret = "test-auth-secret-0123456789abcdefghijklmnop";
@@ -580,6 +581,68 @@ describe("Eve channel site chat credential", () => {
 
     expect(response.status).toBe(403);
     expect(isSessionOwnedMock).not.toHaveBeenCalled();
+  });
+
+  it("admits exactly what eve's own client sends for a chat's create, message and answer", async () => {
+    const sent: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (input, init) => {
+        sent.push(new Request(input, init));
+        return Response.json(
+          { deliveryId: "delivery-1", sessionId: "wrun_chat" },
+          { status: 202 }
+        );
+      })
+    );
+    const clientFor = (grant: SiteGrant) =>
+      new Client({
+        auth: { bearer: () => mintSiteCredential(secret, grant) },
+        baseUrl: "https://assistant.example",
+      });
+    try {
+      await clientFor({ ...chatGrant, op: "chat.create" }).sessions.create();
+      await clientFor(messageChat)
+        .sessions.attach("wrun_chat")
+        .send("Which account?", { clientContext: "About: OpenAI" });
+      await clientFor(answerChat)
+        .sessions.attach("wrun_chat")
+        .respond([{ interactionId: "interaction-1", optionId: "business" }]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const [create, message, reply] = sent;
+    if (!create || !message || !reply) throw new Error("Expected 3 requests.");
+
+    const createSession = vi.fn<
+      (input: { auth: unknown }) => Promise<{ sessionId: string }>
+    >(async () => ({ sessionId: "wrun_chat" }));
+    const created = await findRoute("POST", "/eve/v1/session").handler(
+      create,
+      Object.assign(unexpectedRouteContext(), {
+        __eveRouteSessionCreator: createSession,
+      })
+    );
+    const statuses = await Promise.all(
+      [message, reply].map(
+        async (request) =>
+          (
+            await findRoute("POST", "/eve/v1/session/:sessionId").handler(
+              request,
+              {
+                ...unexpectedRouteContext(),
+                params: { sessionId: "wrun_chat" },
+              }
+            )
+          ).status
+      )
+    );
+
+    expect(created.status).toBe(202);
+    expect(createSession).toHaveBeenCalledOnce();
+    // Past authorization the route delivers through eve's runtime, which this
+    // test does not provide; a refused body would answer 403.
+    expect(statuses).toEqual([500, 500]);
   });
 
   it("refuses a task credential on a chat's session", async () => {

@@ -3,6 +3,7 @@ import type { Fact, ReceivedEvent } from "eve/events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { ensureScope } from "@db/services/scope";
+import type { claimSession } from "@db/services/sessions";
 import type {
   findSiteChat,
   listSiteChats,
@@ -39,6 +40,7 @@ const eve = vi.hoisted(() => ({
   streamOptions: new Array<{ follow?: boolean }>(),
 }));
 const services = vi.hoisted(() => ({
+  claimSession: vi.fn<typeof claimSession>(),
   ensureScope: vi.fn<typeof ensureScope>(),
   findSiteChat: vi.fn<typeof findSiteChat>(),
   listSiteChats: vi.fn<typeof listSiteChats>(),
@@ -60,9 +62,16 @@ vi.mock("eve/client", async (importOriginal) => {
           message: string,
           options?: { readonly clientContext?: string }
         ) => eve.send(sessionId, message, options),
-        async *stream(options: { follow?: boolean }) {
+        async *stream(options: { follow?: boolean; signal?: AbortSignal }) {
           eve.streamOptions.push(options);
-          yield* await eve.read(sessionId);
+          const { signal } = options;
+          // Like the real client, an aborted read stops waiting.
+          const aborted = new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => {
+              reject(new Error("The read was aborted."));
+            });
+          });
+          yield* await Promise.race([eve.read(sessionId), aborted]);
         },
       }),
       create: eve.create,
@@ -75,6 +84,9 @@ vi.mock("eve/client", async (importOriginal) => {
   return { ...original, Client: FakeClient };
 });
 vi.mock("@db/services/scope", () => ({ ensureScope: services.ensureScope }));
+vi.mock("@db/services/sessions", () => ({
+  claimSession: services.claimSession,
+}));
 vi.mock("@db/services/site-chats", () => ({
   findSiteChat: services.findSiteChat,
   listSiteChats: services.listSiteChats,
@@ -134,6 +146,7 @@ beforeEach(() => {
   );
   services.storeSiteChatToken.mockResolvedValue(true);
   services.recordSiteChat.mockResolvedValue();
+  services.claimSession.mockResolvedValue();
   services.listSiteChats.mockResolvedValue([]);
   eve.create.mockResolvedValue({ session: { id: "wrun_chat" } });
   eve.read.mockResolvedValue(eventsOf([[sessionStarted]]));
@@ -165,6 +178,10 @@ describe("site chats", () => {
       siteUser: "user-1",
     });
     expect(services.ensureScope).toHaveBeenCalledWith(owner);
+    expect(services.claimSession).toHaveBeenCalledExactlyOnceWith(
+      owner,
+      "wrun_chat"
+    );
     expect(services.recordSiteChat).toHaveBeenCalledExactlyOnceWith(
       "teemiq",
       owner,
@@ -550,6 +567,21 @@ describe("site chat stream", () => {
       session: "wrun_chat",
       siteUser: "user-1",
     });
+  });
+
+  it("answers 503 when the chat's first event does not arrive in time", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    eve.read.mockReturnValue(new Promise(() => undefined));
+
+    const pending = streamChat(
+      get(`/chats/${chatId}/stream?siteUser=user-1`),
+      params()
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+    const response = await pending;
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "unavailable" });
   });
 
   it("answers another person's stream as not found, and an ended chat as 410", async () => {

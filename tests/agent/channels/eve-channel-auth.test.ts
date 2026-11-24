@@ -194,6 +194,9 @@ describe("Eve channel authentication", () => {
       if (route.transport === "websocket") return [];
       const path = route.path
         .replace(":sessionId", "wrun_chat")
+        .replace(":parentSessionId", "wrun_chat")
+        .replace(":callId", "call-1")
+        .replace(":childSessionId", "wrun_child")
         .replace(":attemptId", "attempt")
         .replace(":name", "teemiq")
         .replace(":connectionName", "teemiq")
@@ -205,8 +208,8 @@ describe("Eve channel authentication", () => {
         );
       return sessionIdFromPath(path) === "wrun_chat" ? [{ path, route }] : [];
     });
-    // Stream, message, answer, cancel, clear, compact, end and the callbacks.
-    expect(routes.length).toBeGreaterThanOrEqual(8);
+    // Message, controls, stubs, the three streams and the five callbacks.
+    expect(routes.length).toBeGreaterThanOrEqual(15);
 
     const statuses = await Promise.all(
       routes.map(async ({ path, route }) => {

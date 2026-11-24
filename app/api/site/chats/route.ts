@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ensureScope } from "@db/services/scope";
+import { claimSession } from "@db/services/sessions";
 import { listSiteChats, recordSiteChat } from "@db/services/site-chats";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { siteUserSchema } from "@shared/identity/site-credential";
@@ -107,6 +108,9 @@ async function openChat(
       site,
       siteUser: input.siteUser,
     }).sessions.create();
+    // The session hook claims a session once it starts; claiming it here
+    // too lets the chat's first message pass the ownership check at once.
+    await claimSession(scope, session.id);
     await recordOpenedChat(() =>
       recordSiteChat(site, scope, {
         id: chatId,
