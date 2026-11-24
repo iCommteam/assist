@@ -19,7 +19,7 @@ import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
 import { toolContextFor } from "@tests/helpers/tool-context";
 import { resetEveState } from "@tests/helpers/eve-state";
 import manageBrowsers from "@agent/subagents/browser-agent/tools/manage_browsers";
-import { amazonUrlBlocklist } from "@agent/subagents/browser-agent/lib/policy/hosts";
+import { amazonUrlBlocklist } from "@shared/browser/hosts";
 import { checkBrowserPages } from "@agent/subagents/browser-agent/lib/policy/page-check";
 import { sitePrincipal } from "@agent/lib/site-principal";
 import { accessScopeForUser } from "@shared/identity/access-scope";

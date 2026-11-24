@@ -20,6 +20,10 @@ import {
 } from "../lib/autofill/native";
 import { vaultAutofillProvider } from "../lib/autofill/provider";
 import { materializeAutofillClaims } from "../lib/autofill/service";
+import {
+  recordSignInElsewhere,
+  signInElsewhereMessage,
+} from "../lib/autofill/sign-in-elsewhere";
 
 const inputSchema = z.object({
   browserSessionId: z.string().trim().min(1).max(500),
@@ -46,6 +50,7 @@ const safeFillMessages = new Set([
   "The selected vault item is not compatible with this form.",
   "The selected vault item was not found.",
   "This saved login is not assigned to a website. Re-save it before autofill.",
+  signInElsewhereMessage,
 ]);
 const restrictedOriginMessage =
   /^This saved login is restricted to https?:\/\/[^\s]+\.$/u;
@@ -96,6 +101,16 @@ export default defineTool({
         browserSessionId: input.browserSessionId,
         signal: context.abortSignal,
       });
+      // The vault refuses any other origin. A site task first records a page
+      // of its login's own site, where the website may ask for the password.
+      const pin = siteLoginOfSession(initiator);
+      if (
+        pin &&
+        origin !== pin.origin &&
+        (await recordSignInElsewhere(context.session, scope, origin))
+      ) {
+        throw new Error(signInElsewhereMessage);
+      }
       const tokens = nativeAutofillTokens.login;
       const claims = await materializeAutofillClaims(
         scope,

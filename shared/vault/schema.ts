@@ -96,8 +96,23 @@ const legacyLoginVaultPayloadSchema = loginVaultPayloadBaseSchema
   })
   .superRefine(validateLoginVaultPayload);
 
+// Hosts outside the origin's registrable domain that a connected site said
+// its login's site also uses, such as a separate billing host. A site task
+// pinned to the login may open each exact host; nothing is filled there. The
+// site API decides which hosts may be saved.
+export const loginAlsoHostsSchema = z
+  .array(
+    z
+      .string()
+      .min(1)
+      .max(253)
+      .regex(/^[a-z0-9.-]+$/u)
+  )
+  .max(3);
+
 export const loginVaultPayloadSchema = loginVaultPayloadBaseSchema
   .extend({
+    alsoHosts: loginAlsoHostsSchema.optional(),
     origin: loginOriginSchema,
     version: z.literal(2),
   })

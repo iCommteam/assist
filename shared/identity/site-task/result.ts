@@ -9,6 +9,7 @@ export const siteTaskResultSchema = z.enum([
   "done",
   "nothing_found",
   "login_failed",
+  "sign_in_elsewhere",
   "code_failed",
   "blocked",
   "off_site",

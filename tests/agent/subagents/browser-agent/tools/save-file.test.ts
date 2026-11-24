@@ -83,7 +83,7 @@ const member = {
 };
 
 const offSiteMessage =
-  "This file is neither on the pinned login's site nor on Stripe's invoice pages (billing.stripe.com, files.stripe.com, invoice.stripe.com, pay.stripe.com), so it was not fetched. Do not try another route to it. Delete the browser, then return status \"failure\" saying the invoice file is on a website this task may not open, so the task ends as off_site.";
+  "This file is not on the pinned login's site, on another host this task may open, or on Stripe's invoice pages (billing.stripe.com, files.stripe.com, invoice.stripe.com, pay.stripe.com), so it was not fetched. Do not try another route to it. Delete the browser, then return status \"failure\" saying the invoice file is on a website this task may not open, so the task ends as off_site.";
 const notHttpsMessage =
   "save_file saves only an https address. Pass the ref of the PDF's link, such as the invoice's Download PDF link, from browser_snapshot or browser_find; never type, guess or build an address.";
 const notPdfMessage =

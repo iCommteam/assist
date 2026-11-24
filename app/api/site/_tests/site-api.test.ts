@@ -6,10 +6,11 @@ import type {
   countSiteTaskFiles,
   findSiteTaskSession,
   listSiteTasksOfLogin,
+  readSiteTaskSignInOrigin,
   recordSiteTask,
   resolveSiteOwner,
 } from "@db/services/sites";
-import type { readSiteLoginOrigin } from "@db/services/vault";
+import type { readSiteLoginPin } from "@db/services/vault";
 import type { closeLeftLoginWriters } from "@web/browser/login-profile";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { verifySiteCredential } from "@shared/identity/site-credential";
@@ -46,7 +47,8 @@ const services = vi.hoisted(() => ({
   findSiteTaskSession: vi.fn<typeof findSiteTaskSession>(),
   listSiteTasksOfLogin: vi.fn<typeof listSiteTasksOfLogin>(),
   recordSiteTask: vi.fn<typeof recordSiteTask>(),
-  readSiteLoginOrigin: vi.fn<typeof readSiteLoginOrigin>(),
+  readSiteLoginPin: vi.fn<typeof readSiteLoginPin>(),
+  readSiteTaskSignInOrigin: vi.fn<typeof readSiteTaskSignInOrigin>(),
   resolveSiteOwner: vi.fn<typeof resolveSiteOwner>(),
 }));
 
@@ -82,11 +84,12 @@ vi.mock("@db/services/sites", () => ({
   countSiteTaskFiles: services.countSiteTaskFiles,
   findSiteTaskSession: services.findSiteTaskSession,
   listSiteTasksOfLogin: services.listSiteTasksOfLogin,
+  readSiteTaskSignInOrigin: services.readSiteTaskSignInOrigin,
   recordSiteTask: services.recordSiteTask,
   resolveSiteOwner: services.resolveSiteOwner,
 }));
 vi.mock("@db/services/vault", () => ({
-  readSiteLoginOrigin: services.readSiteLoginOrigin,
+  readSiteLoginPin: services.readSiteLoginPin,
 }));
 vi.mock("@web/browser/login-profile", () => ({
   closeLeftLoginWriters: services.closeLeftLoginWriters,
@@ -138,9 +141,12 @@ beforeEach(() => {
     createdAt: new Date(),
     sessionId: "wrun_1",
   });
-  services.readSiteLoginOrigin.mockResolvedValue(
-    "https://login.vendor.example"
-  );
+  services.readSiteLoginPin.mockResolvedValue({
+    alsoHosts: [],
+    id: "login-1",
+    origin: "https://login.vendor.example",
+  });
+  services.readSiteTaskSignInOrigin.mockResolvedValue(null);
   services.listSiteTasksOfLogin.mockResolvedValue([]);
   services.countSiteTaskFiles.mockResolvedValue(0);
   eve.create.mockResolvedValue({ session: { id: "wrun_1" } });
@@ -383,7 +389,7 @@ describe("POST /api/site/tasks login pin", () => {
 
     expect(response.status).toBe(202);
     await expect(response.json()).resolves.toEqual({ taskId });
-    expect(services.readSiteLoginOrigin).toHaveBeenCalledExactlyOnceWith(
+    expect(services.readSiteLoginPin).toHaveBeenCalledExactlyOnceWith(
       owner,
       "teemiq",
       "login-1"
@@ -398,7 +404,11 @@ describe("POST /api/site/tasks login pin", () => {
       "login-1"
     );
     expect(await grantOfLastClient()).toEqual({
-      login: { id: "login-1", origin: "https://login.vendor.example" },
+      login: {
+        alsoHosts: [],
+        id: "login-1",
+        origin: "https://login.vendor.example",
+      },
       op: "create",
       site: "teemiq",
     });
@@ -408,7 +418,7 @@ describe("POST /api/site/tasks login pin", () => {
     const response = await startTask(teemiqToken);
 
     expect(response.status).toBe(202);
-    expect(services.readSiteLoginOrigin).not.toHaveBeenCalled();
+    expect(services.readSiteLoginPin).not.toHaveBeenCalled();
     expect(await grantOfLastClient()).toEqual({ op: "create", site: "teemiq" });
   });
 
@@ -416,7 +426,7 @@ describe("POST /api/site/tasks login pin", () => {
   // own login, another site's, another workspace's item, another kind and a
   // login bound to no website; db/tests/sites.test.ts proves which.
   it("refuses a login the site did not save with the plain 400, uncounted", async () => {
-    services.readSiteLoginOrigin.mockResolvedValue(undefined);
+    services.readSiteLoginPin.mockResolvedValue(undefined);
 
     const refused = await Promise.all(
       Array.from({ length: 11 }, () =>
@@ -455,12 +465,12 @@ describe("POST /api/site/tasks login pin", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(services.readSiteLoginOrigin).not.toHaveBeenCalled();
+    expect(services.readSiteLoginPin).not.toHaveBeenCalled();
     expect(eve.create).not.toHaveBeenCalled();
   });
 
   it("answers 503 JSON when the vault cannot be read", async () => {
-    services.readSiteLoginOrigin.mockRejectedValue(new Error("pool timeout"));
+    services.readSiteLoginPin.mockRejectedValue(new Error("pool timeout"));
 
     const response = await createTask(
       siteRequest("/tasks", teemiqToken, {
@@ -570,6 +580,7 @@ const runningStatus = {
   question: null,
   questionId: null,
   reply: null,
+  signInOrigin: null,
   status: "running",
 };
 
@@ -590,6 +601,7 @@ describe("GET /api/site/tasks/{taskId}", () => {
       question: null,
       questionId: null,
       reply: "pong",
+      signInOrigin: null,
       status: "completed",
       taskId,
     });
@@ -640,6 +652,80 @@ describe("GET /api/site/tasks/{taskId}", () => {
       taskId,
     });
     expect(services.countSiteTaskFiles).not.toHaveBeenCalled();
+  });
+
+  it("names the page where the website asks for the password, as the server recorded it", async () => {
+    eve.read.mockResolvedValue(endedWith("sign_in_elsewhere"));
+    services.readSiteTaskSignInOrigin.mockResolvedValue(
+      "https://auth.vendor.example"
+    );
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      ...runningStatus,
+      error: "sign_in_elsewhere",
+      reply: "pong",
+      signInOrigin: "https://auth.vendor.example",
+      status: "failed",
+      taskId,
+    });
+    expect(services.readSiteTaskSignInOrigin).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      taskId
+    );
+  });
+
+  it("reads a sign_in_elsewhere with no recorded page as login_failed", async () => {
+    eve.read.mockResolvedValue(endedWith("sign_in_elsewhere"));
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      error: "login_failed",
+      signInOrigin: null,
+      status: "failed",
+    });
+  });
+
+  it("reads no recorded page for any other end", async () => {
+    eve.read.mockResolvedValue(endedWith("login_failed"));
+    services.readSiteTaskSignInOrigin.mockResolvedValue(
+      "https://auth.vendor.example"
+    );
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      error: "login_failed",
+      signInOrigin: null,
+    });
+    expect(services.readSiteTaskSignInOrigin).not.toHaveBeenCalled();
+  });
+
+  it("answers 503 when the recorded page cannot be read", async () => {
+    eve.read.mockResolvedValue(endedWith("sign_in_elsewhere"));
+    services.readSiteTaskSignInOrigin.mockRejectedValue(
+      new Error("pool timeout")
+    );
+
+    const response = await readTask(
+      siteRequest(`/tasks/${taskId}`, teemiqToken),
+      params(taskId)
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "unavailable" });
   });
 
   it("answers 503 when the task's files cannot be counted", async () => {
@@ -918,6 +1004,7 @@ describe("GET /api/site/tasks/{taskId} while the worker waits for a code", () =>
         'Enter the one-time code that login.vendor.example just sent by email for the saved login "Vendor".',
       questionId: "interaction-1",
       reply: null,
+      signInOrigin: null,
       status: "awaiting-input",
       taskId,
     });
@@ -1765,8 +1852,39 @@ function awaitingQuestion() {
   ]);
 }
 
-function completedPong() {
+// A task whose agent replied pong and then ended it with this result.
+function endedWith(result: string) {
+  const [started = [], sent = [], settled = []] = pongLines();
   return eventsOf([
+    started,
+    sent,
+    [
+      {
+        data: {
+          callId: "call-2",
+          capability: { kind: "tool", name: "end_site_task" },
+          input: { result },
+          owner: { runId: "run-1" },
+        },
+        scope: { runId: "run-1", turnId: "turn_0" },
+        type: "call.requested",
+      },
+      {
+        data: { callId: "call-2", outcome: "completed", output: { result } },
+        scope: { runId: "run-1", turnId: "turn_0" },
+        type: "call.settled",
+      },
+    ],
+    settled,
+  ]);
+}
+
+function completedPong() {
+  return eventsOf(pongLines());
+}
+
+function pongLines(): Fact[][] {
+  return [
     [
       {
         data: { cause: { deliveryId: "d-1" }, follows: null, turnId: "turn_0" },
@@ -1806,5 +1924,5 @@ function completedPong() {
         type: "turn.settled",
       },
     ],
-  ]);
+  ];
 }

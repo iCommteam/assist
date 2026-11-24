@@ -2,10 +2,8 @@ import { NotFoundError } from "@onkernel/sdk";
 import { defineState } from "eve/context";
 import { z } from "zod";
 import { kernel } from "@agent/subagents/browser-agent/lib/kernel";
-import {
-  amazonPolicyRefusal,
-  isAmazonHost,
-} from "@agent/subagents/browser-agent/lib/policy/hosts";
+import { amazonPolicyRefusal } from "@agent/subagents/browser-agent/lib/policy/hosts";
+import { isAmazonHost } from "@shared/browser/hosts";
 
 // The deterministic stop. After every page-reading or page-changing worker
 // tool, this reads each open tab (URL, title, visible text, main-document

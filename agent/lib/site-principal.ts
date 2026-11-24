@@ -11,7 +11,8 @@ import {
 const siteAuthenticator = "assist-site";
 
 // The principal the eve channel gives a verified site credential. A create
-// grant's login pin becomes two attributes of the session's initiator.
+// grant's login pin becomes attributes of the session's initiator: its id, its
+// origin and, when it has any, the hosts its site also uses.
 export function sitePrincipal(
   grant: SiteGrant,
   email: string,
@@ -23,15 +24,18 @@ export function sitePrincipal(
     site: grant.site,
     workspaceId: scope.workspaceId,
   };
+  const login = grant.op === "create" ? grant.login : undefined;
+  const pinned = login && {
+    ...attributes,
+    siteLogin: login.id,
+    siteLoginOrigin: login.origin,
+  };
   return {
-    attributes:
-      grant.op === "create" && grant.login
-        ? {
-            ...attributes,
-            siteLogin: grant.login.id,
-            siteLoginOrigin: grant.login.origin,
-          }
-        : attributes,
+    attributes: pinned
+      ? login.alsoHosts?.length
+        ? { ...pinned, siteLoginAlsoHosts: login.alsoHosts }
+        : pinned
+      : attributes,
     authenticator: siteAuthenticator,
     principalId: scope.userId,
     principalType: "user",
@@ -47,12 +51,16 @@ export function siteOfSession(initiator: SessionAuthContext | null) {
 
 // The saved login a site task is pinned to, or undefined when it has none or
 // is not a site task. It is read from the initiator only, so the pin holds for
-// every later turn of the session, whoever sends it.
+// every later turn of the session, whoever sends it. A task started before a
+// pin could carry the hosts its login's site also uses reads as having none.
 export function siteLoginOfSession(initiator: SessionAuthContext | null) {
   if (!siteOfSession(initiator)) return undefined;
   const login = siteLoginPinSchema.safeParse({
+    alsoHosts: initiator?.attributes.siteLoginAlsoHosts,
     id: initiator?.attributes.siteLogin,
     origin: initiator?.attributes.siteLoginOrigin,
   });
-  return login.success ? login.data : undefined;
+  return login.success
+    ? { ...login.data, alsoHosts: login.data.alsoHosts ?? [] }
+    : undefined;
 }

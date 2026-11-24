@@ -15,6 +15,7 @@ import type {
   BrowserPageState,
   inspectBrowserPages,
 } from "@agent/subagents/browser-agent/lib/policy/page-check";
+import type { recordSiteTaskSignInOrigin } from "@db/services/sites";
 import type { readVaultItem } from "@db/services/vault";
 import { resetEveState } from "@tests/helpers/eve-state";
 import { toolContextFor } from "@tests/helpers/tool-context";
@@ -28,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   fill: vi.fn<typeof fillKernelOneTimeCode>(),
   inspectBrowserPages: vi.fn<typeof inspectBrowserPages>(),
   readVaultItem: vi.fn<typeof readVaultItem>(),
+  recordSignInOrigin: vi.fn<typeof recordSiteTaskSignInOrigin>(),
   requireOwnedBrowserSession: vi.fn<typeof requireOwnedBrowserSession>(),
   requireWorkerScope: vi.fn<typeof requireWorkerScope>(),
   sleep: vi.fn<(durationMs: number) => Promise<void>>(),
@@ -42,6 +44,9 @@ vi.mock("@agent/subagents/browser-agent/lib/owned-browser", () => ({
   requireOwnedBrowserSession: mocks.requireOwnedBrowserSession,
 }));
 vi.mock("@db/services/vault", () => ({ readVaultItem: mocks.readVaultItem }));
+vi.mock("@db/services/sites", () => ({
+  recordSiteTaskSignInOrigin: mocks.recordSignInOrigin,
+}));
 vi.mock(
   "@agent/subagents/browser-agent/lib/policy/page-check",
   async (importOriginal) => ({
@@ -56,6 +61,7 @@ vi.mock("@agent/subagents/browser-agent/lib/autofill/native", () => ({
 }));
 
 import fillCodeFromSite from "@agent/subagents/browser-agent/tools/fill_code_from_site";
+import { signInElsewhereMessage } from "@agent/subagents/browser-agent/lib/autofill/sign-in-elsewhere";
 import {
   forgetInjectedValues,
   redactBrowserOutput,
@@ -93,7 +99,9 @@ const codePage: BrowserPageState = {
   url: `${origin}/verify`,
 };
 
-function siteInitiator(login: { id: string; origin: string } | undefined) {
+function siteInitiator(
+  login: { alsoHosts?: string[]; id: string; origin: string } | undefined
+) {
   return sitePrincipal(
     { login, op: "create", site: "teemiq" },
     "owner@example.test",
@@ -158,6 +166,7 @@ beforeEach(() => {
   mocks.currentKernelPageOrigin.mockResolvedValue(origin);
   mocks.assertFocus.mockResolvedValue(undefined);
   mocks.fill.mockResolvedValue(undefined);
+  mocks.recordSignInOrigin.mockResolvedValue(true);
   mocks.readVaultItem.mockResolvedValue({
     account: "",
     createdAt: "2026-11-23T00:00:00.000Z",
@@ -203,9 +212,9 @@ describe("fill_code_from_site", () => {
   });
 
   it.each([
-    ["another host of the login's site", "https://community.vendor.example"],
     ["the login's host over plain http", "http://login.vendor.example"],
     ["a look-alike host", "https://login.vendor.example.evil.test"],
+    ["Stripe's invoice host", "https://pay.stripe.com"],
   ])("asks nothing for a code page on %s", async (_case, pageOrigin) => {
     mocks.currentKernelPageOrigin.mockResolvedValue(pageOrigin);
     const ask = answered(sealed());
@@ -215,6 +224,55 @@ describe("fill_code_from_site", () => {
     expect(result).toEqual(outsideOrigin);
     expect(ask).not.toHaveBeenCalled();
     expect(mocks.assertFocus).not.toHaveBeenCalled();
+    expect(mocks.recordSignInOrigin).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "another host of the login's site",
+      "https://community.vendor.example",
+      [],
+    ],
+    [
+      "a host its site also uses",
+      "https://billing.other.example",
+      ["billing.other.example"],
+    ],
+  ])(
+    "records a code page on %s and asks nothing",
+    async (_case, pageOrigin, alsoHosts) => {
+      mocks.currentKernelPageOrigin.mockResolvedValue(pageOrigin);
+      const ask = answered(sealed());
+
+      const result = await run(
+        workerContext(ask, siteInitiator({ alsoHosts, id: "login-1", origin }))
+      );
+
+      expect(result).toEqual({
+        filled: false,
+        message: signInElsewhereMessage,
+      });
+      expect(mocks.recordSignInOrigin).toHaveBeenCalledExactlyOnceWith(
+        "teemiq",
+        owner,
+        "wrun_root",
+        pageOrigin
+      );
+      expect(ask).not.toHaveBeenCalled();
+      expect(mocks.assertFocus).not.toHaveBeenCalled();
+    }
+  );
+
+  it("keeps its refusal when the code page cannot be recorded", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.currentKernelPageOrigin.mockResolvedValue(
+      "https://community.vendor.example"
+    );
+    mocks.recordSignInOrigin.mockRejectedValue(new Error("pool timeout"));
+
+    const result = await run(workerContext(answered(sealed())));
+
+    expect(result).toEqual(outsideOrigin);
   });
 
   it("fills nothing when the tab left the login's origin during the wait", async () => {
@@ -224,7 +282,13 @@ describe("fill_code_from_site", () => {
 
     const result = await run(workerContext(answered(sealed())));
 
-    expect(result).toEqual(outsideOrigin);
+    expect(result).toEqual({ filled: false, message: signInElsewhereMessage });
+    expect(mocks.recordSignInOrigin).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      "wrun_root",
+      "https://help.vendor.example"
+    );
     expect(mocks.fill).not.toHaveBeenCalled();
   });
 

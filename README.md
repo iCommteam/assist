@@ -148,19 +148,19 @@ Every call sends `Authorization: Bearer <token>` and every answer carries
 `cache-control: no-store`. An error is `{"error":"<code>"}` and never echoes
 what the caller sent.
 
-| Call                                          | Answer                                                                                                                                            |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/site/ping`                          | `200 {"ok":true,"site":"teemiq"}`                                                                                                                 |
-| `POST /api/site/logins`                       | body `{"origin","label","identifier","password","totp"}`; `201 {"login":{"loginId","label","origin","hasTotp","createdAt"}}`                      |
-| `GET /api/site/logins`                        | `200 {"logins":[{"loginId","label","origin","hasTotp","createdAt"}]}`, the site's own logins, newest first                                        |
-| `DELETE /api/site/logins/{loginId}`           | `204`, also deleting the login's browser profile; `409 {"error":"login_busy"}` while a task pinned to it is open                                  |
-| `POST /api/site/tasks`                        | body `{"message","loginId"}`, `loginId` optional; `202 {"taskId"}`; `409 {"error":"login_busy","taskId"}`; `429 {"error":"rate_limited"}`         |
-| `GET /api/site/tasks?loginId=...`             | `200 {"tasks":[{"taskId","status","createdAt"}]}`, the site's tasks pinned to that login, newest first, at most 5                                 |
-| `GET /api/site/tasks/{taskId}`                | `200 {"taskId","status","question","questionId","outcome","error","reply"}`                                                                       |
-| `POST /api/site/tasks/{taskId}/input`         | body `{"text"}`, the one-time code; `202 {"taskId"}`; `409 {"error":"not_waiting"}`                                                               |
-| `POST /api/site/tasks/{taskId}/cancel`        | no body; `202 {"taskId"}`, also for a task that has already ended                                                                                 |
-| `GET /api/site/tasks/{taskId}/files`          | `200 {"files":[{"fileId","filename","mediaType","byteSize","sha256","createdAt"}]}`, oldest first                                                 |
-| `GET /api/site/tasks/{taskId}/files/{fileId}` | `200` the PDF's bytes, with `content-type: application/pdf`, `content-length` and `x-content-sha256`; `404 {"error":"not_found"}` once it is gone |
+| Call                                          | Answer                                                                                                                                                                                    |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/site/ping`                          | `200 {"ok":true,"site":"teemiq"}`                                                                                                                                                         |
+| `POST /api/site/logins`                       | body `{"origin","label","identifier","password","totp","alsoHosts"}`; `201 {"login":{"loginId","label","origin","alsoHosts","hasTotp","createdAt"}}`; `400 {"error":"identity_provider"}` |
+| `GET /api/site/logins`                        | `200 {"logins":[{"loginId","label","origin","alsoHosts","hasTotp","createdAt"}]}`, the site's own logins, newest first                                                                    |
+| `DELETE /api/site/logins/{loginId}`           | `204`, also deleting the login's browser profile; `409 {"error":"login_busy"}` while a task pinned to it is open                                                                          |
+| `POST /api/site/tasks`                        | body `{"message","loginId"}`, `loginId` optional; `202 {"taskId"}`; `409 {"error":"login_busy","taskId"}`; `429 {"error":"rate_limited"}`                                                 |
+| `GET /api/site/tasks?loginId=...`             | `200 {"tasks":[{"taskId","status","createdAt"}]}`, the site's tasks pinned to that login, newest first, at most 5                                                                         |
+| `GET /api/site/tasks/{taskId}`                | `200 {"taskId","status","question","questionId","outcome","error","signInOrigin","reply"}`                                                                                                |
+| `POST /api/site/tasks/{taskId}/input`         | body `{"text"}`, the one-time code; `202 {"taskId"}`; `409 {"error":"not_waiting"}`                                                                                                       |
+| `POST /api/site/tasks/{taskId}/cancel`        | no body; `202 {"taskId"}`, also for a task that has already ended                                                                                                                         |
+| `GET /api/site/tasks/{taskId}/files`          | `200 {"files":[{"fileId","filename","mediaType","byteSize","sha256","createdAt"}]}`, oldest first                                                                                         |
+| `GET /api/site/tasks/{taskId}/files/{fileId}` | `200` the PDF's bytes, with `content-type: application/pdf`, `content-length` and `x-content-sha256`; `404 {"error":"not_found"}` once it is gone                                         |
 
 A missing or wrong token answers `401 {"error":"unauthorized"}`, a site whose
 owner is not ready `403 {"error":"forbidden"}`, an invalid body or query
@@ -187,7 +187,21 @@ reads that page.
   any `*.localhost` host, a single-label host, a bare public suffix such as
   `co.uk`, a trailing dot, a port (also `:443`), a username or password in the
   URL, a control character, or more than 2048 characters answers
-  `invalid_request`.
+  `invalid_request`. An identity provider's sign-in answers
+  `400 {"error":"identity_provider"}`, saving nothing: any host under
+  `google.com`, `googleapis.com`, `microsoftonline.com`, `live.com`,
+  `okta.com`, `auth0.com` or `onelogin.com`, and `login.microsoft.com`,
+  `appleid.apple.com`, `idmsa.apple.com` and `account.apple.com`. A login
+  there would hand the agent a company's whole identity.
+- `alsoHosts`: optional, at most 3 hosts the supplier's site also uses outside
+  the origin's registrable domain, such as `chatgpt.com` for a login at
+  `https://auth.openai.com`: lower case, with no scheme, port or path, each a
+  named host with a registrable domain as the origin's host is. A host under
+  the origin's own registrable domain, one of Stripe's four invoice hosts, an
+  Amazon host or anything else answers `invalid_request`; an identity provider
+  answers `identity_provider`. A host sent twice is kept once, and leaving
+  the field out, `null` or `[]` keeps none. A pinned task may open each host,
+  that exact host alone; nothing is ever filled there.
 - `label`: 1 to 60 characters once trimmed, with no control characters. A
   second login of the site whose label differs only in case answers
   `409 {"error":"duplicate_label"}`; this holds within one running service.
@@ -222,16 +236,22 @@ browser opens only:
   the other shops there;
 - Stripe's hosted invoice pages, each exact host only: `invoice.stripe.com`,
   `pay.stripe.com`, `files.stripe.com` and `billing.stripe.com`, since many
-  suppliers bill through Stripe.
+  suppliers bill through Stripe;
+- each of the login's `alsoHosts`, that exact host only, not its subdomains.
 
 Both Chrome's URL policy and every tool that opens or fetches a URL enforce
 this; Amazon sites stay blocked for every task. The password, the
 authenticator code and a relayed code are filled only on the exact origin the
 login was saved with, over https for a relayed code, so save the origin of the
 sign-in form itself, such as `https://login.vendor.com`. A portal whose sign-in
-lives on another registrable domain, such as a separate identity provider,
-cannot be used. A task without a pin sees no saved login, its browsers keep no
-cookies, and it cannot save files.
+lives on an identity provider cannot be saved. When the website asks for the
+password on another page of the login's own site, under its registrable domain
+or on one of its `alsoHosts`, the fill is refused there, the server records
+that page's https origin for the task, and the task can end
+`sign_in_elsewhere` with that origin as its `signInOrigin`; the site saves
+the login again for that origin if it chooses. Nothing ever moves a saved
+password to another origin. A task without a pin sees no saved login, its
+browsers keep no cookies, and it cannot save files.
 
 A pinned task's browsers keep their cookies in a Kernel profile of that login
 alone, so two accounts on one portal never share a session, and different
@@ -270,6 +290,9 @@ a running task every few seconds.
   has ended, whether it reads `completed` or `failed`.
 - `error`: set only while `failed`, one of these codes:
   - `login_failed`: the website refused the saved username or password.
+  - `sign_in_elsewhere`: the website asks for the password on a different
+    page of the same site than the saved one; `signInOrigin` names it. A
+    task the agent ended so with no page recorded reads `login_failed`.
   - `code_failed`: the website refused a relayed code or found it expired,
     or an authenticator code could not be filled. A task that asked for a
     relayed code and never got one reads `timed_out` instead.
@@ -285,6 +308,12 @@ a running task every few seconds.
     as a tool approval or any question other than the code.
   - `cancelled`: the site, or the owner in the chat, cancelled the task.
   - `failed`: anything else, such as a runtime failure.
+- `signInOrigin`: set only with `sign_in_elsewhere`: the https origin of the
+  page where the browser worker's fill of the login was refused, as the
+  server read it from the browser, never from what the agent wrote. It is on
+  the login's own site, under its registrable domain or one of its
+  `alsoHosts`, never one of Stripe's hosts. A fill refused on several such
+  pages records the last.
 - `reply`: the agent's last message as plain text, set once the site's turn
   has completed, also when the task then reads `failed`; it is null while the
   task runs or waits, and for a turn that was cancelled, stopped or failed in
@@ -293,13 +322,13 @@ a running task every few seconds.
 
 The agent ends every site task by calling `end_site_task` with one fixed
 result: `done` or `nothing_found` complete the task, and `login_failed`,
-`code_failed`, `blocked`, `off_site` and `failed` fail it with that code. The
-last result of the site's turn counts; a turn that ends without the tool reads
-`completed`. A code question that ended without its code, because the 20
-minutes ran out, fails the task as `timed_out`. That holds also when the agent
-reported `code_failed`, unless an earlier code of the same task reached the
-worker: the website refused that code, so the task reads `code_failed`.
-Another failure code the agent gave, such as `blocked`, stands.
+`sign_in_elsewhere`, `code_failed`, `blocked`, `off_site` and `failed` fail it
+with that code. The last result of the site's turn counts; a turn that ends
+without the tool reads `completed`. A code question that ended without its
+code, because the 20 minutes ran out, fails the task as `timed_out`. That holds
+also when the agent reported `code_failed`, unless an earlier code of the same
+task reached the worker: the website refused that code, so the task reads
+`code_failed`. Another failure code the agent gave, such as `blocked`, stands.
 
 #### One-time codes
 

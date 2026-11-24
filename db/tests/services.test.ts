@@ -239,7 +239,7 @@ describe("database services", () => {
     const aliceLoginId = aliceVaultItem?.id ?? "vault-alice";
     expect(aliceVaultItem?.site).toBeNull();
     expect(
-      await vault.readSiteLoginOrigin(alice, "teemiq", aliceLoginId)
+      await vault.readSiteLoginPin(alice, "teemiq", aliceLoginId)
     ).toBeUndefined();
     const siteLogin = await vault.saveSiteLogin(alice, "teemiq", {
       account: "",
@@ -253,17 +253,21 @@ describe("database services", () => {
         version: 2,
       }),
     });
-    expect(await vault.readSiteLoginOrigin(alice, "teemiq", siteLogin.id)).toBe(
-      "https://login.vendor.example"
+    expect(await vault.readSiteLoginPin(alice, "teemiq", siteLogin.id)).toEqual(
+      {
+        alsoHosts: [],
+        id: siteLogin.id,
+        origin: "https://login.vendor.example",
+      }
     );
     expect(
-      await vault.readSiteLoginOrigin(alice, "agents", siteLogin.id)
+      await vault.readSiteLoginPin(alice, "agents", siteLogin.id)
     ).toBeUndefined();
     expect(
-      await vault.readSiteLoginOrigin(bob, "teemiq", siteLogin.id)
+      await vault.readSiteLoginPin(bob, "teemiq", siteLogin.id)
     ).toBeUndefined();
     expect(
-      await vault.readSiteLoginOrigin(alice, "teemiq", "vault-unknown")
+      await vault.readSiteLoginPin(alice, "teemiq", "vault-unknown")
     ).toBeUndefined();
     expect(await vault.readVaultItem(alice, siteLogin.id)).toMatchObject({
       site: "teemiq",
@@ -301,7 +305,7 @@ describe("database services", () => {
     expect(unbound).toHaveLength(2);
     expect(
       await Promise.all(
-        unbound.map(({ id }) => vault.readSiteLoginOrigin(alice, "teemiq", id))
+        unbound.map(({ id }) => vault.readSiteLoginPin(alice, "teemiq", id))
       )
     ).toEqual([undefined, undefined]);
     await Promise.all(

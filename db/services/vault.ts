@@ -104,9 +104,9 @@ const siteLoginFilter = (scope: AccessScope, site: string) =>
     eq(vaultItems.kind, "login")
   );
 
-// The website a login this site saved is bound to, or undefined for any other
-// id.
-export async function readSiteLoginOrigin(
+// The website a login this site saved is bound to and the hosts its site also
+// uses, or undefined for any other id.
+export async function readSiteLoginPin(
   scope: AccessScope,
   site: string,
   id: string
@@ -116,7 +116,10 @@ export async function readSiteLoginOrigin(
     .from(vaultItems)
     .where(and(siteLoginFilter(scope, site), eq(vaultItems.id, id)))
     .limit(1);
-  return item ? (await readBoundLogin(scope, item.id))?.origin : undefined;
+  const login = item ? await readBoundLogin(scope, item.id) : undefined;
+  return login
+    ? { alsoHosts: login.alsoHosts ?? [], id, origin: login.origin }
+    : undefined;
 }
 
 // What a site may know of the logins it saved, newest first: never the
@@ -137,6 +140,7 @@ export async function listSiteLogins(scope: AccessScope, site: string) {
       if (!login) return [];
       return [
         {
+          alsoHosts: login.alsoHosts ?? [],
           createdAt: createdAt.toISOString(),
           hasTotp:
             login.authentication.type === "password" &&

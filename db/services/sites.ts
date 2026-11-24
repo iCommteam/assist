@@ -127,9 +127,9 @@ export async function purgeExpiredTaskFiles() {
   return deleted.length;
 }
 
-// The task a site session may still save files to: one this site created in
-// this workspace, whose lifetime has not run out. The worker passes its root
-// session, which is the task's session.
+// The task a site session may still save files to or record a page for: one
+// this site created in this workspace, whose lifetime has not run out. The
+// worker passes its root session, which is the task's session.
 function savingTask(site: string, scope: AccessScope, sessionId: string) {
   return and(
     eq(siteTasks.sessionId, sessionId),
@@ -137,6 +137,43 @@ function savingTask(site: string, scope: AccessScope, sessionId: string) {
     eq(siteTasks.workspaceId, scope.workspaceId),
     gt(siteTasks.createdAt, new Date(Date.now() - siteTaskLifetimeMs))
   );
+}
+
+// Records the page where a session's task was refused the fill of its login,
+// the latest one winning, and says whether the task was still open to take it.
+export async function recordSiteTaskSignInOrigin(
+  site: string,
+  scope: AccessScope,
+  sessionId: string,
+  origin: string
+) {
+  const rows = await db
+    .update(siteTasks)
+    .set({ signInOrigin: origin })
+    .where(savingTask(site, scope, sessionId))
+    .returning({ id: siteTasks.id });
+  return rows.length > 0;
+}
+
+// The page a task of this site recorded with recordSiteTaskSignInOrigin, or
+// null when it recorded none.
+export async function readSiteTaskSignInOrigin(
+  site: string,
+  scope: AccessScope,
+  taskId: string
+) {
+  const [task] = await db
+    .select({ signInOrigin: siteTasks.signInOrigin })
+    .from(siteTasks)
+    .where(
+      and(
+        eq(siteTasks.id, taskId),
+        eq(siteTasks.site, site),
+        eq(siteTasks.workspaceId, scope.workspaceId)
+      )
+    )
+    .limit(1);
+  return task?.signInOrigin ?? null;
 }
 
 // Whether a session's task may save one more file, checked before the

@@ -11,11 +11,16 @@ import {
   inspectBrowserPages,
 } from "@agent/subagents/browser-agent/lib/policy/page-check";
 import { rememberInjectedCode } from "@agent/subagents/browser-agent/lib/autofill/redaction";
+import type { AccessScope } from "@shared/identity/access-scope";
 import {
   assertKernelOneTimeCodeFocus,
   currentKernelPageOrigin,
   fillKernelOneTimeCode,
 } from "./native";
+import {
+  recordSignInElsewhere,
+  signInElsewhereMessage,
+} from "./sign-in-elsewhere";
 
 // What fill_code_from_site does outside its workflow body. A workflow body may
 // not reach Node.js modules, so the tool loads this module only inside its
@@ -51,6 +56,7 @@ const fixedMessages = new Set([
   missingLoginMessage,
   notPinnedMessage,
   outsideSiteMessage,
+  signInElsewhereMessage,
 ]);
 const focusRefusals = new Set([
   "Focus the visible authenticator code field of the sign-in and retry.",
@@ -72,7 +78,7 @@ export async function prepareSiteCodeQuestion(
 ) {
   try {
     const { login, scope } = await requireCodeTask(ctx, browserSessionId);
-    await requireCodePage(ctx, browserSessionId, login.origin);
+    await requireCodePage(ctx, scope, browserSessionId, login.origin);
     await assertKernelOneTimeCodeFocus({
       browserSessionId,
       expectedOrigin: login.origin,
@@ -100,7 +106,7 @@ export async function fillRelayedSiteCode(
   ctx: WorkflowStepToolContext
 ) {
   try {
-    const { login } = await requireCodeTask(ctx, browserSessionId);
+    const { login, scope } = await requireCodeTask(ctx, browserSessionId);
     const rootSessionId = ctx.session.parent?.rootSessionId;
     const { betterAuthSecret } = await getInstallationSecrets();
     const code = rootSessionId
@@ -110,7 +116,7 @@ export async function fillRelayedSiteCode(
     // Registered before the fill: a fill that fails halfway may still have
     // written the code.
     rememberInjectedCode(ctx.session.id, browserSessionId, code);
-    await requireCodePage(ctx, browserSessionId, login.origin);
+    await requireCodePage(ctx, scope, browserSessionId, login.origin);
     // The page may have moved focus during the wait; the code it sent is
     // still good for its one code field.
     await fillKernelOneTimeCode({
@@ -144,9 +150,11 @@ async function requireCodeTask(
 // workflow step cannot read, so the open tabs are checked afresh. A relayed
 // code goes only to the login's own origin over https, as its password and
 // authenticator code do: another host under the same domain may serve pages
-// someone else wrote, and the question names the login's host.
+// someone else wrote, and the question names the login's host. A code page
+// on another page of the login's own site is recorded for the site.
 async function requireCodePage(
   ctx: WorkflowStepToolContext,
+  scope: AccessScope,
   browserSessionId: string,
   loginOrigin: string
 ) {
@@ -159,7 +167,11 @@ async function requireCodePage(
     signal: ctx.abortSignal,
   });
   if (origin !== loginOrigin || !origin.startsWith("https://")) {
-    throw new Error(outsideSiteMessage);
+    throw new Error(
+      (await recordSignInElsewhere(ctx.session, scope, origin))
+        ? signInElsewhereMessage
+        : outsideSiteMessage
+    );
   }
 }
 

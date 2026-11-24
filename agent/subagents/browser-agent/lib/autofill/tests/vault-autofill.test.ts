@@ -286,6 +286,58 @@ describe("vault browser autofill", () => {
     });
   });
 
+  it("fills nothing on a host the login's site also uses, only on its saved origin", async () => {
+    const login = vaultItem("login", "OpenAI", "auth.openai.example");
+    const totp = {
+      algorithm: "SHA1",
+      digits: 6,
+      period: 30,
+      secret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+    } as const;
+    const provider = providerFor(
+      login,
+      serializeLoginVaultPayload({
+        alsoHosts: ["chatgpt.example"],
+        authentication: { password: "correct horse", totp, type: "password" },
+        identifier: { type: "email", value: "ada@example.com" },
+        kind: "login",
+        origin: "https://auth.openai.example",
+        version: 2,
+      })
+    );
+
+    await expect(
+      provider.listSuggestions(
+        scope,
+        "https://chatgpt.example",
+        credentialsSurface
+      )
+    ).resolves.toEqual([]);
+    await expect(
+      provider.materializeClaims(scope, login.id, {
+        availableTokens: new Set(["username", "current-password"]),
+        origin: "https://chatgpt.example",
+        surface: credentialsSurface,
+      })
+    ).rejects.toThrow("restricted to https://auth.openai.example");
+    await expect(
+      authenticatorCodeForLogin(
+        scope,
+        login.id,
+        "https://chatgpt.example",
+        59_000
+      )
+    ).rejects.toThrow("restricted to https://auth.openai.example");
+    await expect(
+      authenticatorCodeForLogin(
+        scope,
+        login.id,
+        "https://auth.openai.example",
+        59_000
+      )
+    ).resolves.toBe("287082");
+  });
+
   it("refuses an authenticator code for a login without a setup key", async () => {
     const login = vaultItem("login", "Vendor", "a•••@example.com");
     providerFor(

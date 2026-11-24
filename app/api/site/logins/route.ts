@@ -5,6 +5,11 @@ import {
   listSiteLogins,
   saveSiteLogin,
 } from "@db/services/vault";
+import {
+  isAmazonHost,
+  isIdentityProviderHost,
+  stripeInvoiceHosts,
+} from "@shared/browser/hosts";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   authenticatorSetupKeySchema,
@@ -28,6 +33,11 @@ const controlCharacter = /\p{Cc}/u;
 // The body carries a password and maybe an authenticator key: it is never
 // logged, and no answer repeats any of it.
 const loginInputSchema = z.object({
+  alsoHosts: z
+    .array(z.string().refine(isAlsoHost))
+    .max(3)
+    .nullish()
+    .transform((hosts) => [...new Set(hosts)]),
   identifier: z.string().trim().min(1).max(200),
   label: z
     .string()
@@ -56,6 +66,15 @@ export async function POST(request: Request) {
     await readSiteJsonBody(request, maxBodyBytes)
   );
   if (!input.success) return siteError(400, "invalid_request");
+  // An identity provider has its own answer, so a site can tell the person
+  // that only a password sign-in on the supplier's own site works.
+  const { alsoHosts, origin } = input.data;
+  if ([new URL(origin).hostname, ...alsoHosts].some(isIdentityProviderHost)) {
+    return siteError(400, "identity_provider");
+  }
+  if (alsoHosts.some((host) => isOnSiteOf(origin, host))) {
+    return siteError(400, "invalid_request");
+  }
   // A blank key is no key, as a form left empty sends it.
   const totpText = input.data.totp?.trim();
   const totp = totpText
@@ -76,13 +95,16 @@ export async function GET(request: Request) {
   try {
     const logins = await listSiteLogins(owner.scope, site);
     return siteJson({
-      logins: logins.map(({ createdAt, hasTotp, id, label, origin }) => ({
-        createdAt,
-        hasTotp,
-        label,
-        loginId: id,
-        origin,
-      })),
+      logins: logins.map(
+        ({ alsoHosts, createdAt, hasTotp, id, label, origin }) => ({
+          alsoHosts,
+          createdAt,
+          hasTotp,
+          label,
+          loginId: id,
+          origin,
+        })
+      ),
     });
   } catch (error) {
     console.warn("[site] logins could not be read", {
@@ -108,6 +130,7 @@ async function saveLogin(
       kind: "login",
       label: login.label,
       secret: serializeLoginVaultPayload({
+        alsoHosts: login.alsoHosts,
         authentication: { password: login.password, totp, type: "password" },
         // An email identifier also fills email fields; any other fills the
         // username field.
@@ -126,6 +149,7 @@ async function saveLogin(
     return siteJson(
       {
         login: {
+          alsoHosts: login.alsoHosts,
           createdAt: saved.createdAt,
           hasTotp: totp !== undefined,
           label: login.label,
@@ -156,10 +180,36 @@ function signInOrigin(value: string) {
   }
   if (!URL.canParse(value)) return undefined;
   const { hostname, origin } = new URL(value);
-  const { domain, isIp } = parse(hostname, { allowPrivateDomains: true });
-  if (isIp || !domain || hostname.endsWith(".")) return undefined;
-  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
-    return undefined;
+  return isNamedHost(hostname) ? origin : undefined;
+}
+
+// A host the login's site also uses outside its registrable domain, such as
+// a separate billing host, which the login's tasks may open but where nothing
+// is filled. It is named as a browser names it, lower case with no scheme,
+// port or path, and is a named host like the origin's. Stripe's invoice hosts
+// are open to every pinned task already, and no browser opens Amazon.
+function isAlsoHost(value: string) {
+  if (value.length > 253 || !/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/u.test(value)) {
+    return false;
   }
-  return origin;
+  if (!URL.canParse(`https://${value}`)) return false;
+  return (
+    new URL(`https://${value}`).hostname === value &&
+    isNamedHost(value) &&
+    !stripeInvoiceHosts.includes(value) &&
+    !isAmazonHost(value)
+  );
+}
+
+function isNamedHost(hostname: string) {
+  const { domain, isIp } = parse(hostname, { allowPrivateDomains: true });
+  if (isIp || !domain || hostname.endsWith(".")) return false;
+  return hostname !== "localhost" && !hostname.endsWith(".localhost");
+}
+
+// A host under the origin's own registrable domain is the login's site
+// already, so it is not one the site also uses.
+function isOnSiteOf(origin: string, host: string) {
+  const site = parse(new URL(origin).hostname, { allowPrivateDomains: true });
+  return parse(host, { allowPrivateDomains: true }).domain === site.domain;
 }

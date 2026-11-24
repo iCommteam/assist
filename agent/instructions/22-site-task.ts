@@ -11,7 +11,12 @@ export default defineDynamic((context) => {
   const task = siteTask.replaceAll("{{site}}", site);
   return defineInstructions({
     content: login
-      ? `${task}\n${siteLogin.replaceAll("{{origin}}", login.origin)}`
+      ? `${task}\n${siteLogin
+          .replaceAll("{{origin}}", login.origin)
+          .replaceAll(
+            "{{alsoHosts}}",
+            login.alsoHosts.map((host) => `\`${host}\``).join(", ") || "none"
+          )}`
       : task,
   });
 });

@@ -50,13 +50,17 @@ describe("site task end tool", () => {
         "done",
         "nothing_found",
         "login_failed",
+        "sign_in_elsewhere",
         "code_failed",
         "blocked",
         "off_site",
         "failed",
       ].map((result) => input.safeParse({ result }).success)
-    ).toEqual(Array.from({ length: 7 }, () => true));
+    ).toEqual(Array.from({ length: 8 }, () => true));
     expect(input.safeParse({ result: "succeeded" }).success).toBe(false);
+    expect(end.description).toContain(
+      "sign_in_elsewhere: the website asks for the password on a different page of the same site than the saved one."
+    );
     expect(input.safeParse({}).success).toBe(false);
   });
 

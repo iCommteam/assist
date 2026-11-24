@@ -9,11 +9,20 @@ const minute = 60_000;
 
 function statusOf(
   events: readonly ReceivedEvent[],
-  { now = createdAt.getTime() + minute, savedFiles = 0 } = {}
+  {
+    now = createdAt.getTime() + minute,
+    savedFiles = 0,
+    signInOrigin = null,
+  }: {
+    readonly now?: number;
+    readonly savedFiles?: number;
+    readonly signInOrigin?: string | null;
+  } = {}
 ) {
   return siteTaskStatus(
     siteTaskState(events, createdAt, now).state,
-    savedFiles
+    savedFiles,
+    signInOrigin
   );
 }
 
@@ -96,6 +105,7 @@ const idle = {
   question: null,
   questionId: null,
   reply: null,
+  signInOrigin: null,
   status: "running",
 };
 
@@ -126,6 +136,7 @@ describe("site task status", () => {
       question: null,
       questionId: null,
       reply: "pong",
+      signInOrigin: null,
       status: "completed",
     });
   });
@@ -412,6 +423,65 @@ describe("site task end result", () => {
     }
   );
 
+  it("fails a task the agent ended with sign_in_elsewhere with the page the server recorded", () => {
+    const events = eventsOf([
+      [turnStarted, runRequested],
+      sendMessage("call-1", { kind: "message", text: "Signs in elsewhere." }),
+      endTask("call-2", "sign_in_elsewhere"),
+      [turnSettled("completed")],
+    ]);
+
+    expect(
+      statusOf(events, { signInOrigin: "https://auth.vendor.example" })
+    ).toEqual({
+      ...idle,
+      error: "sign_in_elsewhere",
+      reply: "Signs in elsewhere.",
+      signInOrigin: "https://auth.vendor.example",
+      status: "failed",
+    });
+    // Without a page the server recorded, the agent's word alone reads as a
+    // refused sign-in.
+    expect(statusOf(events)).toEqual({
+      ...idle,
+      error: "login_failed",
+      reply: "Signs in elsewhere.",
+      status: "failed",
+    });
+  });
+
+  it.each(["done", "login_failed", "off_site"])(
+    "names no sign-in page for a task the agent ended with %s, though one was recorded",
+    (result) => {
+      const events = eventsOf([
+        [turnStarted, runRequested],
+        endTask("call-1", result),
+        [turnSettled("completed")],
+      ]);
+
+      expect(
+        statusOf(events, { signInOrigin: "https://auth.vendor.example" })
+      ).toMatchObject({ signInOrigin: null });
+    }
+  );
+
+  it("times out a sign_in_elsewhere reached after the lifetime, naming no page", () => {
+    const deadline = createdAt.getTime() + 45 * minute;
+    const events = timedEvents([
+      [createdAt.getTime(), [turnStarted, runRequested]],
+      [deadline + 1000, endTask("call-1", "sign_in_elsewhere")],
+      [deadline + 1000, [turnSettled("completed")]],
+    ]);
+
+    expect(
+      siteTaskStatus(
+        siteTaskState(events, createdAt, deadline + minute).state,
+        0,
+        "https://auth.vendor.example"
+      )
+    ).toMatchObject({ error: "timed_out", signInOrigin: null });
+  });
+
   it.each(["done", "nothing_found"])(
     "completes a task the agent ended with %s, finding files only when it saved some",
     (result) => {
@@ -653,7 +723,7 @@ describe("site task lifetime", () => {
       const read = siteTaskState(eventsOf(lines), createdAt, deadline);
 
       expect(read.openTurn).toBe("turn_0");
-      expect(siteTaskStatus(read.state, 0)).toEqual({
+      expect(siteTaskStatus(read.state, 0, null)).toEqual({
         ...idle,
         error: "timed_out",
         status: "failed",
@@ -694,7 +764,8 @@ describe("site task lifetime", () => {
     expect(
       siteTaskStatus(
         siteTaskState(events, createdAt, deadline + 60 * minute).state,
-        3
+        3,
+        null
       )
     ).toEqual({
       ...idle,
@@ -722,7 +793,7 @@ describe("site task lifetime", () => {
       status: "failed",
     });
     expect(
-      siteTaskStatus(siteTaskState(completed, createdAt, later).state, 1)
+      siteTaskStatus(siteTaskState(completed, createdAt, later).state, 1, null)
     ).toMatchObject({ outcome: "files", status: "completed" });
   });
 });

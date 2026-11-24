@@ -6,6 +6,7 @@ import {
   countSiteTaskFiles,
   findSiteTaskSession,
   listSiteTasksOfLogin,
+  readSiteTaskSignInOrigin,
 } from "@db/services/sites";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { siteTaskLifetimeMs } from "@shared/identity/site-task/lifetime";
@@ -126,7 +127,8 @@ function readState(state: SiteTaskState) {
 }
 
 // What a site reads for one of its tasks, or 503 while eve or the database
-// cannot say.
+// cannot say. The page a refused fill recorded is read after the events: the
+// worker records it before the agent can end the task with it.
 export async function readSiteTaskStatus(
   site: string,
   scope: AccessScope,
@@ -134,8 +136,27 @@ export async function readSiteTaskStatus(
 ) {
   const read = await readSiteTaskState(site, task);
   if (!read.ok) return read;
+  if (
+    read.state.status === "failed" &&
+    read.state.error === "sign_in_elsewhere"
+  ) {
+    let signInOrigin: string | null;
+    try {
+      signInOrigin = await readSiteTaskSignInOrigin(site, scope, task.id);
+    } catch (error) {
+      console.warn("[site] task sign-in page could not be read", {
+        error: error instanceof Error ? error.name : "unknown",
+        site,
+      });
+      return { ok: false as const, response: siteError(503, "unavailable") };
+    }
+    return {
+      ok: true as const,
+      status: siteTaskStatus(read.state, 0, signInOrigin),
+    };
+  }
   if (read.state.status !== "completed") {
-    return { ok: true as const, status: siteTaskStatus(read.state, 0) };
+    return { ok: true as const, status: siteTaskStatus(read.state, 0, null) };
   }
   let savedFiles: number;
   try {
@@ -147,7 +168,10 @@ export async function readSiteTaskStatus(
     });
     return { ok: false as const, response: siteError(503, "unavailable") };
   }
-  return { ok: true as const, status: siteTaskStatus(read.state, savedFiles) };
+  return {
+    ok: true as const,
+    status: siteTaskStatus(read.state, savedFiles, null),
+  };
 }
 
 // Cancels the site's own turn. The turn id guards it, so a later turn the

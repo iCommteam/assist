@@ -17,6 +17,10 @@ import {
   fillKernelOneTimeCode,
 } from "../lib/autofill/native";
 import { authenticatorCodeForLogin } from "../lib/autofill/provider";
+import {
+  recordSignInElsewhere,
+  signInElsewhereMessage,
+} from "../lib/autofill/sign-in-elsewhere";
 
 const inputSchema = z.object({
   browserSessionId: z.string().trim().min(1).max(500),
@@ -43,6 +47,7 @@ const safeFillMessages = new Set([
   "The selected vault item was not found.",
   "This saved login has no authenticator setup key.",
   "This saved login is not assigned to a website. Re-save it before autofill.",
+  signInElsewhereMessage,
 ]);
 const restrictedOriginMessage =
   /^This saved login is restricted to https?:\/\/[^\s]+\.$/u;
@@ -82,6 +87,16 @@ export default defineTool({
         browserSessionId: input.browserSessionId,
         signal: context.abortSignal,
       });
+      // As in fill_from_vault: a page of the login's own site is recorded
+      // before the vault refuses it.
+      const pin = siteLoginOfSession(initiator);
+      if (
+        pin &&
+        origin !== pin.origin &&
+        (await recordSignInElsewhere(context.session, scope, origin))
+      ) {
+        throw new Error(signInElsewhereMessage);
+      }
       const code = await authenticatorCodeForLogin(
         scope,
         input.candidateId,

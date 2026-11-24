@@ -88,11 +88,19 @@ export function isOpen(state: SiteTaskState) {
 }
 
 // What a site reads. Whether a completed task found anything comes from the
-// files it saved, never from what the agent said.
-export function siteTaskStatus(state: SiteTaskState, savedFiles: number) {
+// files it saved, never from what the agent said, and where the website asks
+// for the password from the page the server recorded when it refused a fill
+// there. A sign_in_elsewhere with no page recorded reads login_failed.
+export function siteTaskStatus(
+  state: SiteTaskState,
+  savedFiles: number,
+  signInOrigin: string | null
+) {
   const waiting = state.status === "awaiting-input";
+  const error = state.status === "failed" ? state.error : null;
+  const elsewhere = error === "sign_in_elsewhere" ? signInOrigin : null;
   return {
-    error: state.status === "failed" ? state.error : null,
+    error: error === "sign_in_elsewhere" && !elsewhere ? "login_failed" : error,
     outcome: state.status === "completed" ? outcomeOf(savedFiles) : null,
     question: waiting ? state.question : null,
     // Tells one question from the next, so a site can see it was asked again.
@@ -101,6 +109,7 @@ export function siteTaskStatus(state: SiteTaskState, savedFiles: number) {
       state.status === "completed" || state.status === "failed"
         ? state.reply
         : null,
+    signInOrigin: elsewhere,
     status: state.status,
   };
 }

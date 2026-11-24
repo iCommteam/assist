@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { sitePrincipal } from "@agent/lib/site-principal";
 import { accessScopeForUser } from "@shared/identity/access-scope";
+import { amazonUrlBlocklist, stripeInvoiceHosts } from "@shared/browser/hosts";
 import {
-  amazonUrlBlocklist,
   assertNavigableUrl,
   browserChromePolicy,
   isInsideFence,
+  isOnLoginSite,
   siteNavigationFence,
-  stripeInvoiceHosts,
   workerNavigationFence,
 } from "../policy/hosts";
 
@@ -146,6 +146,85 @@ describe("site navigation fence", () => {
     expect(isInsideFence("connect.stripe.com", fence)).toBe(false);
   });
 
+  it("also opens each host the login's site also uses, that exact host alone", () => {
+    const fence = siteNavigationFence("https://auth.openai.example", [
+      "chatgpt.example",
+    ]);
+
+    for (const url of [
+      "https://chatgpt.example/billing",
+      "https://CHATGPT.EXAMPLE./",
+      "https://platform.openai.example/",
+      "https://pay.stripe.com/invoice/x",
+    ]) {
+      expect(() => {
+        assertNavigableUrl(url, fence);
+      }).not.toThrow();
+    }
+    for (const url of [
+      "https://www.chatgpt.example/",
+      "https://chatgpt.example.evil.com/",
+      "https://other.example/",
+    ]) {
+      expect(() => {
+        assertNavigableUrl(url, fence);
+      }).toThrow(
+        /is outside openai\.example, the only site this task may open besides chatgpt\.example and Stripe's invoice pages\./u
+      );
+    }
+    expect(browserChromePolicy(fence)).toEqual({
+      URLAllowlist: [
+        "openai.example",
+        ".chatgpt.example",
+        ".billing.stripe.com",
+        ".files.stripe.com",
+        ".invoice.stripe.com",
+        ".pay.stripe.com",
+      ],
+      URLBlocklist: ["*", ...amazonUrlBlocklist],
+    });
+  });
+
+  it("counts the login's domain and its also used hosts as its own site, never Stripe's", () => {
+    const fence = siteNavigationFence("https://auth.openai.example", [
+      "chatgpt.example",
+    ]);
+
+    expect(isOnLoginSite("auth.openai.example", fence)).toBe(true);
+    expect(isOnLoginSite("Platform.OpenAI.example", fence)).toBe(true);
+    expect(isOnLoginSite("chatgpt.example", fence)).toBe(true);
+    expect(isOnLoginSite("www.chatgpt.example", fence)).toBe(false);
+    expect(isOnLoginSite("pay.stripe.com", fence)).toBe(false);
+    expect(isInsideFence("pay.stripe.com", fence)).toBe(true);
+  });
+
+  it("never opens an Amazon host the login says it also uses", () => {
+    const fence = siteNavigationFence("https://login.vendor.com", [
+      "sellercentral.amazon.com",
+      "billing.example",
+    ]);
+    const amazon = siteNavigationFence("https://sellercentral.amazon.com", [
+      "billing.example",
+    ]);
+
+    expect(fence.alsoHosts).toEqual(["billing.example"]);
+    expect(browserChromePolicy(fence)).toEqual({
+      URLAllowlist: [
+        "vendor.com",
+        ".billing.example",
+        ".billing.stripe.com",
+        ".files.stripe.com",
+        ".invoice.stripe.com",
+        ".pay.stripe.com",
+      ],
+      URLBlocklist: ["*", ...amazonUrlBlocklist],
+    });
+    expect(amazon).toMatchObject({ alsoHosts: [], hosts: [] });
+    expect(() => {
+      assertNavigableUrl("https://billing.example/", amazon);
+    }).toThrow(/is outside amazon\.com/u);
+  });
+
   it("opens no Stripe host for a login on Amazon, and none without a pin", () => {
     const amazon = siteNavigationFence("https://sellercentral.amazon.com");
 
@@ -212,7 +291,25 @@ describe("site navigation fence", () => {
     // A later turn, such as the owner writing into the task, keeps the pin.
     expect(
       workerNavigationFence({ auth: { current: member, initiator: pinned } })
-    ).toMatchObject({ domain: "vendor.com" });
+    ).toMatchObject({ alsoHosts: [], domain: "vendor.com" });
+    const alsoPinned = sitePrincipal(
+      {
+        login: {
+          alsoHosts: ["billing.example"],
+          id: "login-1",
+          origin: "https://login.vendor.com",
+        },
+        op: "create",
+        site: "teemiq",
+      },
+      "owner@example.test",
+      owner
+    );
+    expect(
+      workerNavigationFence({
+        auth: { current: alsoPinned, initiator: alsoPinned },
+      })
+    ).toMatchObject({ alsoHosts: ["billing.example"], domain: "vendor.com" });
     expect(
       workerNavigationFence({ auth: { current: pinned, initiator: unpinned } })
     ).toBeUndefined();

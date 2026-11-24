@@ -127,6 +127,13 @@
       "when": 1795450947684,
       "tag": "0017_parallel_hulk",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795530152164,
+      "tag": "0018_famous_bishop",
+      "breakpoints": true
     }
   ]
 }

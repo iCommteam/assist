@@ -461,6 +461,184 @@ describe("POST /api/site/logins", () => {
   });
 });
 
+describe("POST /api/site/logins with hosts its site also uses", () => {
+  it("keeps up to three exact hosts with the login and answers them", async () => {
+    const response = await call(
+      postLogin(
+        loginRequest(
+          teemiqToken,
+          validLogin({
+            alsoHosts: [
+              "chatgpt.example",
+              "billing.other.example",
+              "chatgpt.example",
+            ],
+            origin: "https://auth.openai.example",
+          })
+        )
+      )
+    );
+
+    expect(response.status).toBe(201);
+    const login = await loginOf(response);
+    expect(login.alsoHosts).toEqual([
+      "chatgpt.example",
+      "billing.other.example",
+    ]);
+    expect(
+      parseLoginVaultPayload(
+        (await readVaultSecret(owner, login.loginId)) ?? ""
+      )
+    ).toMatchObject({
+      alsoHosts: ["chatgpt.example", "billing.other.example"],
+      origin: "https://auth.openai.example",
+    });
+    const listed = await call(listLogins(siteRequest(teemiqToken)));
+    await expect(listed.json()).resolves.toEqual({ logins: [login] });
+  });
+
+  it.each([
+    ["left out", {}],
+    ["null", { alsoHosts: null }],
+    ["empty", { alsoHosts: [] }],
+  ])("keeps no host when the list is %s", async (_case, fields) => {
+    const response = await call(
+      postLogin(loginRequest(teemiqToken, validLogin(fields)))
+    );
+
+    expect(response.status).toBe(201);
+    expect((await loginOf(response)).alsoHosts).toEqual([]);
+  });
+
+  it.each([
+    [
+      "more than three hosts",
+      ["a.example", "b.example", "c.example", "d.example"],
+    ],
+    ["an upper-case host", ["ChatGPT.example"]],
+    ["a host with a scheme", ["https://chatgpt.example"]],
+    ["a host with a port", ["chatgpt.example:443"]],
+    ["a host with a path", ["chatgpt.example/billing"]],
+    ["a host with spaces", [" chatgpt.example"]],
+    ["a trailing dot", ["chatgpt.example."]],
+    ["an IPv4 address", ["192.0.2.10"]],
+    ["an IPv4 address in hex", ["0x7f.1"]],
+    ["a single-label host", ["intranet"]],
+    ["localhost", ["localhost"]],
+    ["a localhost subdomain", ["billing.localhost"]],
+    ["a bare public suffix", ["co.uk"]],
+    ["a bare private suffix", ["myshopify.com"]],
+    ["an empty host", [""]],
+    ["a host outside ASCII", ["bücher.example"]],
+    ["a host of the login's own domain", ["platform.openai.example"]],
+    ["the login's own registrable domain", ["openai.example"]],
+    ["a Stripe invoice host", ["pay.stripe.com"]],
+    ["an Amazon host", ["sellercentral.amazon.com"]],
+    ["an Amazon short link", ["amzn.to"]],
+    ["a number", [42]],
+    ["a list that is not one", "chatgpt.example"],
+  ])(
+    "refuses %s with invalid_request, saving nothing",
+    async (_case, alsoHosts) => {
+      const response = await call(
+        postLogin(
+          loginRequest(
+            teemiqToken,
+            validLogin({ alsoHosts, origin: "https://auth.openai.example" })
+          )
+        )
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: "invalid_request",
+      });
+      await expect(listVaultItems(owner)).resolves.toEqual([]);
+    }
+  );
+
+  it("takes another shop on the same private suffix as a host of its own", async () => {
+    const response = await call(
+      postLogin(
+        loginRequest(
+          teemiqToken,
+          validLogin({
+            alsoHosts: ["billing.myshopify.com"],
+            origin: "https://acme.myshopify.com",
+          })
+        )
+      )
+    );
+
+    expect(response.status).toBe(201);
+  });
+});
+
+describe("POST /api/site/logins on an identity provider", () => {
+  it.each([
+    [
+      "Google's sign-in as the origin",
+      { origin: "https://accounts.google.com/signin" },
+    ],
+    [
+      "Microsoft's sign-in as the origin",
+      { origin: "https://login.microsoftonline.com" },
+    ],
+    [
+      "Microsoft's other sign-in host as the origin",
+      { origin: "https://login.microsoft.com" },
+    ],
+    ["Apple's sign-in as the origin", { origin: "https://appleid.apple.com" }],
+    ["an Okta tenant as the origin", { origin: "https://acme.okta.com" }],
+    [
+      "a Google API host as the origin",
+      { origin: "https://oauth2.googleapis.com" },
+    ],
+    [
+      "Google's sign-in as a host the site also uses",
+      { alsoHosts: ["accounts.google.com"] },
+    ],
+    [
+      "Microsoft's account host as a host the site also uses",
+      { alsoHosts: ["login.live.com"] },
+    ],
+    [
+      "Apple's sign-in as a host the site also uses",
+      { alsoHosts: ["idmsa.apple.com"] },
+    ],
+    [
+      "an Auth0 tenant as a host the site also uses",
+      { alsoHosts: ["chatgpt.example", "acme.us.auth0.com"] },
+    ],
+  ])(
+    "refuses %s with identity_provider, saving nothing",
+    async (_case, fields) => {
+      const response = await call(
+        postLogin(loginRequest(teemiqToken, validLogin(fields)))
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: "identity_provider",
+      });
+      await expect(listVaultItems(owner)).resolves.toEqual([]);
+    }
+  );
+
+  it("still saves a login on a supplier's own site under a provider's parent company", async () => {
+    const response = await call(
+      postLogin(
+        loginRequest(
+          teemiqToken,
+          validLogin({ origin: "https://billing.microsoft.com" })
+        )
+      )
+    );
+
+    expect(response.status).toBe(201);
+  });
+});
+
 describe("GET /api/site/logins", () => {
   it("lists only the logins this site saved, newest first", async () => {
     await saveVaultItem(owner, ownLogin());
@@ -681,7 +859,11 @@ describe("POST /api/site/tasks with a saved login", () => {
     expect(eve.create).toHaveBeenCalledOnce();
     const bearer = eve.bearers.at(-1);
     expect(verifySiteCredential(authSecret, (await bearer?.()) ?? "")).toEqual({
-      login: { id: loginId, origin: "https://login.vendor.example" },
+      login: {
+        alsoHosts: [],
+        id: loginId,
+        origin: "https://login.vendor.example",
+      },
       op: "create",
       site: "teemiq",
     });
@@ -690,6 +872,30 @@ describe("POST /api/site/tasks with a saved login", () => {
         .select({ loginId: schema.siteTasks.loginId })
         .from(schema.siteTasks)
     ).toEqual([{ loginId }]);
+  });
+
+  it("pins the hosts the login's site also uses with it", async () => {
+    const { loginId } = await saveLogin(
+      teemiqToken,
+      validLogin({
+        alsoHosts: ["chatgpt.example"],
+        origin: "https://auth.openai.example",
+      })
+    );
+
+    const pinned = await call(createTask(taskRequest(teemiqToken, loginId)));
+
+    expect(pinned.status).toBe(202);
+    const bearer = eve.bearers.at(-1);
+    expect(verifySiteCredential(authSecret, (await bearer?.()) ?? "")).toEqual({
+      login: {
+        alsoHosts: ["chatgpt.example"],
+        id: loginId,
+        origin: "https://auth.openai.example",
+      },
+      op: "create",
+      site: "teemiq",
+    });
   });
 });
 
@@ -907,6 +1113,7 @@ async function loginOf(response: Response) {
   return z
     .strictObject({
       login: z.strictObject({
+        alsoHosts: z.array(z.string()),
         createdAt: z.string(),
         hasTotp: z.boolean(),
         label: z.string(),

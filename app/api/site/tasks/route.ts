@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ensureScope } from "@db/services/scope";
 import { recordSiteTask } from "@db/services/sites";
-import { readSiteLoginOrigin } from "@db/services/vault";
+import { readSiteLoginPin } from "@db/services/vault";
 import { closeLeftLoginWriters } from "@web/browser/login-profile";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { siteLoginPinSchema } from "@shared/identity/site-credential";
@@ -114,9 +114,9 @@ async function resolveLoginPin(
   site: string,
   loginId: string
 ) {
-  let origin: string | undefined;
+  let login: Awaited<ReturnType<typeof readSiteLoginPin>>;
   try {
-    origin = await readSiteLoginOrigin(scope, site, loginId);
+    login = await readSiteLoginPin(scope, site, loginId);
   } catch (error) {
     console.warn("[site] task login could not be read", {
       error: error instanceof Error ? error.name : "unknown",
@@ -124,10 +124,10 @@ async function resolveLoginPin(
     });
     return { ok: false as const, response: siteError(503, "unavailable") };
   }
-  if (!origin) {
+  if (!login) {
     return { ok: false as const, response: siteError(400, "invalid_request") };
   }
-  return { login: { id: loginId, origin }, ok: true as const };
+  return { login, ok: true as const };
 }
 
 // Every start spends model time and a browser, so a leaked token is capped per

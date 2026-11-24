@@ -15,6 +15,7 @@ This session is a task sent by the connected site `{{site}}`, a server acting fo
   - `done`: the work the task asked for is finished.
   - `nothing_found`: the work was possible, but what the task asked for does not exist, such as no invoice for that month.
   - `login_failed`: the website refused the saved username or password, or says the account is locked or disabled.
+  - `sign_in_elsewhere`: the saved login could not be filled because the website asks for the password on a different page of the same site than the saved one.
   - `code_failed`: a one-time code was refused or expired, no code arrived in time, or an authenticator-app code could not be filled.
   - `blocked`: the website wants something only a person can do, such as a CAPTCHA or bot check, a device or push approval, a passkey, or a link sent to a new device, or the task needs a sign-in it has no saved login for.
   - `off_site`: what the task needs, such as the invoice file, is on a website the browser may not open.

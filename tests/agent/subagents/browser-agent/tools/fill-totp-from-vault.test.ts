@@ -5,6 +5,7 @@ import type {
   currentKernelPageOrigin,
   fillKernelOneTimeCode,
 } from "@agent/subagents/browser-agent/lib/autofill/native";
+import type { recordSiteTaskSignInOrigin } from "@db/services/sites";
 import type { readVaultItem, readVaultSecret } from "@db/services/vault";
 import { resetEveState } from "@tests/helpers/eve-state";
 import { toolContextFor } from "@tests/helpers/tool-context";
@@ -21,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   fill: vi.fn<typeof fillKernelOneTimeCode>(),
   readVaultItem: vi.fn<typeof readVaultItem>(),
   readVaultSecret: vi.fn<typeof readVaultSecret>(),
+  recordSignInOrigin: vi.fn<typeof recordSiteTaskSignInOrigin>(),
   requireOwnedBrowserSession: vi.fn<typeof requireOwnedBrowserSession>(),
   requireWorkerScope: vi.fn<typeof requireWorkerScope>(),
 }));
@@ -41,12 +43,16 @@ vi.mock("@db/services/vault", () => ({
   readVaultItem: mocks.readVaultItem,
   readVaultSecret: mocks.readVaultSecret,
 }));
+vi.mock("@db/services/sites", () => ({
+  recordSiteTaskSignInOrigin: mocks.recordSignInOrigin,
+}));
 vi.mock("@agent/subagents/browser-agent/lib/autofill/native", () => ({
   currentKernelPageOrigin: mocks.currentKernelPageOrigin,
   fillKernelOneTimeCode: mocks.fill,
 }));
 
 import fillTotpFromVault from "@agent/subagents/browser-agent/tools/fill_totp_from_vault";
+import { signInElsewhereMessage } from "@agent/subagents/browser-agent/lib/autofill/sign-in-elsewhere";
 import {
   forgetInjectedValues,
   redactBrowserOutput,
@@ -71,15 +77,19 @@ const filled = {
   success: true,
 };
 
-function siteContext(login: { id: string; origin: string } | undefined) {
+function siteContext(
+  login: { alsoHosts?: string[]; id: string; origin: string } | undefined
+) {
   const initiator = sitePrincipal(
     { login, op: "create", site: "teemiq" },
     "owner@example.test",
     owner
   );
-  // A later turn sent by the owner keeps the site task's pin.
+  // A later turn sent by the owner keeps the site task's pin. The worker's
+  // root session is the site task's.
   return toolContextFor({
     auth: { current: member, initiator },
+    parentSessionId: "wrun_task",
     sessionId: "worker-1",
   });
 }
@@ -132,6 +142,7 @@ beforeEach(() => {
   mocks.readVaultSecret.mockResolvedValue(savedLogin(true));
   mocks.currentKernelPageOrigin.mockResolvedValue(origin);
   mocks.fill.mockResolvedValue(undefined);
+  mocks.recordSignInOrigin.mockResolvedValue(true);
   mocks.execute.mockResolvedValue({
     result: [
       {
@@ -256,6 +267,94 @@ describe("fill_totp_from_vault", () => {
     await expect(fillTotpFromVault.execute(input, pinned)).resolves.toEqual(
       filled
     );
+  });
+
+  it.each([
+    [
+      "another host of its registrable domain",
+      "https://auth.vendor.example",
+      [],
+    ],
+    [
+      "a host its site also uses",
+      "https://billing.other.example",
+      ["billing.other.example"],
+    ],
+  ])(
+    "records the page and fills no code on %s of the pinned login's site",
+    async (_case, page, alsoHosts) => {
+      mocks.currentKernelPageOrigin.mockResolvedValue(page);
+
+      await expect(
+        fillTotpFromVault.execute(
+          input,
+          siteContext({ alsoHosts, id: "item-1", origin })
+        )
+      ).rejects.toThrow(signInElsewhereMessage);
+      expect(mocks.recordSignInOrigin).toHaveBeenCalledExactlyOnceWith(
+        "teemiq",
+        { userId: "user-1", workspaceId: "workspace-1" },
+        "wrun_task",
+        page
+      );
+      expect(mocks.fill).not.toHaveBeenCalled();
+      expect(redactBrowserOutput("worker-1", "browser-1", code)).toBe(code);
+    }
+  );
+
+  it.each([
+    ["Stripe's invoice host", "https://pay.stripe.com"],
+    ["an http page of the login's site", "http://auth.vendor.example"],
+    ["another site", "https://evil.example"],
+  ])(
+    "records nothing on %s, keeping the vault's refusal",
+    async (_case, page) => {
+      mocks.currentKernelPageOrigin.mockResolvedValue(page);
+
+      await expect(
+        fillTotpFromVault.execute(input, siteContext({ id: "item-1", origin }))
+      ).rejects.toThrow(
+        /^This saved login is restricted to https:\/\/login\.vendor\.example\.$/u
+      );
+      expect(mocks.recordSignInOrigin).not.toHaveBeenCalled();
+      expect(mocks.fill).not.toHaveBeenCalled();
+    }
+  );
+
+  it("keeps the vault's refusal when the page cannot be recorded", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.currentKernelPageOrigin.mockResolvedValue(
+      "https://auth.vendor.example"
+    );
+    mocks.recordSignInOrigin.mockRejectedValueOnce(
+      new Error("Failed query: https://auth.vendor.example")
+    );
+
+    await expect(
+      fillTotpFromVault.execute(input, siteContext({ id: "item-1", origin }))
+    ).rejects.toThrow(/^This saved login is restricted to /u);
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith(
+      "[site] task sign-in page not recorded",
+      { error: "Error", site: "teemiq" }
+    );
+
+    // A task past its lifetime takes no page either.
+    mocks.recordSignInOrigin.mockResolvedValueOnce(false);
+    await expect(
+      fillTotpFromVault.execute(input, siteContext({ id: "item-1", origin }))
+    ).rejects.toThrow(/^This saved login is restricted to /u);
+    expect(mocks.fill).not.toHaveBeenCalled();
+  });
+
+  it("records no page for a member's own fill", async () => {
+    mocks.currentKernelPageOrigin.mockResolvedValue(
+      "https://auth.vendor.example"
+    );
+
+    await expect(fillTotpFromVault.execute(input, context)).rejects.toThrow(
+      /^This saved login is restricted to /u
+    );
+    expect(mocks.recordSignInOrigin).not.toHaveBeenCalled();
   });
 
   it("fills nothing in a site task without a pin", async () => {

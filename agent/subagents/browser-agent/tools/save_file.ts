@@ -19,11 +19,10 @@ import {
 import { trackToolTab } from "@agent/subagents/browser-agent/lib/tool-tabs";
 import {
   amazonPolicyRefusal,
-  isAmazonHost,
   isInsideFence,
   siteNavigationFence,
-  stripeInvoiceHosts,
 } from "@agent/subagents/browser-agent/lib/policy/hosts";
+import { isAmazonHost, stripeInvoiceHosts } from "@shared/browser/hosts";
 import { assertWorkerNotBlocked } from "@agent/subagents/browser-agent/lib/policy/page-check";
 import { siteLoginOfSession, siteOfSession } from "@agent/lib/site-principal";
 
@@ -51,7 +50,7 @@ const unknownTabMessage =
   "That tab is not open in the browser, so nothing was saved. Pass the ref without a tabId: a ref is read in the tab it came from.";
 const noAddressMessage =
   'That element is not a link with an address, so nothing was saved. Pass the ref of the PDF\'s own link. When the PDF opens only through a button that runs a script or sends a form, delete the browser and return status "failure" saying the document exists but its PDF has no address to save.';
-const offSiteMessage = `This file is neither on the pinned login's site nor on Stripe's invoice pages (${stripeInvoiceHosts.join(", ")}), so it was not fetched. Do not try another route to it. Delete the browser, then return status "failure" saying the invoice file is on a website this task may not open, so the task ends as off_site.`;
+const offSiteMessage = `This file is not on the pinned login's site, on another host this task may open, or on Stripe's invoice pages (${stripeInvoiceHosts.join(", ")}), so it was not fetched. Do not try another route to it. Delete the browser, then return status "failure" saying the invoice file is on a website this task may not open, so the task ends as off_site.`;
 const closedMessage =
   'This site task has passed its 45 minutes, so it can save no more files. Delete the browser, then return status "failure" saying the task ran out of time.';
 const fullMessage =
@@ -115,7 +114,7 @@ const outputSchema = z.object({
 });
 
 const saveFile = defineTool({
-  description: `In a site task pinned to a saved login, save one PDF, such as an invoice or a receipt, for the site to collect. Pass the browser that is signed in, the ref of the PDF's link from browser_snapshot or browser_find (such as the invoice's Download PDF link), and optionally a file name. save_file reads the link's address in the browser itself, in the tab the ref came from: never type, guess or build an address, and pass url instead of ref only for an address the browser showed, such as a tab's. Do not click a PDF's link to download it, which saves nothing; clicking a link that opens a page, such as Stripe's hosted invoice page, is fine. The file is fetched through that browser, with its sign-in. The address must be on the login's site or on one of Stripe's invoice hosts: ${stripeInvoiceHosts.join(", ")}. Only a PDF of at most 20 MB is kept, at most 10 per task, and the same file is kept once. Returns only the saved file's id, name and size.`,
+  description: `In a site task pinned to a saved login, save one PDF, such as an invoice or a receipt, for the site to collect. Pass the browser that is signed in, the ref of the PDF's link from browser_snapshot or browser_find (such as the invoice's Download PDF link), and optionally a file name. save_file reads the link's address in the browser itself, in the tab the ref came from: never type, guess or build an address, and pass url instead of ref only for an address the browser showed, such as a tab's. Do not click a PDF's link to download it, which saves nothing; clicking a link that opens a page, such as Stripe's hosted invoice page, is fine. The file is fetched through that browser, with its sign-in. The address must be on the login's site, on another host the task may open, or on one of Stripe's invoice hosts: ${stripeInvoiceHosts.join(", ")}. Only a PDF of at most 20 MB is kept, at most 10 per task, and the same file is kept once. Returns only the saved file's id, name and size.`,
   inputSchema,
   outputSchema,
   async execute(input, context) {
@@ -132,7 +131,7 @@ const saveFile = defineTool({
       input.browserSessionId
     );
     assertWorkerNotBlocked();
-    const fence = siteNavigationFence(login.origin);
+    const fence = siteNavigationFence(login.origin, login.alsoHosts);
 
     try {
       const target = targetOf(input, fence);

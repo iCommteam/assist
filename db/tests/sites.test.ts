@@ -32,7 +32,9 @@ import {
   listSiteTasksOfLogin,
   purgeExpiredTaskFiles,
   readSiteTaskFile,
+  readSiteTaskSignInOrigin,
   recordSiteTask,
+  recordSiteTaskSignInOrigin,
   resolveSiteOwner,
   saveSiteTaskFile,
   siteTaskFileRoom,
@@ -42,7 +44,7 @@ import {
   isSiteLoginLabelTaken,
   listSiteLogins,
   listVaultItems,
-  readSiteLoginOrigin,
+  readSiteLoginPin,
   readVaultSecret,
   saveSiteLogin,
   saveVaultItem,
@@ -219,6 +221,88 @@ describe("site tasks of a login", () => {
     ]);
     expect(tasks[0]?.createdAt).toBeInstanceOf(Date);
     expect(newest.map(({ id }) => id)).toEqual([newer, older]);
+  });
+});
+
+describe("site task sign-in page", () => {
+  it("records the latest page for this site's open task in this workspace only", async () => {
+    await ensureScope(owner);
+    await ensureScope(other);
+    const task = await recordSiteTask("teemiq", owner, "wrun_p1", "login-p");
+    const otherTask = await recordSiteTask("teemiq", other, "wrun_p2", "x");
+
+    await expect(readSiteTaskSignInOrigin("teemiq", owner, task)).resolves.toBe(
+      null
+    );
+    await expect(
+      Promise.all([
+        recordSiteTaskSignInOrigin(
+          "agents",
+          owner,
+          "wrun_p1",
+          "https://a.example"
+        ),
+        recordSiteTaskSignInOrigin(
+          "teemiq",
+          other,
+          "wrun_p1",
+          "https://a.example"
+        ),
+        recordSiteTaskSignInOrigin(
+          "teemiq",
+          owner,
+          "wrun_none",
+          "https://a.example"
+        ),
+      ])
+    ).resolves.toEqual([false, false, false]);
+    await expect(readSiteTaskSignInOrigin("teemiq", owner, task)).resolves.toBe(
+      null
+    );
+
+    await expect(
+      recordSiteTaskSignInOrigin(
+        "teemiq",
+        owner,
+        "wrun_p1",
+        "https://auth.vendor.example"
+      )
+    ).resolves.toBe(true);
+    await expect(
+      recordSiteTaskSignInOrigin(
+        "teemiq",
+        owner,
+        "wrun_p1",
+        "https://login.vendor.example"
+      )
+    ).resolves.toBe(true);
+    await expect(readSiteTaskSignInOrigin("teemiq", owner, task)).resolves.toBe(
+      "https://login.vendor.example"
+    );
+    await expect(
+      Promise.all([
+        readSiteTaskSignInOrigin("agents", owner, task),
+        readSiteTaskSignInOrigin("teemiq", other, task),
+        readSiteTaskSignInOrigin("teemiq", other, otherTask),
+      ])
+    ).resolves.toEqual([null, null, null]);
+
+    // Past its 45 minutes a task records nothing more.
+    await database
+      .update(schema.siteTasks)
+      .set({ createdAt: new Date(Date.now() - 45 * 60_000 - 1000) })
+      .where(eq(schema.siteTasks.id, task));
+    await expect(
+      recordSiteTaskSignInOrigin(
+        "teemiq",
+        owner,
+        "wrun_p1",
+        "https://late.vendor.example"
+      )
+    ).resolves.toBe(false);
+    await expect(readSiteTaskSignInOrigin("teemiq", owner, task)).resolves.toBe(
+      "https://login.vendor.example"
+    );
   });
 });
 
@@ -537,6 +621,7 @@ describe("site logins", () => {
 
     await expect(listSiteLogins(owner, "teemiq")).resolves.toEqual([
       {
+        alsoHosts: [],
         createdAt: teemiq.createdAt,
         hasTotp: false,
         id: teemiq.id,
@@ -553,15 +638,15 @@ describe("site logins", () => {
     await expect(listSiteLogins(other, "agents")).resolves.toEqual([]);
 
     // A site pins only a login it saved, in its owner's workspace.
-    await expect(readSiteLoginOrigin(owner, "teemiq", teemiq.id)).resolves.toBe(
-      "https://login.vendor.example"
+    await expect(readSiteLoginPin(owner, "teemiq", teemiq.id)).resolves.toEqual(
+      { alsoHosts: [], id: teemiq.id, origin: "https://login.vendor.example" }
     );
     const foreign = await Promise.all([
-      readSiteLoginOrigin(owner, "teemiq", ownLoginId),
-      readSiteLoginOrigin(owner, "teemiq", agents.id),
-      readSiteLoginOrigin(owner, "agents", teemiq.id),
-      readSiteLoginOrigin(owner, "teemiq", elsewhere.id),
-      readSiteLoginOrigin(other, "teemiq", teemiq.id),
+      readSiteLoginPin(owner, "teemiq", ownLoginId),
+      readSiteLoginPin(owner, "teemiq", agents.id),
+      readSiteLoginPin(owner, "agents", teemiq.id),
+      readSiteLoginPin(owner, "teemiq", elsewhere.id),
+      readSiteLoginPin(other, "teemiq", teemiq.id),
     ]);
     expect(foreign).toEqual([
       undefined,
@@ -603,6 +688,25 @@ describe("site logins", () => {
     ).toEqual([agents.id, ownLoginId].toSorted());
   });
 
+  it("keeps the hosts a site said its login's site also uses with the login", async () => {
+    const login = await saveSiteLogin(
+      owner,
+      "teemiq",
+      savedLogin("OpenAI", "https://auth.openai.example", false, [
+        "chatgpt.example",
+      ])
+    );
+
+    await expect(readSiteLoginPin(owner, "teemiq", login.id)).resolves.toEqual({
+      alsoHosts: ["chatgpt.example"],
+      id: login.id,
+      origin: "https://auth.openai.example",
+    });
+    await expect(listSiteLogins(owner, "teemiq")).resolves.toMatchObject([
+      { alsoHosts: ["chatgpt.example"], id: login.id },
+    ]);
+  });
+
   it("lists a site's logins newest first, saying which hold an authenticator key", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
@@ -623,6 +727,7 @@ describe("site logins", () => {
 
       expect(logins).toEqual([
         {
+          alsoHosts: [],
           createdAt: "2026-11-02T10:00:00.000Z",
           hasTotp: false,
           id: second.id,
@@ -630,6 +735,7 @@ describe("site logins", () => {
           origin: "https://second.example",
         },
         {
+          alsoHosts: [],
           createdAt: "2026-11-01T10:00:00.000Z",
           hasTotp: true,
           id: first.id,
@@ -657,12 +763,18 @@ describe("site logins", () => {
   });
 });
 
-function savedLogin(label: string, origin: string, withKey = false) {
+function savedLogin(
+  label: string,
+  origin: string,
+  withKey = false,
+  alsoHosts?: string[]
+) {
   return {
     account: "",
     kind: "login" as const,
     label,
     secret: serializeLoginVaultPayload({
+      alsoHosts,
       authentication: {
         password: "correct horse battery",
         totp: withKey

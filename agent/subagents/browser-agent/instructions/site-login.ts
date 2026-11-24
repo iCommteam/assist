@@ -8,7 +8,12 @@ export default defineDynamic((context) => {
   const login = siteLoginOfSession(context.session.auth.initiator);
   return login
     ? defineInstructions({
-        content: siteLogin.replaceAll("{{origin}}", login.origin),
+        content: siteLogin
+          .replaceAll("{{origin}}", login.origin)
+          .replaceAll(
+            "{{alsoHosts}}",
+            login.alsoHosts.map((host) => `\`${host}\``).join(", ") || "none"
+          ),
       })
     : null;
 });

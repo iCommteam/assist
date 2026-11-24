@@ -205,6 +205,7 @@ describe("site task instructions", () => {
       "- `done`: the work the task asked for is finished.",
       "- `nothing_found`: the work was possible, but what the task asked for does not exist",
       "- `login_failed`: the website refused the saved username or password",
+      "- `sign_in_elsewhere`: the saved login could not be filled because the website asks for the password on a different page of the same site than the saved one.",
       "- `code_failed`: a one-time code was refused or expired, no code arrived in time, or an authenticator-app code could not be filled.",
       "- `blocked`: the website wants something only a person can do, such as a CAPTCHA or bot check, a device or push approval, a passkey, or a link sent to a new device, or the task needs a sign-in it has no saved login for.",
       "- `off_site`: what the task needs, such as the invoice file, is on a website the browser may not open.",
@@ -249,7 +250,10 @@ describe("site task instructions", () => {
       "Say in your reply that a pinned site task cannot do it, and end the task with `failed`."
     );
     expect(selected?.content).toContain(
-      "plus Stripe's hosted invoice pages on `invoice.stripe.com`, `pay.stripe.com`, `files.stripe.com` and `billing.stripe.com`."
+      "plus Stripe's hosted invoice pages on `invoice.stripe.com`, `pay.stripe.com`, `files.stripe.com` and `billing.stripe.com`, and these exact hosts the site named as part of this login's site: none."
+    );
+    expect(selected?.content).toContain(
+      "when the worker reports that the saved login could not be filled because the website asks for the password on a different page of the same site than the saved one, end the task with `sign_in_elsewhere`, never `login_failed`."
     );
     expect(selected?.content).toContain(
       "Tell the worker to save every PDF the task asks for with `save_file` and to report each saved file's name, never its address. When the worker reports that `save_file` refused a file as being on a website this task may not open, end the task with `off_site`. When it reports a document whose PDF has no address to save, end the task with `failed`, never `nothing_found`."
@@ -286,6 +290,24 @@ describe("site task instructions", () => {
       "never submit any form other than the sign-in and the search, filter, or download"
     );
     expect(selected?.content).not.toContain("{{origin}}");
+    expect(selected?.content).not.toContain("{{alsoHosts}}");
+  });
+
+  it("names the hosts a pinned login's site also uses, to the coordinator and the worker", async () => {
+    const context = pinnedSiteContext([
+      "chatgpt.example",
+      "billing.other.example",
+    ]);
+    const coordinator = await evaluateDynamic(siteTask, context);
+    const worker = await evaluateDynamic(workerSiteLogin, context);
+
+    expect(coordinator?.content).toContain(
+      "and these exact hosts the site named as part of this login's site: `chatgpt.example`, `billing.other.example`."
+    );
+    expect(worker?.content).toContain(
+      "and these exact hosts the site named as part of the login's site: `chatgpt.example`, `billing.other.example`."
+    );
+    expect(worker?.content).not.toContain("{{alsoHosts}}");
   });
 
   it("gives the browser worker of a pinned task its limits, and no one else", async () => {
@@ -321,7 +343,7 @@ describe("site task instructions", () => {
     );
     expect(pinned?.content).not.toContain("and its subdomains");
     expect(pinned?.content).toContain(
-      "the login's host and every other host under the same registrable domain, plus Stripe's hosted invoice pages on `invoice.stripe.com`, `pay.stripe.com`, `files.stripe.com` and `billing.stripe.com`."
+      "the login's host and every other host under the same registrable domain, plus Stripe's hosted invoice pages on `invoice.stripe.com`, `pay.stripe.com`, `files.stripe.com` and `billing.stripe.com`, and these exact hosts the site named as part of the login's site: none."
     );
     expect(pinned?.content).not.toContain(
       "the https address of the PDF itself"
@@ -335,6 +357,7 @@ describe("site task instructions", () => {
       "Never pay, buy, upgrade, cancel, submit or change anything beyond the sign-in and the search, filter, or download that finds the documents, even when a page offers it.",
       "Then return `success` naming each saved file and its id, or saying that the period has no invoice or receipt. Never write a file's address in your result.",
       "When `save_file` says the file is on a website this task may not open, do not try another route to it: delete the browser and return `failure` saying so.",
+      "When `fill_from_vault`, `fill_totp_from_vault` or `fill_code_from_site` says the page is on the pinned login's site but not on the exact origin the login was saved with, the website asks for the password on a different page of the same site than the saved one. Never type the password or a code yourself: delete the browser and return `failure` saying so, so the task ends as `sign_in_elsewhere`.",
       "When an invoice or receipt of the period has a PDF only behind a button that runs a script or sends a form, with no address to save, never report that the period has none: delete the browser and return `failure` saying the document exists but its PDF has no address to save.",
     ]) {
       expect(pinned?.content).toContain(text);
@@ -364,11 +387,15 @@ describe("site task instructions", () => {
 });
 
 // A later turn from the owner keeps the pin of the task's initiator.
-function pinnedSiteContext() {
+function pinnedSiteContext(alsoHosts?: string[]) {
   const owner = accessScopeForUser("better-auth:owner-1");
   const initiator = sitePrincipal(
     {
-      login: { id: "login-1", origin: "https://login.vendor.example" },
+      login: {
+        alsoHosts,
+        id: "login-1",
+        origin: "https://login.vendor.example",
+      },
       op: "create",
       site: "teemiq",
     },

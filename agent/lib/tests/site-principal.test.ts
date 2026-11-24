@@ -32,8 +32,36 @@ describe("site principal", () => {
       principalType: "user",
     });
     expect(siteOfSession(principal)).toBe("teemiq");
-    expect(siteLoginOfSession(principal)).toEqual(login);
+    expect(siteLoginOfSession(principal)).toEqual({ ...login, alsoHosts: [] });
     expect(scopeFromPrincipal(principal)).toEqual(owner);
+  });
+
+  it("carries the hosts the login's site also uses, when it has any", () => {
+    const principal = sitePrincipal(
+      {
+        login: { ...login, alsoHosts: ["chatgpt.com"] },
+        op: "create",
+        site: "teemiq",
+      },
+      "owner@example.test",
+      owner
+    );
+    const none = sitePrincipal(
+      { login: { ...login, alsoHosts: [] }, op: "create", site: "teemiq" },
+      "owner@example.test",
+      owner
+    );
+
+    expect(principal.attributes).toMatchObject({
+      siteLogin: "login-1",
+      siteLoginAlsoHosts: ["chatgpt.com"],
+    });
+    expect(siteLoginOfSession(principal)).toEqual({
+      ...login,
+      alsoHosts: ["chatgpt.com"],
+    });
+    expect(Object.keys(none.attributes)).not.toContain("siteLoginAlsoHosts");
+    expect(siteLoginOfSession(none)).toEqual({ ...login, alsoHosts: [] });
   });
 
   it("pins nothing for an unpinned create or a stream read", () => {
@@ -69,6 +97,20 @@ describe("site principal", () => {
       siteLoginOfSession({
         ...pinned,
         attributes: { ...pinned.attributes, siteLoginOrigin: "not an origin" },
+      })
+    ).toBeUndefined();
+    expect(
+      siteLoginOfSession({
+        ...pinned,
+        attributes: {
+          ...pinned.attributes,
+          siteLoginAlsoHosts: [
+            "a.example",
+            "b.example",
+            "c.example",
+            "d.example",
+          ],
+        },
       })
     ).toBeUndefined();
   });

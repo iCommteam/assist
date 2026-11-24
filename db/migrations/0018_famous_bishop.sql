@@ -1,0 +1,1 @@
+ALTER TABLE "site_tasks" ADD COLUMN "sign_in_origin" text;

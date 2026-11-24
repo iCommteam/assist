@@ -46,6 +46,7 @@ describe("database migrations", () => {
     await applyMigration(database, "0015_wet_joseph.sql");
     await applyMigration(database, "0016_fair_psylocke.sql");
     await applyMigration(database, "0017_parallel_hulk.sql");
+    await applyMigration(database, "0018_famous_bishop.sql");
 
     const tables = await database.query<{ count: number }>(
       `SELECT count(*)::int AS count
@@ -196,6 +197,41 @@ describe("database migrations", () => {
       "SELECT count(*)::int AS count FROM task_files"
     );
     expect(left.rows[0]?.count).toBe(0);
+  }, 30_000);
+
+  it("adds a site task's sign-in page, empty for the tasks already there", async () => {
+    const database = createDatabase();
+    const journal = z
+      .object({ entries: z.array(z.object({ tag: z.string() })) })
+      .parse(
+        JSON.parse(
+          await readFile(
+            new URL("../migrations/meta/_journal.json", import.meta.url),
+            "utf8"
+          )
+        )
+      );
+    const tags = journal.entries.map(({ tag }) => tag);
+    const signInMigration = tags.indexOf("0018_famous_bishop");
+    /* oxlint-disable eslint/no-await-in-loop -- Migrations must execute in journal order. */
+    for (const tag of tags.slice(0, signInMigration)) {
+      await applyMigration(database, `${tag}.sql`);
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+    await database.exec(`
+      INSERT INTO workspaces (id) VALUES ('workspace-1');
+      INSERT INTO site_tasks (id, site, workspace_id, session_id, login_id)
+      VALUES ('00000000-0000-4000-8000-000000000001', 'teemiq', 'workspace-1', 'wrun_1', 'login-1');
+    `);
+
+    await applyMigration(database, "0018_famous_bishop.sql");
+
+    const existing = await database.query(
+      "SELECT login_id, sign_in_origin FROM site_tasks"
+    );
+    expect(existing.rows).toEqual([
+      { login_id: "login-1", sign_in_origin: null },
+    ]);
   }, 30_000);
 
   it("reconciles the pre-merge reply-anchor migration", async () => {

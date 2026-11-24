@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  amazonUrlBlocklist,
-  assertNavigableUrl,
-  isAmazonHost,
-} from "../policy/hosts";
+import { amazonUrlBlocklist, isAmazonHost } from "@shared/browser/hosts";
+import { assertNavigableUrl } from "../policy/hosts";
 
 describe("Amazon host policy", () => {
   it.each([
