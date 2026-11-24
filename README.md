@@ -141,7 +141,8 @@ and each task appears in the owner's chat history. A site task neither reads
 nor changes the owner's Personal Info or workstreams, and its browser worker
 reaches only the browsers it opened. A site reads only the tasks and logins it
 created itself. The owner can follow a site task in the chat but cannot answer
-its code question there; only the site can.
+its code question there; only the site can. A site may also hold chats with
+its own people; see [Site chats](#site-chats).
 
 #### Calls
 
@@ -155,9 +156,9 @@ what the caller sent.
 | `POST /api/site/logins`                       | body `{"origin","label","identifier","password","totp","alsoHosts"}`; `201 {"login":{"loginId","label","origin","alsoHosts","hasTotp","createdAt"}}`; `400 {"error":"identity_provider"}` |
 | `GET /api/site/logins`                        | `200 {"logins":[{"loginId","label","origin","alsoHosts","hasTotp","createdAt"}]}`, the site's own logins, newest first                                                                    |
 | `DELETE /api/site/logins/{loginId}`           | `204`, also deleting the login's browser profile; `409 {"error":"login_busy"}` while a task pinned to it is open                                                                          |
-| `POST /api/site/tasks`                        | body `{"message","loginId"}`, `loginId` optional; `202 {"taskId"}`; `409 {"error":"login_busy","taskId"}`; `429 {"error":"rate_limited"}`                                                 |
+| `POST /api/site/tasks`                        | body `{"message","loginId","kind"}`, `loginId` and `kind` optional; `202 {"taskId"}`; `409 {"error":"login_busy","taskId"}`; `429 {"error":"rate_limited"}`                               |
 | `GET /api/site/tasks?loginId=...`             | `200 {"tasks":[{"taskId","status","createdAt"}]}`, the site's tasks pinned to that login, newest first, at most 5                                                                         |
-| `GET /api/site/tasks/{taskId}`                | `200 {"taskId","status","question","questionId","outcome","error","signInOrigin","reply"}`                                                                                                |
+| `GET /api/site/tasks/{taskId}`                | `200 {"taskId","kind","status","question","questionId","outcome","error","signInOrigin","reply"}`                                                                                         |
 | `POST /api/site/tasks/{taskId}/input`         | body `{"text"}`, the one-time code; `202 {"taskId"}`; `409 {"error":"not_waiting"}`                                                                                                       |
 | `POST /api/site/tasks/{taskId}/cancel`        | no body; `202 {"taskId"}`, also for a task that has already ended                                                                                                                         |
 | `GET /api/site/tasks/{taskId}/files`          | `200 {"files":[{"fileId","filename","mediaType","byteSize","sha256","createdAt"}]}`, oldest first                                                                                         |
@@ -285,12 +286,14 @@ a running task every few seconds.
 - `status`: `running`, `awaiting-input`, `completed` or `failed`.
 - `question` and `questionId`: set only while `awaiting-input`; the question
   is one line of plain text of at most 300 characters.
+- `kind`: `fetch`, or `look` for a task started as one; see [Looks](#looks).
 - `outcome`: set only while `completed`: `files` when the task keeps at least
   one saved file, `nothing_found` otherwise. It is counted from the files the
   task stored, never from what the agent wrote. After a file's 7 days it is
   gone, so an older task that saved files reads `nothing_found`. A task that
   failed may have saved files before it failed, so list a task's files once it
-  has ended, whether it reads `completed` or `failed`.
+  has ended, whether it reads `completed` or `failed`. A look reads `listed`,
+  or `nothing_found` when the agent ended it so.
 - `error`: set only while `failed`, one of these codes:
   - `login_failed`: the website refused the saved username or password.
   - `sign_in_elsewhere`: the website asks for the password on a different
@@ -424,6 +427,23 @@ files, also when no site calls, and saves, lists and downloads delete them a
 batch at a time as well. The file routes answer only for the
 site's own tasks, like the status: another site's task answers 404.
 
+#### Looks
+
+A task started with `"kind":"look"` looks into its pinned login's account
+instead of fetching from it: the agent signs in, lists for the requested
+period every invoice or receipt the account shows, each with its date,
+number, amount, currency and which kind it is, and saves nothing. The
+worker of a look has no `save_file` at all. A look needs a `loginId`, and
+otherwise answers `invalid_request`; `kind` is `fetch` when left out, so a
+site that never sends it is unaffected. The fence, the login's one task at a
+time, the start limit, the one-time codes and the 45 minutes are a fetch's.
+
+`GET /api/site/tasks/{taskId}` reports the `kind`. A completed look reads
+`outcome` `listed`, or `nothing_found` when the agent found no document for
+the period, and its `reply` is the list, one document per line. Unlike a
+fetch's files, the list is what the agent read on the supplier's pages and
+wrote down: treat it as untrusted text.
+
 #### Lifetimes and cancelling
 
 - A task has 45 minutes. One whose turn still runs or waits for a code after
@@ -447,6 +467,94 @@ none of its tasks is open, closes a browser an ended task left saving the
 login's sign-in, so the new task can sign in; the new task also wins over a
 later chat turn of an old task. A start answered `429` leaves the login's
 browsers alone; one answered `503` may already have closed them.
+
+#### Site chats
+
+A connected site can also hold chats between the agent and its own people,
+such as TEEMIQ's Assist in Accounting. Each call names the person by the
+site's own id for them, `siteUser`: 1 to 128 letters, digits and `_ . : @ -`,
+such as a TEEMIQ user id. A chat belongs to that person alone. Another
+person's id answers `404 {"error":"not_found"}` like an unknown chat, and the
+owner's own sign-in is refused on the chat's page, `/chat/{id}`, and on every
+agent route of its session: stream, messages, answers, controls and
+callbacks. A chat lives in the owner's workspace like a task, but it never
+appears in the owner's chat list. The people who run assist's database can
+still read it there, as they can any chat.
+
+| Call                                                         | Answer                                                                                                                                          |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/site/chats`                                       | body `{"siteUser","topic","title"}`, `topic` and `title` optional; `201 {"chatId"}`; `429 {"error":"rate_limited"}`                             |
+| `GET /api/site/chats?siteUser=...&topic=...`                 | `200 {"chats":[{"chatId","title","topic","createdAt"}]}`, the person's chats, newest first, at most 50, only that topic's when it is given      |
+| `POST /api/site/chats/{chatId}/messages`                     | body `{"siteUser","text","context","kind","teemiqToken"}`, `context` and `kind` optional; `202 {"chatId"}`; `429 {"error":"rate_limited"}`      |
+| `POST /api/site/chats/{chatId}/answers`                      | body `{"siteUser","interactionId","optionId","teemiqToken"}`, or `text` in place of `optionId`; `202 {"chatId"}`; `409 {"error":"not_waiting"}` |
+| `POST /api/site/chats/{chatId}/token`                        | body `{"siteUser","teemiqToken"}`; `204`                                                                                                        |
+| `GET /api/site/chats/{chatId}/stream?siteUser=...&after=...` | `200` NDJSON, below; `after` optional                                                                                                           |
+| `POST /api/site/chats/{chatId}/cancel`                       | body `{"siteUser"}`; `202 {"chatId"}`, also when no turn is under way                                                                           |
+
+A chat whose agent session has ended, after 30 idle days, answers
+`410 {"error":"chat_ended"}` to its messages and its stream: open a new chat.
+A message or an answer while the session is still starting can answer
+`409 {"error":"not_ready"}`: send it again.
+
+- `topic`: an opaque key of 1 to 200 printable characters without spaces,
+  such as `txn:<uuid>` for a transaction's own chat. The site finds the chat
+  again with `GET /api/site/chats?siteUser=...&topic=...`, so it keeps no
+  table of its own; several chats may share a topic, the newest listed first.
+  `title`: 1 to 200 characters on one line.
+- `text`: 1 to 8000 characters. A message sent while a turn runs joins it.
+- `context`: what the person has open, such as
+  `About: OpenAI · 3 Nov · $20.00`, at most 2000 characters. The agent reads
+  it for that turn only; it is never stored in the chat.
+- `kind`: `message`, the default, for the person's words, or `result` for the
+  outcome of a look or a fetch the chat started, which the site posts on the
+  person's behalf once it ends: the look's list, or the fetch's summary and
+  the documents filed. The agent receives a result as a result, framed so
+  that the person's own text can never pass for one, and continues from it
+  without being asked: it cross-checks the documents against the transaction.
+- `teemiqToken`: the site's short-lived token for its own tools, 16 to 4096
+  printable characters, opaque to assist. Every message and answer carries
+  one, and `/token` replaces it while a long turn runs, every 5 minutes for
+  TEEMIQ. It is kept only on the chat's row, encrypted for that chat, used for
+  at most 15 minutes from when it arrived, and cleared when each turn ends; it
+  never reaches the model, the session's records or a log.
+
+The agent of a chat is an Accounting assistant for the company. It answers,
+searches the web and asks the person questions; it has no browser, vault,
+schedules, Personal Info or workstreams. With `TEEMIQ_FINANCE_MCP_URL` set,
+such as `https://team.icommteam.com/api/mcp/finance`, a turn whose chat holds
+a live token gets TEEMIQ's finance tools, as that person, through an MCP
+connection that sends the token; without the variable or a token it has none,
+and it is never asked to sign in. Every visit to a supplier's site is a look
+or a fetch it starts through those tools, on a saved account the person names
+by its nickname; it never pairs a document itself, it proposes.
+
+A person may start 30 turns in any hour and 200 in any day, results
+included, and open 30 chats in any hour; the next answers
+`429 {"error":"rate_limited"}` with `Retry-After`, and the counts reset when
+the service restarts. The $10 usage limit's continue prompt is answered no:
+the turn stops and the stream reports `usage_limit`. The chat stays over its
+limit after that, so open a new one.
+
+#### Chat stream
+
+Each line of the stream is one JSON object with `"v":1`. Every line but a
+heartbeat also carries `cursor`, the agent session's line it came from. The
+stream replays the chat from its start, or from after the `after` cursor,
+then follows it live; it closes after 10 minutes or when the chat ends, and
+the site opens it again with the last cursor it read.
+
+| `type`      | Fields                                                                                                         |
+| ----------- | -------------------------------------------------------------------------------------------------------------- |
+| `message`   | `from`: `person`, `result` or `assistant`; `text`                                                              |
+| `progress`  | `label`: `Searching the web`, `Starting a look` or `Starting a fetch`                                          |
+| `question`  | `id`, `text`, `options` (`[{"id","label"}]`, empty for a free answer); answer it with `/answers`               |
+| `fetch`     | `fetchId`: a look or a fetch the agent started through TEEMIQ's tools                                          |
+| `proposal`  | `txnId`, `documentId`, `why`: a pairing the agent proposed, for a person to confirm                            |
+| `done`      | a turn ended                                                                                                   |
+| `error`     | `code`: `usage_limit`, `needs_person` (stopped at an approval or a sign-in), `cancelled`, `failed`, or `ended` |
+| `heartbeat` | none; sent after 15 quiet seconds                                                                              |
+
+No tool's input or output leaves assist beyond those fields.
 
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to
