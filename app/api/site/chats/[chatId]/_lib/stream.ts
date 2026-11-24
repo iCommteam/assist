@@ -9,16 +9,19 @@ import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 
 // What a site's chat UI reads: a small, versioned NDJSON of the chat's
 // conversation, folded from eve's events by allow-list. Tool inputs and
-// outputs never leave assist, except the three fields a site acts on: the id
-// of a look or fetch it started, and a proposed pairing. Every line carries
-// the version, and every line but a heartbeat the eve line it came from, so a
-// reader that lost its connection resumes after the last one it read.
+// outputs never leave assist, except the fields a site acts on: the id of a
+// look or fetch it started, the supplier a look or a fetch found no saved
+// account for, and a proposed pairing. Every line carries the version, and
+// every line but a heartbeat the eve line it came from, so a reader that lost
+// its connection resumes after the last one it read.
 const chatStreamVersion = 1;
 
 const resultOpen = "<teemiq-result>";
 const resultClose = "</teemiq-result>";
 const maxQuestionLength = 1000;
 const maxWhyLength = 500;
+const maxSupplierNameLength = 200;
+const maxGuessedSiteLength = 300;
 
 // What the site posted as the outcome of a look or a fetch, framed so the
 // agent reads it as a result, never as the person's words. A person's text
@@ -53,6 +56,15 @@ const idSchema = z
   .max(200)
   .regex(/^[\w:.-]+$/u);
 const fetchOutputSchema = z.looseObject({ fetchId: idSchema });
+// A look or a fetch TEEMIQ did not start because the supplier has no saved
+// account, so the site shows the person a form to add one. Only these two
+// fields are read, and each leaves as one bounded line.
+const needsAccountOutputSchema = z.looseObject({
+  needs_account: z.looseObject({
+    guessedSite: z.string().optional().catch(undefined),
+    supplierName: z.string(),
+  }),
+});
 const proposalOutputSchema = z.looseObject({
   documentId: idSchema,
   txnId: idSchema,
@@ -115,6 +127,11 @@ type ChatLine =
       readonly type: "question";
     }
   | { readonly fetchId: string; readonly type: "fetch" }
+  | {
+      readonly guessedSite?: string;
+      readonly supplierName: string;
+      readonly type: "account";
+    }
   | {
       readonly documentId: string;
       readonly txnId: string;
@@ -249,7 +266,10 @@ function settledLines(
     return [{ from: "assistant", text, type: "message" }];
   }
   if (tool !== undefined && fetchTools.has(tool)) {
-    const started = fetchOutputSchema.safeParse(structured(output));
+    const answer = structured(output);
+    const needsAccount = needsAccountOutputSchema.safeParse(answer);
+    if (needsAccount.success) return accountLines(needsAccount.data);
+    const started = fetchOutputSchema.safeParse(answer);
     return started.success
       ? [{ fetchId: started.data.fetchId, type: "fetch" }]
       : [];
@@ -268,6 +288,22 @@ function settledLines(
     ];
   }
   return [];
+}
+
+// A supplier name that is empty once made one line names nobody, so it
+// yields no line; a guessed site that is not a non-empty string is left out,
+// and the line stays.
+function accountLines({
+  needs_account: { guessedSite, supplierName },
+}: z.infer<typeof needsAccountOutputSchema>): ChatLine[] {
+  const name = plainLine(supplierName, maxSupplierNameLength);
+  if (name === "") return [];
+  const site = plainLine(guessedSite ?? "", maxGuessedSiteLength);
+  return [
+    site === ""
+      ? { supplierName: name, type: "account" }
+      : { guessedSite: site, supplierName: name, type: "account" },
+  ];
 }
 
 // A connection tool's output is its structured content, or its text, which

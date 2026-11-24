@@ -12,6 +12,9 @@ function linesOf(lines: readonly (readonly Fact[])[]) {
   return eventsOf(lines).flatMap((event: ReceivedEvent) => fold(event));
 }
 
+// Written by its code point, so the source holds no bidirectional control.
+const rightToLeftOverride = String.fromCodePoint(0x20_2e);
+
 const turnStarted: Fact = {
   data: { cause: { deliveryId: "delivery-1" }, follows: null, turnId: "t1" },
   type: "turn.started",
@@ -205,6 +208,85 @@ describe("site chat stream", () => {
       { label: "Starting a fetch", type: "progress", v: 1 },
     ]);
     expect(JSON.stringify(lines)).not.toMatch(/secret|not-a-fetch|p-1/u);
+  });
+
+  it("names the supplier a look or a fetch found no saved account for, with its guessed site, and nothing else of the answer", () => {
+    const lines = linesOf([
+      [turnStarted, runRequested],
+      call(
+        "call-fetch",
+        "teemiq__finance_fetch_invoice",
+        { txnId: "txn-secret-input" },
+        {
+          fetchId: "fetch-not-started",
+          needs_account: {
+            guessedSite: "https://auth.openai.com",
+            loginHint: "secret hint",
+            supplierName: "OpenAI",
+          },
+          rows: ["secret row"],
+        }
+      ),
+      call(
+        "call-look",
+        "teemiq__finance_site_look",
+        {},
+        JSON.stringify({ needs_account: { supplierName: "  Anthropic\n" } })
+      ),
+      call(
+        "call-long",
+        "teemiq__finance_fetch_invoice",
+        {},
+        {
+          needs_account: {
+            guessedSite: `https://${"a".repeat(400)}.example`,
+            supplierName: `Long${rightToLeftOverride}Name ${"b".repeat(300)}`,
+          },
+        }
+      ),
+      call(
+        "call-odd",
+        "teemiq__finance_site_look",
+        {},
+        {
+          needs_account: { guessedSite: { host: "x" }, supplierName: "Kernel" },
+        }
+      ),
+      call(
+        "call-blank",
+        "teemiq__finance_fetch_invoice",
+        {},
+        { needs_account: { guessedSite: "secret.example", supplierName: " " } }
+      ),
+      call(
+        "call-other",
+        "teemiq__finance_suppliers",
+        {},
+        { needs_account: { supplierName: "Not a fetch" } }
+      ),
+    ]);
+
+    const accounts = lines.filter(({ type }) => type === "account");
+    expect(accounts.map(({ cursor: _cursor, ...line }) => line)).toEqual([
+      {
+        guessedSite: "https://auth.openai.com",
+        supplierName: "OpenAI",
+        type: "account",
+        v: 1,
+      },
+      { supplierName: "Anthropic", type: "account", v: 1 },
+      {
+        guessedSite: `https://${"a".repeat(291)}…`,
+        supplierName: `Long Name ${"b".repeat(189)}…`,
+        type: "account",
+        v: 1,
+      },
+      { supplierName: "Kernel", type: "account", v: 1 },
+    ]);
+    expect(lines.filter(({ type }) => type === "fetch")).toEqual([]);
+    expect(JSON.stringify(lines)).not.toMatch(
+      /secret|Not a fetch|fetch-not-started/u
+    );
   });
 
   it("relays a question with its options", () => {
