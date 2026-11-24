@@ -32,8 +32,10 @@ export async function recordSignInElsewhere(
   }
   if (!URL.canParse(pageOrigin)) return false;
   const page = new URL(pageOrigin);
+  // No site saves a login on a port, so a page on one is never recorded.
   if (
     page.protocol !== "https:" ||
+    page.port !== "" ||
     page.origin !== pageOrigin ||
     !isOnLoginSite(
       page.hostname,

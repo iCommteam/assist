@@ -395,7 +395,12 @@ function sentCommands(method: string) {
   return chrome.commands.filter((command) => command.method === method);
 }
 
-function pinned(login = { id: "login-1", origin }) {
+function pinned(
+  login: { alsoHosts?: string[]; id: string; origin: string } = {
+    id: "login-1",
+    origin,
+  }
+) {
   return sitePrincipal(
     { login, op: "create", site: "teemiq" },
     "owner@example.test",
@@ -712,6 +717,23 @@ describe("save_file", () => {
     expect(chrome.sent).toEqual(urls);
   });
 
+  it("saves from each exact host the login's site also uses, and from no host under it", async () => {
+    const also = workerContext(
+      pinned({ alsoHosts: ["billing.other.example"], id: "login-1", origin })
+    );
+    const url = "https://billing.other.example/invoices/1.pdf";
+    serve(url);
+
+    await expect(save({ url }, also)).resolves.toMatchObject({ fileId });
+    expect(chrome.sent).toEqual([url]);
+    await expect(
+      refusal({ url: "https://www.billing.other.example/1.pdf" }, also)
+    ).resolves.toBe(offSiteMessage);
+    // A task pinned to a login without it may not save from there.
+    await expect(refusal({ url })).resolves.toBe(offSiteMessage);
+    expect(chrome.sent).toEqual([url]);
+  });
+
   it("refuses any other host with a fixed message that ends the task as off_site", async () => {
     for (const url of [
       "https://attacker.example/invoice.pdf?leak=signed-download-secret",
@@ -924,6 +946,25 @@ describe("save_file redirects", () => {
       invoiceUrl,
       "https://billing.vendor.example/archive/x.pdf",
     ]);
+  });
+
+  it("follows a redirect onto a host the login's site also uses, and to none under it", async () => {
+    const also = workerContext(
+      pinned({ alsoHosts: ["billing.other.example"], id: "login-1", origin })
+    );
+    const billing = "https://billing.other.example/x.pdf";
+    serve(invoiceUrl, { location: billing });
+    serve(billing);
+
+    await expect(save({}, also)).resolves.toMatchObject({
+      filename: "x.pdf",
+    });
+    expect(chrome.sent).toEqual([invoiceUrl, billing]);
+
+    chrome.sent.length = 0;
+    serve(invoiceUrl, { location: "https://www.billing.other.example/x.pdf" });
+    await expect(refusal({}, also)).resolves.toBe(offSiteMessage);
+    expect(chrome.sent).toEqual([invoiceUrl]);
   });
 
   it("never sends a hop that leaves the fence, reaches Amazon or drops https", async () => {

@@ -305,6 +305,10 @@ describe("fill_totp_from_vault", () => {
   it.each([
     ["Stripe's invoice host", "https://pay.stripe.com"],
     ["an http page of the login's site", "http://auth.vendor.example"],
+    [
+      "a page of the login's site on a port",
+      "https://auth.vendor.example:8443",
+    ],
     ["another site", "https://evil.example"],
   ])(
     "records nothing on %s, keeping the vault's refusal",

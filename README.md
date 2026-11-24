@@ -312,8 +312,9 @@ a running task every few seconds.
   page where the browser worker's fill of the login was refused, as the
   server read it from the browser, never from what the agent wrote. It is on
   the login's own site, under its registrable domain or one of its
-  `alsoHosts`, never one of Stripe's hosts. A fill refused on several such
-  pages records the last.
+  `alsoHosts`, never one of Stripe's hosts, and never on a port, so a site
+  can save a login there. A fill refused on several such pages records the
+  last.
 - `reply`: the agent's last message as plain text, set once the site's turn
   has completed, also when the task then reads `failed`; it is null while the
   task runs or waits, and for a turn that was cancelled, stopped or failed in
