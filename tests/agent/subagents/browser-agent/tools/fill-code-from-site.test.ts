@@ -15,7 +15,10 @@ import type {
   BrowserPageState,
   inspectBrowserPages,
 } from "@agent/subagents/browser-agent/lib/policy/page-check";
-import type { recordSiteTaskSignInOrigin } from "@db/services/sites";
+import type {
+  clearSiteTaskSignInOrigin,
+  recordSiteTaskSignInOrigin,
+} from "@db/services/sites";
 import type { readVaultItem } from "@db/services/vault";
 import { resetEveState } from "@tests/helpers/eve-state";
 import { toolContextFor } from "@tests/helpers/tool-context";
@@ -25,6 +28,7 @@ import { sealSiteCode } from "@shared/identity/site-code/seal";
 
 const mocks = vi.hoisted(() => ({
   assertFocus: vi.fn<typeof assertKernelOneTimeCodeFocus>(),
+  clearSignInOrigin: vi.fn<typeof clearSiteTaskSignInOrigin>(),
   currentKernelPageOrigin: vi.fn<typeof currentKernelPageOrigin>(),
   fill: vi.fn<typeof fillKernelOneTimeCode>(),
   inspectBrowserPages: vi.fn<typeof inspectBrowserPages>(),
@@ -45,6 +49,7 @@ vi.mock("@agent/subagents/browser-agent/lib/owned-browser", () => ({
 }));
 vi.mock("@db/services/vault", () => ({ readVaultItem: mocks.readVaultItem }));
 vi.mock("@db/services/sites", () => ({
+  clearSiteTaskSignInOrigin: mocks.clearSignInOrigin,
   recordSiteTaskSignInOrigin: mocks.recordSignInOrigin,
 }));
 vi.mock(
@@ -61,7 +66,7 @@ vi.mock("@agent/subagents/browser-agent/lib/autofill/native", () => ({
 }));
 
 import fillCodeFromSite from "@agent/subagents/browser-agent/tools/fill_code_from_site";
-import { signInElsewhereMessage } from "@agent/subagents/browser-agent/lib/autofill/sign-in-elsewhere";
+import { SignInElsewhereRefusal } from "@agent/subagents/browser-agent/lib/autofill/sign-in-elsewhere";
 import {
   forgetInjectedValues,
   redactBrowserOutput,
@@ -167,6 +172,7 @@ beforeEach(() => {
   mocks.assertFocus.mockResolvedValue(undefined);
   mocks.fill.mockResolvedValue(undefined);
   mocks.recordSignInOrigin.mockResolvedValue(true);
+  mocks.clearSignInOrigin.mockResolvedValue(undefined);
   mocks.readVaultItem.mockResolvedValue({
     account: "",
     createdAt: "2026-11-23T00:00:00.000Z",
@@ -209,6 +215,37 @@ describe("fill_code_from_site", () => {
     expect(redactBrowserOutput("worker-1", "browser-1", `code ${code}`)).toBe(
       "code [vault value hidden]"
     );
+    // A code filled on the saved origin forgets any page recorded before.
+    expect(mocks.clearSignInOrigin).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      "wrun_root"
+    );
+    expect(mocks.recordSignInOrigin).not.toHaveBeenCalled();
+  });
+
+  it("records no code page on an identity provider under the login's own domain", async () => {
+    mocks.currentKernelPageOrigin.mockResolvedValue("https://idmsa.apple.com");
+    const ask = answered(sealed());
+
+    const result = await run(
+      workerContext(
+        ask,
+        siteInitiator({
+          id: "login-1",
+          origin: "https://appstoreconnect.apple.com",
+        })
+      )
+    );
+
+    expect(result).toEqual(outsideOrigin);
+    expect(mocks.recordSignInOrigin).not.toHaveBeenCalled();
+    expect(mocks.clearSignInOrigin).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      owner,
+      "wrun_root"
+    );
+    expect(ask).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -250,7 +287,7 @@ describe("fill_code_from_site", () => {
 
       expect(result).toEqual({
         filled: false,
-        message: signInElsewhereMessage,
+        message: new SignInElsewhereRefusal(origin).message,
       });
       expect(mocks.recordSignInOrigin).toHaveBeenCalledExactlyOnceWith(
         "teemiq",
@@ -282,7 +319,10 @@ describe("fill_code_from_site", () => {
 
     const result = await run(workerContext(answered(sealed())));
 
-    expect(result).toEqual({ filled: false, message: signInElsewhereMessage });
+    expect(result).toEqual({
+      filled: false,
+      message: new SignInElsewhereRefusal(origin).message,
+    });
     expect(mocks.recordSignInOrigin).toHaveBeenCalledExactlyOnceWith(
       "teemiq",
       owner,

@@ -18,8 +18,9 @@ import {
 } from "../lib/autofill/native";
 import { authenticatorCodeForLogin } from "../lib/autofill/provider";
 import {
+  forgetSignInElsewhere,
   recordSignInElsewhere,
-  signInElsewhereMessage,
+  SignInElsewhereRefusal,
 } from "../lib/autofill/sign-in-elsewhere";
 
 const inputSchema = z.object({
@@ -47,7 +48,6 @@ const safeFillMessages = new Set([
   "The selected vault item was not found.",
   "This saved login has no authenticator setup key.",
   "This saved login is not assigned to a website. Re-save it before autofill.",
-  signInElsewhereMessage,
 ]);
 const restrictedOriginMessage =
   /^This saved login is restricted to https?:\/\/[^\s]+\.$/u;
@@ -68,10 +68,8 @@ export default defineTool({
     assertWorkerNotBlocked();
     // The same pin as fill_from_vault: any other handle reads as missing.
     const { initiator } = context.session.auth;
-    if (
-      siteOfSession(initiator) &&
-      siteLoginOfSession(initiator)?.id !== input.candidateId
-    ) {
+    const pin = siteLoginOfSession(initiator);
+    if (siteOfSession(initiator) && pin?.id !== input.candidateId) {
       throw new Error("The selected vault item was not found.");
     }
     const item = await readVaultItem(scope, input.candidateId);
@@ -89,13 +87,12 @@ export default defineTool({
       });
       // As in fill_from_vault: a page of the login's own site is recorded
       // before the vault refuses it.
-      const pin = siteLoginOfSession(initiator);
       if (
         pin &&
         origin !== pin.origin &&
         (await recordSignInElsewhere(context.session, scope, origin))
       ) {
-        throw new Error(signInElsewhereMessage);
+        throw new SignInElsewhereRefusal(pin.origin);
       }
       const code = await authenticatorCodeForLogin(
         scope,
@@ -112,6 +109,7 @@ export default defineTool({
         expectedOrigin: origin,
         signal: context.abortSignal,
       });
+      if (pin) await forgetSignInElsewhere(context.session, scope);
       try {
         recordFilledDocuments(
           input.browserSessionId,
@@ -123,6 +121,7 @@ export default defineTool({
       }
       return { message: filledMessage, success: true as const };
     } catch (error) {
+      if (error instanceof SignInElsewhereRefusal) throw error;
       const message = error instanceof Error ? error.message : "";
       // oxlint-disable-next-line eslint/preserve-caught-error -- The cause may echo the code or browser state, so it is withheld.
       throw new Error(

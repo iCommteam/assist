@@ -1,4 +1,15 @@
-import { and, asc, count, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  lte,
+  sql,
+} from "drizzle-orm";
 import { db, siteTasks, taskFiles, user } from "@db";
 import { siteOwnerEmail } from "@shared/environment/sites";
 import {
@@ -153,6 +164,21 @@ export async function recordSiteTaskSignInOrigin(
     .where(savingTask(site, scope, sessionId))
     .returning({ id: siteTasks.id });
   return rows.length > 0;
+}
+
+// Forgets the page a session's task recorded, once a later fill shows the
+// website no longer asks for the password there.
+export async function clearSiteTaskSignInOrigin(
+  site: string,
+  scope: AccessScope,
+  sessionId: string
+) {
+  await db
+    .update(siteTasks)
+    .set({ signInOrigin: null })
+    .where(
+      and(savingTask(site, scope, sessionId), isNotNull(siteTasks.signInOrigin))
+    );
 }
 
 // The page a task of this site recorded with recordSiteTaskSignInOrigin, or

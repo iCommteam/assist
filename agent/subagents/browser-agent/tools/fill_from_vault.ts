@@ -21,8 +21,9 @@ import {
 import { vaultAutofillProvider } from "../lib/autofill/provider";
 import { materializeAutofillClaims } from "../lib/autofill/service";
 import {
+  forgetSignInElsewhere,
   recordSignInElsewhere,
-  signInElsewhereMessage,
+  SignInElsewhereRefusal,
 } from "../lib/autofill/sign-in-elsewhere";
 
 const inputSchema = z.object({
@@ -50,7 +51,6 @@ const safeFillMessages = new Set([
   "The selected vault item is not compatible with this form.",
   "The selected vault item was not found.",
   "This saved login is not assigned to a website. Re-save it before autofill.",
-  signInElsewhereMessage,
 ]);
 const restrictedOriginMessage =
   /^This saved login is restricted to https?:\/\/[^\s]+\.$/u;
@@ -72,10 +72,8 @@ export default defineTool({
     // A site task fills only the login it is pinned to, and none without a
     // pin. Any other handle reads as missing, whether or not it exists.
     const { initiator } = context.session.auth;
-    if (
-      siteOfSession(initiator) &&
-      siteLoginOfSession(initiator)?.id !== input.candidateId
-    ) {
+    const pin = siteLoginOfSession(initiator);
+    if (siteOfSession(initiator) && pin?.id !== input.candidateId) {
       throw new Error("The selected vault item was not found.");
     }
     const item = await readVaultItem(scope, input.candidateId);
@@ -103,13 +101,12 @@ export default defineTool({
       });
       // The vault refuses any other origin. A site task first records a page
       // of its login's own site, where the website may ask for the password.
-      const pin = siteLoginOfSession(initiator);
       if (
         pin &&
         origin !== pin.origin &&
         (await recordSignInElsewhere(context.session, scope, origin))
       ) {
-        throw new Error(signInElsewhereMessage);
+        throw new SignInElsewhereRefusal(pin.origin);
       }
       const tokens = nativeAutofillTokens.login;
       const claims = await materializeAutofillClaims(
@@ -140,6 +137,7 @@ export default defineTool({
         kind: "login",
         signal: context.abortSignal,
       });
+      if (pin) await forgetSignInElsewhere(context.session, scope);
       try {
         recordFilledDocuments(
           input.browserSessionId,
@@ -157,6 +155,7 @@ export default defineTool({
         success: true as const,
       };
     } catch (error) {
+      if (error instanceof SignInElsewhereRefusal) throw error;
       const message = error instanceof Error ? error.message : "";
       // oxlint-disable-next-line eslint/preserve-caught-error -- The cause may echo browser state, so it is withheld.
       throw new Error(

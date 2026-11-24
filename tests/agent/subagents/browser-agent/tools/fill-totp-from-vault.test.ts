@@ -5,7 +5,10 @@ import type {
   currentKernelPageOrigin,
   fillKernelOneTimeCode,
 } from "@agent/subagents/browser-agent/lib/autofill/native";
-import type { recordSiteTaskSignInOrigin } from "@db/services/sites";
+import type {
+  clearSiteTaskSignInOrigin,
+  recordSiteTaskSignInOrigin,
+} from "@db/services/sites";
 import type { readVaultItem, readVaultSecret } from "@db/services/vault";
 import { resetEveState } from "@tests/helpers/eve-state";
 import { toolContextFor } from "@tests/helpers/tool-context";
@@ -14,6 +17,7 @@ import { accessScopeForUser } from "@shared/identity/access-scope";
 import { serializeLoginVaultPayload } from "@shared/vault/schema";
 
 const mocks = vi.hoisted(() => ({
+  clearSignInOrigin: vi.fn<typeof clearSiteTaskSignInOrigin>(),
   currentKernelPageOrigin: vi.fn<typeof currentKernelPageOrigin>(),
   execute:
     vi.fn<
@@ -44,6 +48,7 @@ vi.mock("@db/services/vault", () => ({
   readVaultSecret: mocks.readVaultSecret,
 }));
 vi.mock("@db/services/sites", () => ({
+  clearSiteTaskSignInOrigin: mocks.clearSignInOrigin,
   recordSiteTaskSignInOrigin: mocks.recordSignInOrigin,
 }));
 vi.mock("@agent/subagents/browser-agent/lib/autofill/native", () => ({
@@ -52,7 +57,7 @@ vi.mock("@agent/subagents/browser-agent/lib/autofill/native", () => ({
 }));
 
 import fillTotpFromVault from "@agent/subagents/browser-agent/tools/fill_totp_from_vault";
-import { signInElsewhereMessage } from "@agent/subagents/browser-agent/lib/autofill/sign-in-elsewhere";
+import { SignInElsewhereRefusal } from "@agent/subagents/browser-agent/lib/autofill/sign-in-elsewhere";
 import {
   forgetInjectedValues,
   redactBrowserOutput,
@@ -143,6 +148,7 @@ beforeEach(() => {
   mocks.currentKernelPageOrigin.mockResolvedValue(origin);
   mocks.fill.mockResolvedValue(undefined);
   mocks.recordSignInOrigin.mockResolvedValue(true);
+  mocks.clearSignInOrigin.mockResolvedValue(undefined);
   mocks.execute.mockResolvedValue({
     result: [
       {
@@ -267,6 +273,68 @@ describe("fill_totp_from_vault", () => {
     await expect(fillTotpFromVault.execute(input, pinned)).resolves.toEqual(
       filled
     );
+    expect(mocks.clearSignInOrigin).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      { userId: "user-1", workspaceId: "workspace-1" },
+      "wrun_task"
+    );
+  });
+
+  it("sends the worker to the saved origin first, and fills the code there", async () => {
+    const pinned = siteContext({ id: "item-1", origin });
+    mocks.currentKernelPageOrigin.mockResolvedValueOnce(
+      "https://www.vendor.example"
+    );
+
+    await expect(fillTotpFromVault.execute(input, pinned)).rejects.toThrow(
+      /^This page is on the pinned login's site but not on https:\/\/login\.vendor\.example, .* Open https:\/\/login\.vendor\.example with browser_navigate and sign in there\. /u
+    );
+    expect(mocks.recordSignInOrigin).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      { userId: "user-1", workspaceId: "workspace-1" },
+      "wrun_task",
+      "https://www.vendor.example"
+    );
+    expect(mocks.clearSignInOrigin).not.toHaveBeenCalled();
+
+    await expect(fillTotpFromVault.execute(input, pinned)).resolves.toEqual(
+      filled
+    );
+    expect(mocks.fill).toHaveBeenCalledOnce();
+    expect(mocks.recordSignInOrigin).toHaveBeenCalledOnce();
+    expect(mocks.clearSignInOrigin).toHaveBeenCalledOnce();
+  });
+
+  it("records no page on an identity provider under the login's own domain", async () => {
+    const billing = "https://billing.microsoft.com";
+    mocks.readVaultSecret.mockResolvedValue(
+      serializeLoginVaultPayload({
+        authentication: {
+          password: "correct-horse-battery",
+          totp: { algorithm: "SHA1", digits: 6, period: 30, secret: seed },
+          type: "password",
+        },
+        identifier: { type: "email", value: "ap@example.com" },
+        kind: "login",
+        origin: billing,
+        version: 2,
+      })
+    );
+    mocks.currentKernelPageOrigin.mockResolvedValue(
+      "https://login.microsoft.com"
+    );
+
+    await expect(
+      fillTotpFromVault.execute(
+        input,
+        siteContext({ id: "item-1", origin: billing })
+      )
+    ).rejects.toThrow(
+      /^This saved login is restricted to https:\/\/billing\.microsoft\.com\.$/u
+    );
+    expect(mocks.recordSignInOrigin).not.toHaveBeenCalled();
+    expect(mocks.clearSignInOrigin).toHaveBeenCalledOnce();
+    expect(mocks.fill).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -290,7 +358,7 @@ describe("fill_totp_from_vault", () => {
           input,
           siteContext({ alsoHosts, id: "item-1", origin })
         )
-      ).rejects.toThrow(signInElsewhereMessage);
+      ).rejects.toThrow(new SignInElsewhereRefusal(origin).message);
       expect(mocks.recordSignInOrigin).toHaveBeenCalledExactlyOnceWith(
         "teemiq",
         { userId: "user-1", workspaceId: "workspace-1" },
@@ -321,6 +389,7 @@ describe("fill_totp_from_vault", () => {
         /^This saved login is restricted to https:\/\/login\.vendor\.example\.$/u
       );
       expect(mocks.recordSignInOrigin).not.toHaveBeenCalled();
+      expect(mocks.clearSignInOrigin).toHaveBeenCalledOnce();
       expect(mocks.fill).not.toHaveBeenCalled();
     }
   );

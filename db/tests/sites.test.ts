@@ -24,6 +24,7 @@ import * as Database from "@db";
 import * as schema from "@db/schema";
 import { ensureScope } from "@db/services/scope";
 import {
+  clearSiteTaskSignInOrigin,
   countSiteTaskFiles,
   findSiteTaskSession,
   isAnySiteTaskSession,
@@ -302,6 +303,59 @@ describe("site task sign-in page", () => {
     ).resolves.toBe(false);
     await expect(readSiteTaskSignInOrigin("teemiq", owner, task)).resolves.toBe(
       "https://login.vendor.example"
+    );
+  });
+
+  it("forgets the page only of this site's open task in this workspace", async () => {
+    await ensureScope(owner);
+    await ensureScope(other);
+    const task = await recordSiteTask("teemiq", owner, "wrun_c1", "login-c");
+    const otherTask = await recordSiteTask("teemiq", other, "wrun_c2", "x");
+    await recordSiteTaskSignInOrigin(
+      "teemiq",
+      owner,
+      "wrun_c1",
+      "https://www.vendor.example"
+    );
+    await recordSiteTaskSignInOrigin(
+      "teemiq",
+      other,
+      "wrun_c2",
+      "https://www.other.example"
+    );
+
+    await clearSiteTaskSignInOrigin("agents", owner, "wrun_c1");
+    await clearSiteTaskSignInOrigin("teemiq", other, "wrun_c1");
+    await expect(readSiteTaskSignInOrigin("teemiq", owner, task)).resolves.toBe(
+      "https://www.vendor.example"
+    );
+
+    await clearSiteTaskSignInOrigin("teemiq", owner, "wrun_c1");
+    await expect(readSiteTaskSignInOrigin("teemiq", owner, task)).resolves.toBe(
+      null
+    );
+    await expect(
+      readSiteTaskSignInOrigin("teemiq", other, otherTask)
+    ).resolves.toBe("https://www.other.example");
+    // A page recorded after it is the task's again.
+    await recordSiteTaskSignInOrigin(
+      "teemiq",
+      owner,
+      "wrun_c1",
+      "https://auth.vendor.example"
+    );
+    await expect(readSiteTaskSignInOrigin("teemiq", owner, task)).resolves.toBe(
+      "https://auth.vendor.example"
+    );
+
+    // Past its 45 minutes a task keeps the page it ended with.
+    await database
+      .update(schema.siteTasks)
+      .set({ createdAt: new Date(Date.now() - 45 * 60_000 - 1000) })
+      .where(eq(schema.siteTasks.id, task));
+    await clearSiteTaskSignInOrigin("teemiq", owner, "wrun_c1");
+    await expect(readSiteTaskSignInOrigin("teemiq", owner, task)).resolves.toBe(
+      "https://auth.vendor.example"
     );
   });
 });

@@ -6,7 +6,10 @@ import type {
   fillWithKernelNativeAutofill,
 } from "@agent/subagents/browser-agent/lib/autofill/native";
 import type { materializeAutofillClaims } from "@agent/subagents/browser-agent/lib/autofill/service";
-import type { recordSiteTaskSignInOrigin } from "@db/services/sites";
+import type {
+  clearSiteTaskSignInOrigin,
+  recordSiteTaskSignInOrigin,
+} from "@db/services/sites";
 import type { readVaultItem, readVaultSecret } from "@db/services/vault";
 import { resetEveState } from "@tests/helpers/eve-state";
 import { toolContextFor } from "@tests/helpers/tool-context";
@@ -14,6 +17,7 @@ import { sitePrincipal } from "@agent/lib/site-principal";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
 const mocks = vi.hoisted(() => ({
+  clearSignInOrigin: vi.fn<typeof clearSiteTaskSignInOrigin>(),
   currentKernelPageOrigin: vi.fn<typeof currentKernelPageOrigin>(),
   execute:
     vi.fn<
@@ -48,6 +52,7 @@ vi.mock("@db/services/vault", () => ({
   readVaultSecret: vi.fn<typeof readVaultSecret>(),
 }));
 vi.mock("@db/services/sites", () => ({
+  clearSiteTaskSignInOrigin: mocks.clearSignInOrigin,
   recordSiteTaskSignInOrigin: mocks.recordSignInOrigin,
 }));
 vi.mock("@agent/subagents/browser-agent/lib/autofill/native", () => ({
@@ -60,7 +65,7 @@ vi.mock("@agent/subagents/browser-agent/lib/autofill/service", () => ({
 }));
 
 import fillFromVault from "@agent/subagents/browser-agent/tools/fill_from_vault";
-import { signInElsewhereMessage } from "@agent/subagents/browser-agent/lib/autofill/sign-in-elsewhere";
+import { SignInElsewhereRefusal } from "@agent/subagents/browser-agent/lib/autofill/sign-in-elsewhere";
 import {
   forgetInjectedValues,
   redactBrowserOutput,
@@ -115,6 +120,7 @@ beforeEach(() => {
   mocks.readVaultItem.mockResolvedValue(savedItem("login"));
   mocks.retrieve.mockResolvedValue({ profile_save_changes: true });
   mocks.recordSignInOrigin.mockResolvedValue(true);
+  mocks.clearSignInOrigin.mockResolvedValue(undefined);
   mocks.currentKernelPageOrigin.mockResolvedValue("https://login.example.com");
   mocks.materialize.mockResolvedValue([
     {
@@ -256,7 +262,7 @@ describe("fill_from_vault", () => {
       mocks.currentKernelPageOrigin.mockResolvedValueOnce(page);
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each page is its own refused fill.
       await expect(fillFromVault.execute(input, siteTask)).rejects.toThrow(
-        signInElsewhereMessage
+        new SignInElsewhereRefusal("https://login.example.com").message
       );
     }
     expect(mocks.recordSignInOrigin.mock.calls).toEqual([
@@ -283,6 +289,127 @@ describe("fill_from_vault", () => {
     expect(mocks.recordSignInOrigin).toHaveBeenCalledTimes(2);
   });
 
+  it("sends the worker to the saved origin, and forgets the page once a fill there succeeds", async () => {
+    const pinned = siteInitiator({
+      id: "item-1",
+      origin: "https://auth.vendor.example",
+    });
+    const siteTask = toolContextFor({
+      auth: { current: pinned, initiator: pinned },
+      parentSessionId: "wrun_task",
+      sessionId: "worker-1",
+    });
+    mocks.currentKernelPageOrigin.mockResolvedValueOnce(
+      "https://www.vendor.example"
+    );
+
+    // A sign-in form in the site's header is not the saved one: the refusal
+    // names the saved origin and ends nothing yet.
+    const refusal = fillFromVault.execute(input, siteTask);
+    await expect(refusal).rejects.toThrow(SignInElsewhereRefusal);
+    await expect(refusal).rejects.toThrow(
+      /^This page is on the pinned login's site but not on https:\/\/auth\.vendor\.example, the exact origin the login was saved with, so nothing was filled\. .* Open https:\/\/auth\.vendor\.example with browser_navigate and sign in there\. If it shows no sign-in form, or you already did and the website led you back from it to a page like this one, delete the browser, /u
+    );
+    expect(mocks.recordSignInOrigin).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      { userId: "user-1", workspaceId: "workspace-1" },
+      "wrun_task",
+      "https://www.vendor.example"
+    );
+    expect(mocks.clearSignInOrigin).not.toHaveBeenCalled();
+
+    mocks.currentKernelPageOrigin.mockResolvedValue(
+      "https://auth.vendor.example"
+    );
+    mocks.fill.mockResolvedValueOnce({
+      filledClaims: 1,
+      origin: "https://auth.vendor.example",
+    });
+    await expect(fillFromVault.execute(input, siteTask)).resolves.toEqual({
+      filledClaims: 1,
+      kind: "login",
+      origin: "https://auth.vendor.example",
+      success: true,
+    });
+    expect(mocks.recordSignInOrigin).toHaveBeenCalledOnce();
+    expect(mocks.clearSignInOrigin).toHaveBeenCalledExactlyOnceWith(
+      "teemiq",
+      { userId: "user-1", workspaceId: "workspace-1" },
+      "wrun_task"
+    );
+  });
+
+  it("keeps a fill on the saved origin when the page recorded before cannot be forgotten", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const pinned = siteInitiator({
+      id: "item-1",
+      origin: "https://login.example.com",
+    });
+    mocks.clearSignInOrigin.mockRejectedValueOnce(
+      new Error("Failed query: https://www.example.com")
+    );
+
+    await expect(
+      fillFromVault.execute(
+        input,
+        toolContextFor({
+          auth: { current: pinned, initiator: pinned },
+          parentSessionId: "wrun_task",
+          sessionId: "worker-1",
+        })
+      )
+    ).resolves.toEqual(expect.objectContaining({ success: true }));
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith(
+      "[site] task sign-in page not cleared",
+      { error: "Error", site: "teemiq" }
+    );
+  });
+
+  it.each([
+    [
+      "Microsoft's sign-in host",
+      "https://billing.microsoft.com",
+      "https://login.microsoft.com",
+    ],
+    [
+      "Apple's sign-in host",
+      "https://appstoreconnect.apple.com",
+      "https://idmsa.apple.com",
+    ],
+    [
+      "a host written with a trailing dot",
+      "https://login.example.com",
+      "https://auth.example.com.",
+    ],
+  ])(
+    "records no page on %s under the login's own domain, keeping the vault's refusal",
+    async (_case, loginOrigin, page) => {
+      const pinned = siteInitiator({ id: "item-1", origin: loginOrigin });
+      const siteTask = toolContextFor({
+        auth: { current: pinned, initiator: pinned },
+        parentSessionId: "wrun_task",
+        sessionId: "worker-1",
+      });
+      mocks.currentKernelPageOrigin.mockResolvedValue(page);
+      mocks.materialize.mockRejectedValue(
+        new Error(`This saved login is restricted to ${loginOrigin}.`)
+      );
+
+      await expect(fillFromVault.execute(input, siteTask)).rejects.toThrow(
+        `This saved login is restricted to ${loginOrigin}.`
+      );
+      expect(mocks.recordSignInOrigin).not.toHaveBeenCalled();
+      // The sign-in moved on from any page recorded before, so the task
+      // reports none.
+      expect(mocks.clearSignInOrigin).toHaveBeenCalledExactlyOnceWith(
+        "teemiq",
+        { userId: "user-1", workspaceId: "workspace-1" },
+        "wrun_task"
+      );
+      expect(mocks.fill).not.toHaveBeenCalled();
+    }
+  );
+
   it("leaves the vault's refusal of a page outside the login's site as it was", async () => {
     const pinned = siteInitiator({
       id: "item-1",
@@ -302,6 +429,7 @@ describe("fill_from_vault", () => {
       /^This saved login is restricted to https:\/\/login\.example\.com\.$/u
     );
     expect(mocks.recordSignInOrigin).not.toHaveBeenCalled();
+    expect(mocks.clearSignInOrigin).toHaveBeenCalledOnce();
     expect(mocks.fill).not.toHaveBeenCalled();
   });
 

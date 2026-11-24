@@ -18,8 +18,9 @@ import {
   fillKernelOneTimeCode,
 } from "./native";
 import {
+  forgetSignInElsewhere,
   recordSignInElsewhere,
-  signInElsewhereMessage,
+  SignInElsewhereRefusal,
 } from "./sign-in-elsewhere";
 
 // What fill_code_from_site does outside its workflow body. A workflow body may
@@ -56,7 +57,6 @@ const fixedMessages = new Set([
   missingLoginMessage,
   notPinnedMessage,
   outsideSiteMessage,
-  signInElsewhereMessage,
 ]);
 const focusRefusals = new Set([
   "Focus the visible authenticator code field of the sign-in and retry.",
@@ -126,6 +126,7 @@ export async function fillRelayedSiteCode(
       refocus: true,
       signal: ctx.abortSignal,
     });
+    await forgetSignInElsewhere(ctx.session, scope);
     return { filled: true, message: filledMessage };
   } catch (error) {
     return {
@@ -167,11 +168,9 @@ async function requireCodePage(
     signal: ctx.abortSignal,
   });
   if (origin !== loginOrigin || !origin.startsWith("https://")) {
-    throw new Error(
-      (await recordSignInElsewhere(ctx.session, scope, origin))
-        ? signInElsewhereMessage
-        : outsideSiteMessage
-    );
+    throw (await recordSignInElsewhere(ctx.session, scope, origin))
+      ? new SignInElsewhereRefusal(loginOrigin)
+      : new Error(outsideSiteMessage);
   }
 }
 
@@ -189,6 +188,7 @@ function codeQuestion(loginOrigin: string, label: string, sentBy: SentBy) {
 // Kernel answers 404 for a browser that idled out or was deleted.
 function refusalOf(error: Error | undefined, step: "ask" | "fill" = "ask") {
   if (error instanceof NotFoundError) return browserGoneMessage;
+  if (error instanceof SignInElsewhereRefusal) return error.message;
   const message = error?.message ?? "";
   if (fixedMessages.has(message)) return message;
   if (focusRefusals.has(message)) {

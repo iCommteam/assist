@@ -246,12 +246,14 @@ login was saved with, over https for a relayed code, so save the origin of the
 sign-in form itself, such as `https://login.vendor.com`. A portal whose sign-in
 lives on an identity provider cannot be saved. When the website asks for the
 password on another page of the login's own site, under its registrable domain
-or on one of its `alsoHosts`, the fill is refused there, the server records
-that page's https origin for the task, and the task can end
-`sign_in_elsewhere` with that origin as its `signInOrigin`; the site saves
-the login again for that origin if it chooses. Nothing ever moves a saved
-password to another origin. A task without a pin sees no saved login, its
-browsers keep no cookies, and it cannot save files.
+or on one of its `alsoHosts`, the fill is refused there and the server records
+that page's https origin for the task. The worker then opens the saved origin
+and signs in there; only when it offers no sign-in, or leads back to such a
+page, does the task end `sign_in_elsewhere` with that origin as its
+`signInOrigin`, and the site saves the login again for that origin if it
+chooses. Nothing ever moves a saved password to another origin. A task
+without a pin sees no saved login, its browsers keep no cookies, and it
+cannot save files.
 
 A pinned task's browsers keep their cookies in a Kernel profile of that login
 alone, so two accounts on one portal never share a session, and different
@@ -312,9 +314,12 @@ a running task every few seconds.
   page where the browser worker's fill of the login was refused, as the
   server read it from the browser, never from what the agent wrote. It is on
   the login's own site, under its registrable domain or one of its
-  `alsoHosts`, never one of Stripe's hosts, and never on a port, so a site
-  can save a login there. A fill refused on several such pages records the
-  last.
+  `alsoHosts`, never one of Stripe's hosts, never an identity provider's
+  sign-in host, even under the login's own domain, and never on a port, so a
+  site can save a login there. A fill refused on several such pages records
+  the last. A later fill that succeeds on the saved origin, or one refused on
+  a page no login can be saved on, clears it, so a task then ended
+  `sign_in_elsewhere` reads `login_failed`.
 - `reply`: the agent's last message as plain text, set once the site's turn
   has completed, also when the task then reads `failed`; it is null while the
   task runs or waits, and for a turn that was cancelled, stopped or failed in
