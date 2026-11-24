@@ -7,6 +7,9 @@ import {
 } from "@shared/identity/site-credential";
 
 const secret = "site-credential-test-secret-0123456789";
+// Minting signs whatever it is given, so a grant the schema refuses still
+// reaches the verifier with a valid signature.
+const uncheckedGrant = z.custom<Parameters<typeof mintSiteCredential>[1]>();
 
 describe("site channel credential", () => {
   beforeEach(() => {
@@ -96,6 +99,84 @@ describe("site channel credential", () => {
       session: "wrun_1",
       site: "teemiq",
     });
+  });
+
+  it("binds every chat grant to one chat of one site's person, and each but create to its session", () => {
+    const chat = "00000000-0000-4000-8000-0000000000c1";
+    const grants = [
+      { chat, op: "chat.create", site: "teemiq", siteUser: "user-1" },
+      {
+        chat,
+        op: "chat.message",
+        session: "wrun_1",
+        site: "teemiq",
+        siteUser: "user-1",
+      },
+      {
+        chat,
+        interaction: "interaction-1",
+        op: "chat.answer",
+        session: "wrun_1",
+        site: "teemiq",
+        siteUser: "user-1",
+      },
+      {
+        chat,
+        op: "chat.read",
+        session: "wrun_1",
+        site: "teemiq",
+        siteUser: "user-1",
+      },
+      {
+        chat,
+        op: "chat.cancel",
+        session: "wrun_1",
+        site: "teemiq",
+        siteUser: "user-1",
+      },
+    ] as const;
+
+    for (const grant of grants) {
+      expect(
+        verifySiteCredential(secret, mintSiteCredential(secret, grant))
+      ).toEqual(grant);
+      const { siteUser: _siteUser, ...unbound } = grant;
+      expect(
+        verifySiteCredential(
+          secret,
+          mintSiteCredential(secret, uncheckedGrant.parse(unbound))
+        )
+      ).toBeUndefined();
+    }
+    const { session: _session, ...sessionless } = grants[1];
+    expect(
+      verifySiteCredential(
+        secret,
+        mintSiteCredential(secret, uncheckedGrant.parse(sessionless))
+      )
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ["a chat id that is not a uuid", { chat: "chat-1" }],
+    ["a site user with a space", { siteUser: "user 1" }],
+    ["an empty site user", { siteUser: "" }],
+    ["a login pin", { login: { id: "l", origin: "https://a.example" } }],
+  ])("refuses a chat grant with %s", (_case, change) => {
+    const grant = {
+      chat: "00000000-0000-4000-8000-0000000000c1",
+      op: "chat.create",
+      site: "teemiq",
+      siteUser: "user-1",
+      ...change,
+    };
+
+    expect(
+      verifySiteCredential(
+        secret,
+        mintSiteCredential(secret, uncheckedGrant.parse(grant))
+      )
+    ).toBeUndefined();
   });
 
   it("refuses a credential signed with another secret", () => {

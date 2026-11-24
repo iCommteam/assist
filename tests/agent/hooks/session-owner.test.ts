@@ -76,6 +76,32 @@ describe("session ownership hook", () => {
     );
   });
 
+  it("claims a site chat for the owner's workspace but keeps it out of the owner's chats", async () => {
+    const chat = {
+      attributes: {
+        site: "teemiq",
+        siteChat: "00000000-0000-4000-8000-0000000000c1",
+        siteUser: "teemiq-user-1",
+        workspaceId: scope.workspaceId,
+      },
+      authenticator: "assist-site-chat",
+      principalId: scope.userId,
+      principalType: "user",
+    };
+    const handler = sessionOwner.events["delivery.consumed"];
+    await handler?.(
+      consumed,
+      hookContextFor({
+        auth: { current: chat, initiator: chat },
+        channel: { kind: "channel:eve", metadata: {} },
+        sessionId: "session-1",
+      })
+    );
+
+    expect(mocks.claimSession).toHaveBeenCalledWith(scope, "session-1");
+    expect(mocks.saveChat).not.toHaveBeenCalled();
+  });
+
   it("records the web channel for HTTP messages", async () => {
     const handler = sessionOwner.events["delivery.consumed"];
     await handler?.(consumed, contextFor("channel:eve"));

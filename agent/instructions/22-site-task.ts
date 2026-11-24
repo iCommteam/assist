@@ -1,10 +1,16 @@
 import { defineDynamic, defineInstructions } from "eve/instructions";
-import { siteLoginOfSession, siteOfSession } from "@agent/lib/site-principal";
+import {
+  siteKindOfSession,
+  siteLoginOfSession,
+  siteOfSession,
+} from "@agent/lib/site-principal";
 import siteLogin from "./content/site-login.md?raw";
 import siteTask from "./content/site-task.md?raw";
 
 export default defineDynamic((context) => {
   const { initiator } = context.session.auth;
+  // A site chat has its own role instead.
+  if (siteKindOfSession(initiator) !== "task") return null;
   const site = siteOfSession(initiator);
   if (!site) return null;
   const login = siteLoginOfSession(initiator);

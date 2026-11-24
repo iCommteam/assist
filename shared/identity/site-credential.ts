@@ -8,7 +8,8 @@ import { loginAlsoHostsSchema, loginOriginSchema } from "@shared/vault/schema";
 // and it is bound to one site, one operation and, for a read or a cancel, one
 // session. A create may pin the task to one saved login, whose origin and
 // the hosts its site also uses the API resolved. An answer is bound to one
-// open question of one session.
+// open question of one session. A chat grant names the site's person and the
+// chat as well, and covers only that chat's session.
 const credentialPrefix = "assist-site.v1.";
 const credentialLifetimeMs = 60_000;
 const clockSkewMs = 5_000;
@@ -20,7 +21,42 @@ export const siteLoginPinSchema = z.strictObject({
   origin: loginOriginSchema,
 });
 
+// The site's own id for the person a chat belongs to, such as a TEEMIQ user
+// id. It is opaque to assist.
+export const siteUserSchema = z
+  .string()
+  .regex(/^[\w.:@-]{1,128}$/u, "A site user id is 1 to 128 plain characters.");
+
+const chatGrant = {
+  chat: z.uuid(),
+  site: z.string().min(1),
+  siteUser: siteUserSchema,
+};
+const sessionId = z.string().min(1).max(512);
+
 const siteGrantSchema = z.discriminatedUnion("op", [
+  z.strictObject({ ...chatGrant, op: z.literal("chat.create") }),
+  z.strictObject({
+    ...chatGrant,
+    op: z.literal("chat.message"),
+    session: sessionId,
+  }),
+  z.strictObject({
+    ...chatGrant,
+    interaction: z.string().min(1).max(512),
+    op: z.literal("chat.answer"),
+    session: sessionId,
+  }),
+  z.strictObject({
+    ...chatGrant,
+    op: z.literal("chat.read"),
+    session: sessionId,
+  }),
+  z.strictObject({
+    ...chatGrant,
+    op: z.literal("chat.cancel"),
+    session: sessionId,
+  }),
   z.strictObject({
     login: siteLoginPinSchema.optional(),
     op: z.literal("create"),
@@ -49,6 +85,12 @@ const claimsSchema = z.strictObject({
 });
 
 export type SiteGrant = z.infer<typeof siteGrantSchema>;
+
+export type SiteChatGrant = Extract<SiteGrant, { readonly chat: string }>;
+
+export function isSiteChatGrant(grant: SiteGrant): grant is SiteChatGrant {
+  return "chat" in grant;
+}
 
 export function isSiteCredential(value: string) {
   return value.startsWith(credentialPrefix);

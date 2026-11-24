@@ -28,11 +28,17 @@ export default defineWorkflowTool({
         interactive: true,
         "scheduled-worker": true,
       });
+      // Every other mode is refused, the site chat among them: it visits a
+      // supplier's site only through a look or a fetch its site runs.
       if (!browserAllowed) {
         ctx.reply(
           taskCompletionSchema.parse({
             images: [],
             message:
+              resolveModeValue(ctx, {
+                "site-chat":
+                  "Browser work is unavailable in an Accounting chat. Visit a supplier's site only through an Accounting look or fetch.",
+              }) ??
               "Browser work is unavailable while reporting a scheduled result.",
             status: "failure",
           })

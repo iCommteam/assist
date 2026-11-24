@@ -210,6 +210,35 @@ describe("structured browser workflow", () => {
     expect(reply.mock.calls).toEqual([[completion], [reportRefusal]]);
   });
 
+  it("opens no worker for a site chat, which visits sites only through a look or a fetch", async () => {
+    const chat = {
+      attributes: {
+        site: "teemiq",
+        siteChat: "00000000-0000-4000-8000-0000000000c1",
+        siteUser: "teemiq-user-1",
+        workspaceId: "personal:workspace",
+      },
+      authenticator: "assist-site-chat",
+      principalId: "user-1",
+      principalType: "user",
+    };
+    const { agent, error, reply, send } = await serveCalls(
+      [serveCall("Open the supplier's billing page")],
+      [],
+      [{ current: chat, initiator: chat }]
+    );
+
+    expect(error).toBeInstanceOf(ReceiveDrained);
+    expect(agent).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledExactlyOnceWith({
+      images: [],
+      message:
+        "Browser work is unavailable in an Accounting chat. Visit a supplier's site only through an Accounting look or fetch.",
+      status: "failure",
+    });
+  });
+
   it("serves scheduled workers", async () => {
     const { error, reply, send } = await serveCalls(
       [serveCall("Inspect the heading")],

@@ -1,5 +1,6 @@
 import type { DynamicContext } from "eve";
 import { defineInstructions } from "eve/instructions";
+import { siteChatAuthenticator } from "@agent/lib/site-principal";
 
 interface AgentModeContext {
   readonly session: {
@@ -16,11 +17,20 @@ function agentMode(authenticator: string | undefined) {
   return "interactive" as const;
 }
 
-type AgentMode = ReturnType<typeof agentMode>;
+// A site chat is a narrow assistant: every capability that does not list it
+// stays off, as for any mode a value leaves out.
+type AgentMode = ReturnType<typeof agentMode> | "site-chat";
 
-function sessionAgentMode(auth: AgentModeContext["session"]["auth"]) {
+// A scheduled worker and a site chat keep their mode for every turn of the
+// session, whoever sends it, so the initiator decides them.
+function sessionAgentMode(
+  auth: AgentModeContext["session"]["auth"]
+): AgentMode {
   if (auth.initiator?.authenticator === "scheduled-worker") {
-    return "scheduled-worker" as const;
+    return "scheduled-worker";
+  }
+  if (auth.initiator?.authenticator === siteChatAuthenticator) {
+    return "site-chat";
   }
   const caller = auth.current ?? auth.initiator;
   return agentMode(caller?.authenticator);

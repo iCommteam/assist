@@ -1,13 +1,14 @@
 import { defineDynamic, defineTool, toolOutput } from "eve/tools";
 import { z } from "zod";
-import { siteOfSession } from "@agent/lib/site-principal";
+import { siteKindOfSession } from "@agent/lib/site-principal";
 import {
   siteTaskEndToolName,
   siteTaskResultSchema,
 } from "@shared/identity/site-task/result";
 
-// Only a site task ends through a result a server reads. Whether a site finds
-// files comes from the files the task saved, never from this result.
+// Only a site task ends through a result a server reads; a site chat has no
+// end. Whether a site finds files comes from the files the task saved, never
+// from this result.
 const endSiteTask = defineTool({
   availableInSubagents: false,
   description:
@@ -21,7 +22,7 @@ const endSiteTask = defineTool({
 });
 
 export default defineDynamic((context) =>
-  siteOfSession(context.session.auth.initiator)
+  siteKindOfSession(context.session.auth.initiator) === "task"
     ? { [siteTaskEndToolName]: endSiteTask }
     : null
 );

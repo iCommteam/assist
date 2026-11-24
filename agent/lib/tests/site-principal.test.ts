@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
+  siteChatOfSession,
+  siteKindOfSession,
   siteLoginOfSession,
   siteOfSession,
   sitePrincipal,
@@ -80,6 +82,77 @@ describe("site principal", () => {
     expect(siteLoginOfSession(unpinned)).toBeUndefined();
     expect(Object.keys(read.attributes)).not.toContain("siteLogin");
     expect(siteLoginOfSession(read)).toBeUndefined();
+  });
+
+  it("gives a chat grant its own authenticator, the chat and the site's person, and never a pin", () => {
+    const chat = "00000000-0000-4000-8000-0000000000c1";
+    const principal = sitePrincipal(
+      { chat, op: "chat.create", site: "teemiq", siteUser: "teemiq-user-1" },
+      "owner@example.test",
+      owner
+    );
+
+    expect(principal).toEqual({
+      attributes: {
+        conversationChannel: "eve",
+        email: "owner@example.test",
+        site: "teemiq",
+        siteChat: chat,
+        siteUser: "teemiq-user-1",
+        workspaceId: owner.workspaceId,
+      },
+      authenticator: "assist-site-chat",
+      principalId: owner.userId,
+      principalType: "user",
+    });
+    expect(siteKindOfSession(principal)).toBe("chat");
+    expect(siteOfSession(principal)).toBe("teemiq");
+    expect(siteChatOfSession(principal)).toEqual({
+      chatId: chat,
+      site: "teemiq",
+      siteUser: "teemiq-user-1",
+    });
+    expect(siteLoginOfSession(principal)).toBeUndefined();
+    // Even attributes that look like a pin never pin a chat.
+    expect(
+      siteLoginOfSession({
+        ...principal,
+        attributes: {
+          ...principal.attributes,
+          siteLogin: "login-1",
+          siteLoginOrigin: "https://login.vendor.example",
+        },
+      })
+    ).toBeUndefined();
+    expect(scopeFromPrincipal(principal)).toEqual(owner);
+  });
+
+  it("tells a task from a chat and from every other session", () => {
+    const task = sitePrincipal(
+      { op: "create", site: "teemiq" },
+      "owner@example.test",
+      owner
+    );
+
+    expect(siteKindOfSession(task)).toBe("task");
+    expect(siteChatOfSession(task)).toBeUndefined();
+    expect(siteKindOfSession(null)).toBeUndefined();
+    expect(
+      siteKindOfSession({ ...task, authenticator: "authjs" })
+    ).toBeUndefined();
+    expect(
+      siteKindOfSession({
+        ...task,
+        attributes: { ...task.attributes, site: "" },
+      })
+    ).toBeUndefined();
+    expect(
+      siteChatOfSession({
+        ...task,
+        attributes: { ...task.attributes, siteChat: "not-a-uuid" },
+        authenticator: "assist-site-chat",
+      })
+    ).toBeUndefined();
   });
 
   it("reads a pin only from a site initiator", () => {

@@ -3,6 +3,7 @@ import { saveChat } from "@db/services/chats";
 import { ensureScope } from "@db/services/scope";
 import { claimSession } from "@db/services/sessions";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { siteKindOfSession } from "@agent/lib/site-principal";
 
 export default defineHook({
   events: {
@@ -12,6 +13,9 @@ export default defineHook({
     async "delivery.consumed"(_event, ctx) {
       const scope = await claimOwnedSession(ctx);
       if (!scope) return;
+      // A site chat belongs to the site's person, not to the owner, so it
+      // never joins the owner's chat list.
+      if (siteKindOfSession(ctx.session.auth.initiator) === "chat") return;
 
       await saveChat(scope, {
         channel: ctx.channel.kind,

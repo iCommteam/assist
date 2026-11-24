@@ -93,6 +93,29 @@ describe("site task input hook", () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it("leaves a site chat to its own hook", async () => {
+    const chat = sitePrincipal(
+      {
+        chat: "00000000-0000-4000-8000-0000000000c1",
+        op: "chat.create",
+        site: "teemiq",
+        siteUser: "teemiq-user-1",
+      },
+      "owner@example.test",
+      owner
+    );
+
+    expect(
+      await fire(opened({ kind: "question", prompt: "Which account?" }), {
+        current: chat,
+        initiator: chat,
+      })
+    ).not.toHaveBeenCalled();
+    expect(
+      await fire(budget, { current: chat, initiator: chat })
+    ).not.toHaveBeenCalled();
+  });
+
   it("leaves interactive and scheduled sessions waiting for their person", async () => {
     const scheduled = {
       attributes: {},

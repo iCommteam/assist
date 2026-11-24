@@ -7,6 +7,7 @@ import {
   withEvaluableDynamic,
 } from "@tests/helpers/dynamic";
 import { accessScopeForUser } from "@shared/identity/access-scope";
+import { sitePrincipal } from "@agent/lib/site-principal";
 
 vi.mock("eve", async (importOriginal) =>
   withEvaluableDynamic(await importOriginal<typeof Eve>())
@@ -72,8 +73,36 @@ describe("authored mode capability matrix", () => {
   });
 });
 
+describe("site chat capabilities", () => {
+  it("gives a site chat only its reply among the authored tools: no vault, schedules, memory or end tool", async () => {
+    const chat = sitePrincipal(
+      {
+        chat: "00000000-0000-4000-8000-0000000000c1",
+        op: "chat.create",
+        site: "teemiq",
+        siteUser: "teemiq-user-1",
+      },
+      "owner@example.test",
+      member
+    );
+
+    expect(
+      await capabilitiesOf(
+        dynamicContextFor({
+          auth: { current: chat, initiator: chat },
+          channel: { kind: "http", metadata: {} },
+          sessionId: "session-chat",
+        })
+      )
+    ).toEqual(["send_message"]);
+  });
+});
+
 async function authoredCapabilities(authenticator: string, site?: string) {
-  const context = dynamicContext(authenticator, site);
+  return capabilitiesOf(dynamicContext(authenticator, site));
+}
+
+async function capabilitiesOf(context: ReturnType<typeof dynamicContextFor>) {
   const capabilities: string[] = [];
 
   const resolvedGroups = await Promise.all(

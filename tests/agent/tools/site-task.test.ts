@@ -23,6 +23,16 @@ const site = sitePrincipal(
   "owner@example.test",
   owner
 );
+const siteChat = sitePrincipal(
+  {
+    chat: "00000000-0000-4000-8000-0000000000c1",
+    op: "chat.create",
+    site: "teemiq",
+    siteUser: "teemiq-user-1",
+  },
+  "owner@example.test",
+  owner
+);
 const member = {
   attributes: { workspaceId: owner.workspaceId },
   authenticator: "authjs",
@@ -83,6 +93,7 @@ describe("site task end tool", () => {
         initiator: { ...member, authenticator: "scheduled-worker" },
       },
     ],
+    ["a site chat", { current: siteChat, initiator: siteChat }],
   ])("is not offered in %s", async (_case, auth) => {
     expect(
       await evaluateDynamic(siteTask, dynamicContextFor({ auth }))
