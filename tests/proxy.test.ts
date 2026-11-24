@@ -55,6 +55,16 @@ describe("sign-in proxy", () => {
       "GET",
       "/api/site/tasks/00000000-0000-4000-8000-000000000001/files/00000000-0000-4000-8000-000000000003",
     ],
+    ["POST", "/api/site/chats"],
+    ["GET", "/api/site/chats?siteUser=user-1&topic=txn:1"],
+    ["POST", "/api/site/chats/00000000-0000-4000-8000-0000000000c1/messages"],
+    ["POST", "/api/site/chats/00000000-0000-4000-8000-0000000000c1/answers"],
+    ["POST", "/api/site/chats/00000000-0000-4000-8000-0000000000c1/token"],
+    [
+      "GET",
+      "/api/site/chats/00000000-0000-4000-8000-0000000000c1/stream?siteUser=user-1",
+    ],
+    ["POST", "/api/site/chats/00000000-0000-4000-8000-0000000000c1/cancel"],
   ])(
     "lets the site API's %s %s authenticate its own bearer token",
     async (method, path) => {
@@ -85,6 +95,13 @@ describe("sign-in proxy", () => {
     "/api/site/tasks/one/filesx",
     "/api/site/tasks/one/cancel/files",
     "/api/site/pingx",
+    "/api/site/chats/",
+    "/api/site/chats/one",
+    "/api/site/chats/one/",
+    "/api/site/chats/one/messagesx",
+    "/api/site/chats/one/stream/two",
+    "/api/site/chats/one/files",
+    "/api/site/chatsx",
     "/api/trpc/vault.list",
   ])("keeps the sign-in redirect for %s", async (path) => {
     const response = await proxy(new NextRequest(`https://example.com${path}`));
