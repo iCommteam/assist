@@ -419,10 +419,14 @@ function commandOf(message: TwilioTextMessage) {
 
 // Twilio's own record of a message, read with the account's credentials,
 // must say what the signed webhook said: an inbound message to our number
-// from the sender, with the same body and number of media items, created at
-// most 10 minutes ago. A message Twilio has no record of, or one that
-// differs, is dropped; a record that cannot be read leaves the message
-// unread, and the member is told to try again.
+// from the sender, with the same body, created at most 10 minutes ago, and
+// the same media. eve hands the model each media item from its MediaUrl and
+// MediaContentType fields, so every one must name a media item of this very
+// message on Twilio's own list of it, with the same content type, and the
+// list must hold no other. A message Twilio has no record of, or one that
+// differs, is dropped whole, since onText cannot take a part of it away; a
+// record that cannot be read leaves the message unread, and the member is
+// told to try again.
 const twilioRecordSchema = z.object({
   account_sid: z.string(),
   body: z.string().nullable(),
@@ -434,14 +438,103 @@ const twilioRecordSchema = z.object({
   to: z.string(),
 });
 
+const twilioMediaListSchema = z.object({
+  media_list: z.array(
+    z.object({
+      account_sid: z.string(),
+      content_type: z.string(),
+      parent_sid: z.string(),
+      sid: z.string(),
+    })
+  ),
+  next_page_uri: z.string().nullable().optional(),
+});
+
+// The only form a media item's address takes in Twilio's webhook, compared
+// as the whole string: no other host, port, path, query or encoding.
+const twilioMediaUrlPattern =
+  /^https:\/\/api\.twilio\.com\/2010-04-01\/Accounts\/(AC[0-9a-f]{32})\/Messages\/([A-Z]{2}[0-9a-f]{32})\/Media\/(ME[0-9a-f]{32})$/u;
+
 async function twilioRecordCheck(
   message: TwilioTextMessage,
   sender: string,
   sid: string
 ) {
   const accountSid = required(env.TWILIO_ACCOUNT_SID, "TWILIO_ACCOUNT_SID");
+  const messageUrl = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(accountSid)}/Messages/${encodeURIComponent(sid)}`;
+  const recordRead = await readTwilioRecord(`${messageUrl}.json`);
+  if (recordRead.outcome !== "read") return recordRead.outcome;
+  const record = twilioRecordSchema.safeParse(recordRead.body);
+  if (!record.success) return "differs" as const;
+  const createdAt = Date.parse(record.data.date_created);
+  const age = Date.now() - createdAt;
+  const media = message.media ?? [];
+  const matches =
+    record.data.sid === sid &&
+    record.data.account_sid === accountSid &&
+    record.data.direction === "inbound" &&
+    record.data.to === env.TWILIO_WHATSAPP_FROM &&
+    record.data.from === `whatsapp:${sender}` &&
+    (record.data.body ?? "") === message.body &&
+    Number(record.data.num_media) === media.length &&
+    Number.isFinite(createdAt) &&
+    age <= recordMaxAgeMs &&
+    age >= -60_000;
+  if (!matches) return "differs" as const;
+  if (media.length === 0) return "matches" as const;
+  const listRead = await readTwilioRecord(`${messageUrl}/Media.json`);
+  if (listRead.outcome !== "read") return listRead.outcome;
+  const list = twilioMediaListSchema.safeParse(listRead.body);
+  if (!list.success) return "differs" as const;
+  return mediaMatches(media, list.data, accountSid, sid)
+    ? ("matches" as const)
+    : ("differs" as const);
+}
+
+function mediaMatches(
+  media: NonNullable<TwilioTextMessage["media"]>,
+  list: z.infer<typeof twilioMediaListSchema>,
+  accountSid: string,
+  sid: string
+) {
+  if (list.next_page_uri) return false;
+  const listed = new Map(
+    list.media_list
+      .filter(
+        (item) =>
+          item.account_sid === accountSid &&
+          item.parent_sid === sid &&
+          /^ME[0-9a-f]{32}$/u.test(item.sid)
+      )
+      .map((item) => [item.sid, item.content_type])
+  );
+  if (listed.size !== list.media_list.length || listed.size !== media.length) {
+    return false;
+  }
+  const seen = new Set<string>();
+  for (const item of media) {
+    const [, account, parent, mediaSid] =
+      twilioMediaUrlPattern.exec(item.url) ?? [];
+    if (
+      account !== accountSid ||
+      parent !== sid ||
+      mediaSid === undefined ||
+      seen.has(mediaSid) ||
+      listed.get(mediaSid) !== item.contentType
+    ) {
+      return false;
+    }
+    seen.add(mediaSid);
+  }
+  return true;
+}
+
+// One read of Twilio's API with the account's credentials: its JSON body;
+// "differs" when Twilio has no such record, read once more after a short
+// pause; or "unreachable".
+async function readTwilioRecord(url: string) {
+  const accountSid = required(env.TWILIO_ACCOUNT_SID, "TWILIO_ACCOUNT_SID");
   const authToken = required(env.TWILIO_AUTH_TOKEN, "TWILIO_AUTH_TOKEN");
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(accountSid)}/Messages/${encodeURIComponent(sid)}.json`;
   for (let attempt = 0; ; attempt += 1) {
     let response: Response;
     try {
@@ -456,32 +549,17 @@ async function twilioRecordCheck(
         signal: AbortSignal.timeout(recordReadTimeoutMs),
       });
     } catch {
-      return "unreachable" as const;
+      return { outcome: "unreachable" as const };
     }
     if (response.status === 404 && attempt === 0) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- The pause before the second read.
       await new Promise((resolve) => setTimeout(resolve, recordRetryMs));
       continue;
     }
-    if (response.status === 404) return "differs" as const;
-    if (!response.ok) return "unreachable" as const;
+    if (response.status === 404) return { outcome: "differs" as const };
+    if (!response.ok) return { outcome: "unreachable" as const };
     // oxlint-disable-next-line eslint/no-await-in-loop -- The loop ends here.
-    const record = twilioRecordSchema.safeParse(await readJson(response));
-    if (!record.success) return "differs" as const;
-    const createdAt = Date.parse(record.data.date_created);
-    const age = Date.now() - createdAt;
-    const matches =
-      record.data.sid === sid &&
-      record.data.account_sid === accountSid &&
-      record.data.direction === "inbound" &&
-      record.data.to === env.TWILIO_WHATSAPP_FROM &&
-      record.data.from === `whatsapp:${sender}` &&
-      (record.data.body ?? "") === message.body &&
-      Number(record.data.num_media) === (message.media ?? []).length &&
-      Number.isFinite(createdAt) &&
-      age <= recordMaxAgeMs &&
-      age >= -60_000;
-    return matches ? ("matches" as const) : ("differs" as const);
+    return { body: await readJson(response), outcome: "read" as const };
   }
 }
 

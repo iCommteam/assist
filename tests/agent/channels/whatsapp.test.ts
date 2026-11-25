@@ -140,11 +140,14 @@ const twilioCalls: {
 // Twilio's records of incoming messages, by message id: a record, or
 // "unreachable" when Twilio's API cannot be reached. A missing one is 404.
 const twilioRecords = new Map<string, Record<string, string> | "unreachable">();
+// Twilio's media lists of incoming messages, by message id, read the same way.
+const twilioMediaLists = new Map<string, unknown>();
 
 beforeEach(async () => {
   vi.clearAllMocks();
   twilioCalls.length = 0;
   twilioRecords.clear();
+  twilioMediaLists.clear();
   vi.spyOn(Database, "db", "get").mockReturnValue(
     // SAFETY: PGlite implements the same Drizzle query-builder contract the services use; only the driver changes.
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Exercise the real services with an isolated PostgreSQL-compatible database.
@@ -180,6 +183,13 @@ beforeEach(async () => {
         url,
       });
       if (method === "GET") {
+        const listOf = /\/Messages\/([^/]+)\/Media\.json$/u.exec(url)?.[1];
+        if (listOf !== undefined) {
+          const list = twilioMediaLists.get(decodeURIComponent(listOf));
+          if (list === "unreachable") throw new TypeError("fetch failed");
+          if (!list) return Response.json({ code: 20_404 }, { status: 404 });
+          return Response.json(list);
+        }
         const sid = /\/Messages\/([^/]+)\.json$/u.exec(url)?.[1] ?? "";
         const record = twilioRecords.get(decodeURIComponent(sid));
         if (record === "unreachable") throw new TypeError("fetch failed");
@@ -722,6 +732,204 @@ describe("Twilio's record of each full-access message", () => {
   });
 });
 
+// The address Twilio's webhook gives a media item, and Twilio's list of a
+// message's media.
+function mediaUrl(messageSid: string, mediaSid: string, account = accountSid) {
+  return `https://api.twilio.com/2010-04-01/Accounts/${account}/Messages/${messageSid}/Media/${mediaSid}`;
+}
+
+function mediaListOf(messageSid: string, sids: readonly string[]) {
+  return {
+    media_list: sids.map((sid) => ({
+      account_sid: accountSid,
+      content_type: "image/jpeg",
+      parent_sid: messageSid,
+      sid,
+      uri: `/2010-04-01/Accounts/${accountSid}/Messages/${messageSid}/Media/${sid}.json`,
+    })),
+    next_page_uri: null,
+  };
+}
+
+describe("Twilio's record of each media item", () => {
+  const imageSid = `ME${"a".repeat(32)}`;
+  const otherSid = `ME${"b".repeat(32)}`;
+
+  // A signed photo message, with Twilio's record of it and its media list.
+  function photoMessage() {
+    const base = messageParams({ Body: "Is this the right invoice?" });
+    const params = {
+      ...base,
+      MediaContentType0: "image/jpeg",
+      MediaUrl0: mediaUrl(base.MessageSid, imageSid),
+      NumMedia: "1",
+    };
+    twilioRecords.set(base.MessageSid, recordOf(params));
+    twilioMediaLists.set(
+      base.MessageSid,
+      mediaListOf(base.MessageSid, [imageSid])
+    );
+    return { params, sid: base.MessageSid };
+  }
+
+  it("admits a photo whose item is on Twilio's own list of that message, with its content type", async () => {
+    const harness = routeHarness();
+    const { params, sid } = photoMessage();
+
+    await harness.post(webhook(params));
+
+    expect(harness.source.send).toHaveBeenCalledExactlyOnceWith(
+      [
+        { text: "Is this the right invoice?", type: "text" },
+        {
+          data: new URL(mediaUrl(sid, imageSid)),
+          mediaType: "image/jpeg",
+          type: "file",
+        },
+      ],
+      expect.objectContaining({ auth: memberPrincipal })
+    );
+    expect(recordReads().map(({ url }) => url)).toEqual([
+      `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages/${sid}.json`,
+      `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages/${sid}/Media.json`,
+    ]);
+  });
+
+  it("reads no media list for a message without media", async () => {
+    const harness = routeHarness();
+
+    await harness.post(webhook(messageParams()));
+
+    expect(harness.source.send).toHaveBeenCalledOnce();
+    expect(recordReads()).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      "an item on another host",
+      (sid: string) => ({
+        MediaUrl0: mediaUrl(sid, imageSid).replace(
+          "https://api.twilio.com",
+          "https://media.example.test"
+        ),
+      }),
+    ],
+    [
+      "an item of another message",
+      () => ({ MediaUrl0: mediaUrl(`MM${"c".repeat(32)}`, imageSid) }),
+    ],
+    [
+      "an item of another account",
+      (sid: string) => ({
+        MediaUrl0: mediaUrl(sid, imageSid, `AC${"1".repeat(32)}`),
+      }),
+    ],
+    [
+      "an item missing from Twilio's list",
+      (sid: string) => ({ MediaUrl0: mediaUrl(sid, otherSid) }),
+    ],
+    [
+      "an item with another content type",
+      () => ({ MediaContentType0: "application/pdf" }),
+    ],
+    [
+      "an item's address with a query",
+      (sid: string) => ({
+        MediaUrl0: `${mediaUrl(sid, imageSid)}?Download=true`,
+      }),
+    ],
+    [
+      "an item's address with another port",
+      (sid: string) => ({
+        MediaUrl0: mediaUrl(sid, imageSid).replace(
+          "api.twilio.com",
+          "api.twilio.com:443"
+        ),
+      }),
+    ],
+  ])(
+    "drops a correctly signed photo message with %s",
+    async (_case, change) => {
+      const harness = routeHarness();
+      const { params, sid } = photoMessage();
+
+      await harness.post(webhook({ ...params, ...change(sid) }));
+
+      expect(harness.source.send).not.toHaveBeenCalled();
+      expect(sentBodies()).toEqual([]);
+      const rows = await client.query<{ admitted: boolean }>(
+        "SELECT admitted FROM whatsapp_messages"
+      );
+      expect(rows.rows).toEqual([{ admitted: false }]);
+    }
+  );
+
+  it("drops a message that names one item twice, or whose list holds another item, another message's item or a second page", async () => {
+    const harness = routeHarness();
+    const twice = photoMessage();
+    const twiceParams = {
+      ...twice.params,
+      MediaContentType1: "image/jpeg",
+      MediaUrl1: mediaUrl(twice.sid, imageSid),
+      NumMedia: "2",
+    };
+    twilioRecords.set(twice.sid, recordOf(twiceParams));
+    twilioMediaLists.set(
+      twice.sid,
+      mediaListOf(twice.sid, [imageSid, otherSid])
+    );
+    await harness.post(webhook(twiceParams));
+
+    const extra = photoMessage();
+    twilioMediaLists.set(
+      extra.sid,
+      mediaListOf(extra.sid, [imageSid, otherSid])
+    );
+    await harness.post(webhook(extra.params));
+
+    const foreign = photoMessage();
+    twilioMediaLists.set(foreign.sid, {
+      media_list: [
+        {
+          account_sid: accountSid,
+          content_type: "image/jpeg",
+          parent_sid: `MM${"d".repeat(32)}`,
+          sid: imageSid,
+        },
+      ],
+      next_page_uri: null,
+    });
+    await harness.post(webhook(foreign.params));
+
+    const paged = photoMessage();
+    twilioMediaLists.set(paged.sid, {
+      ...mediaListOf(paged.sid, [imageSid]),
+      next_page_uri: "/next",
+    });
+    await harness.post(webhook(paged.params));
+
+    expect(harness.source.send).not.toHaveBeenCalled();
+    expect(sentBodies()).toEqual([]);
+  });
+
+  it("drops a photo message Twilio lists no media for, and asks the member to try again when the list cannot be read", async () => {
+    const harness = routeHarness();
+    const missing = photoMessage();
+    twilioMediaLists.delete(missing.sid);
+    await harness.post(webhook(missing.params));
+    expect(sentBodies()).toEqual([]);
+
+    const unreadable = photoMessage();
+    twilioMediaLists.set(unreadable.sid, "unreachable");
+    await harness.post(webhook(unreadable.params));
+
+    expect(harness.source.send).not.toHaveBeenCalled();
+    expect(sentTexts()).toEqual([
+      "Twilio cannot be reached right now, so that message was not read. Try again in a minute.",
+    ]);
+  });
+});
+
 describe("WhatsApp chats", () => {
   it("ends the chat on /new, confirms it, and passes nothing to the agent", async () => {
     const harness = routeHarness(sessionLastActiveAt(new Date().toISOString()));
@@ -920,8 +1128,10 @@ describe("WhatsApp chats", () => {
     mocks.config.numbers = `${sender}=member@example.test`;
     const harness = routeHarness();
 
-    // A media address eve cannot read: admitted, the message never reaches
-    // its chat.
+    // A media address eve cannot read: a locked member's narrow chat takes
+    // the message as it came, with no record to bind its media to, and it
+    // never reaches its chat. A full chat would drop it at Twilio's record.
+    await lockWhatsapp("user-1", "web");
     const broken = {
       ...messageParams({ From: `whatsapp:${sender}` }),
       MediaUrl0: "not a URL",

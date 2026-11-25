@@ -738,9 +738,15 @@ reads with the account's credentials
 (`GET /2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}.json`): an
 inbound message of this account, to `TWILIO_WHATSAPP_FROM`, from the member's
 number, with the same body and the same number of media items, created at most
-10 minutes ago. A message Twilio has no record of, read once more after a
-short pause, or one whose record differs is dropped and logged without its
-values. When Twilio's API cannot be reached, the member is told to try again
+10 minutes ago. eve hands the model each photo or file from the webhook's
+`MediaUrl{N}` and `MediaContentType{N}` fields, so a message with media is
+also checked against Twilio's list of that message's media
+(`.../Messages/{MessageSid}/Media.json`): every item's address must be
+exactly `https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}/Media/{MediaSid}`
+for this account and this message, every media id must be on the list once
+with the same content type, and the list must hold no other. A message
+Twilio has no record of, read once more after a short pause, or one whose
+record or media list differs is dropped whole and logged without its values. When Twilio's API cannot be reached, the member is told to try again
 in a minute and no turn runs. `/lock` needs no record: it only ever turns
 access off.
 
