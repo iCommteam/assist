@@ -42,6 +42,17 @@ export async function enrolledTeamMemberId(email: string) {
   return member?.twoFactorEnabled ? member.id : undefined;
 }
 
+// The email of the user with this Better Auth user id (without the
+// `better-auth:` principal prefix), as stored; undefined when there is none.
+export async function emailOfUser(userId: string) {
+  const [member] = await db
+    .select({ email: user.email })
+    .from(user)
+    .where(eq(user.id, userId))
+    .limit(1);
+  return member?.email;
+}
+
 function digest(value: string) {
   return createHash("sha256").update(value, "utf8").digest();
 }

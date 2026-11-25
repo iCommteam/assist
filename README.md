@@ -83,6 +83,7 @@ only to hand the root-owned volume to the `node` user; both servers run as
 | `TWILIO_WHATSAPP_FROM`                  | no     | `whatsapp:+<number>`, the number assist answers from     |
 | `ASSIST_WHATSAPP_NUMBERS`               | no     | who may write to it; see [WhatsApp](#whatsapp)           |
 | `ASSIST_BIGQUERY_KEY`                   | yes    | a service account's JSON key; see [BigQuery](#bigquery)  |
+| `ASSIST_BIGQUERY_EMAILS`                | no     | `vkolek@icommerceteam.com`; see [BigQuery](#bigquery)    |
 | `ASSIST_BIGQUERY_PROJECT`               | no     | optional; `amzbi-418608` by default                      |
 | `ASSIST_BIGQUERY_LOCATION`              | no     | optional; `europe-central2` by default                   |
 | `ASSIST_BIGQUERY_DATASETS`              | no     | optional; only narrows the company's three datasets      |
@@ -698,7 +699,7 @@ member's number reaches assist as that member, with full access in a mode
 made for a phone: the same general assistant as the web chat, which replies,
 asks a question with numbered options, searches the web, runs browser tasks,
 sends vault links and uses the member's Personal Info and saved notes, and,
-while [BigQuery](#bigquery) is configured, reads the company's BigQuery. It
+for a member who has [BigQuery](#bigquery), reads the company's BigQuery. It
 has no schedules, no reactions, no approvals and no connector sign-ins on
 WhatsApp, and it keeps to the company's business work. It has no Accounting
 yet: TEEMIQ is not reachable from WhatsApp, and Accounting stays in TEEMIQ's
@@ -783,7 +784,7 @@ Full access stays on until the member turns it off:
 Every full chat opens with one fixed line from the channel, never the model,
 naming what is on and how to turn it off: "Full access is on in this chat:
 the browser, vault links, Personal Info and saved notes. Reply /lock to turn
-it off." While [BigQuery](#bigquery) is configured, it names "the company's
+it off." For a member who has [BigQuery](#bigquery), it names "the company's
 BigQuery data, read only" too.
 
 #### What a WhatsApp chat can do
@@ -833,15 +834,16 @@ allowed. assist keeps to business work on WhatsApp and declines anything else.
 
 ### BigQuery
 
-The web chat and every full WhatsApp chat can read the company's BigQuery,
-read only: the Amazon seller and advertising data of the agency's clients,
-in the project and datasets the company's other app reads. Nothing else gets
-it: not a site chat, a site task, a scheduled run or a locked member's narrow
-WhatsApp chat.
+The members on `ASSIST_BIGQUERY_EMAILS` can read the company's BigQuery, read
+only, in the web chat and in their full WhatsApp chats: the Amazon seller and
+advertising data of the agency's clients, in the project and datasets the
+company's other app reads. Nothing else gets it: not another member, a site
+chat, a site task, a scheduled run or a locked member's narrow WhatsApp chat.
 
 | Variable                    | Value                                                                                  |
 | --------------------------- | -------------------------------------------------------------------------------------- |
 | `ASSIST_BIGQUERY_KEY`       | the service account's JSON key, the whole file as one sealed value                     |
+| `ASSIST_BIGQUERY_EMAILS`    | the members who read it, comma-separated: `vkolek@icommerceteam.com` in production     |
 | `ASSIST_BIGQUERY_PROJECT`   | `amzbi-418608` by default                                                              |
 | `ASSIST_BIGQUERY_LOCATION`  | `europe-central2` by default                                                           |
 | `ASSIST_BIGQUERY_DATASETS`  | `icommsync_amazon_data,intentwise_ecommerce_graph,amazon_source_data` by default       |
@@ -851,14 +853,23 @@ Leaving `ASSIST_BIGQUERY_KEY` unset turns BigQuery off: no tool and no
 instruction mentions it anywhere. `ASSIST_BIGQUERY_DATASETS` can only narrow
 the three datasets; another dataset takes a change in
 `shared/environment/env.ts` and its review. A malformed project, location,
-dataset list or cap stops the service at start, as any other malformed
-variable does, naming the variable. A key that is not a service account's
-JSON key turns BigQuery off instead, and the log says so once, by name: an
-optional read should not take sign-in, the web chat and WhatsApp down with
-it. The key is parsed in one place and never reaches a log, a tool result,
-the model or an error message; BigQuery's own error text, which the agent
-sees, is cleaned of the key, its id, the account's address and the access
-token.
+dataset list, cap or email list stops the service at start, as any other
+malformed variable does, naming the variable. A key that is not a service
+account's JSON key turns BigQuery off instead, and the log says so once, by
+name: an optional read should not take sign-in, the web chat and WhatsApp
+down with it. The key is parsed in one place and never reaches a log, a tool
+result, the model or an error message; BigQuery's own error text, which the
+agent sees, is cleaned of the key, its id, the account's address and the
+access token.
+
+`ASSIST_BIGQUERY_EMAILS` decides who has it. Unset or empty, nobody does,
+even with a key. Like `ASSIST_ALLOWED_EMAILS`, it is comma-separated and
+case-insensitive. A web chat's member is the account they signed in with,
+read from the database on every call; a full WhatsApp chat's is the email
+`ASSIST_WHATSAPP_NUMBERS` lists for its number. The tools, their instructions
+and the full chat's fixed line all follow the list. Each tool call checks it
+again, so an email taken off the list loses BigQuery at its next call, once
+the deploy that applies the change is live.
 
 The service account gets two roles and nothing more:
 

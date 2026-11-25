@@ -59,6 +59,7 @@ const messagesPath = "/eve/v1/whatsapp/messages";
 interface TestConfig {
   accountSid: string | undefined;
   bigquery: boolean;
+  bigqueryEmails: string[];
   authToken: string | undefined;
   from: string | undefined;
   numbers: string;
@@ -68,6 +69,7 @@ const mocks = vi.hoisted(() => {
   const config: TestConfig = {
     accountSid: undefined,
     bigquery: false,
+    bigqueryEmails: [],
     authToken: undefined,
     from: undefined,
     numbers: "",
@@ -95,8 +97,9 @@ vi.mock("@shared/environment", () => ({
       return mocks.config.from;
     },
   },
-  // Only whether BigQuery is configured reaches the channel.
+  // Only whether BigQuery is configured, and for whom, reaches the channel.
   bigqueryConfig: () => (mocks.config.bigquery ? {} : undefined),
+  bigqueryMemberEmails: () => mocks.config.bigqueryEmails,
   whatsappNumbersVariable: () => mocks.config.numbers,
 }));
 vi.mock("@shared/environment/origin", () => ({
@@ -164,6 +167,7 @@ beforeEach(async () => {
   Object.assign(mocks.config, {
     accountSid,
     bigquery: false,
+    bigqueryEmails: ["member@example.test"],
     authToken,
     from: companyNumber,
     numbers: `${memberNumber}=Member@Example.test, +15550000009=other@example.test`,
@@ -534,7 +538,7 @@ describe("WhatsApp webhook", () => {
     expect(sentTexts()).toEqual([announcement]);
   });
 
-  it("names the company's BigQuery in the fixed line while it is configured", async () => {
+  it("names the company's BigQuery in the fixed line for a member on ASSIST_BIGQUERY_EMAILS while it is configured", async () => {
     mocks.config.bigquery = true;
     const harness = routeHarness();
 
@@ -544,6 +548,21 @@ describe("WhatsApp webhook", () => {
       "Full access is on in this chat: the browser, vault links, Personal Info, saved notes and the company's BigQuery data, read only. Reply /lock to turn it off.",
     ]);
   });
+
+  it.each([
+    ["another member is listed", ["other@example.test"]],
+    ["nobody is listed", []],
+  ])(
+    "leaves BigQuery out of the fixed line while it is configured but %s",
+    async (_case, emails) => {
+      Object.assign(mocks.config, { bigquery: true, bigqueryEmails: emails });
+      const harness = routeHarness();
+
+      await harness.post(webhook(messageParams()));
+
+      expect(sentTexts()).toEqual([announcement]);
+    }
+  );
 
   it.each([
     ["an unknown number", { From: "whatsapp:+15550000002" }],

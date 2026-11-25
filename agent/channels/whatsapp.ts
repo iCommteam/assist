@@ -41,6 +41,7 @@ import {
   whatsappWrittenWithin,
 } from "@db/services/whatsapp";
 import { ensureScope } from "@db/services/scope";
+import { bigqueryAccess } from "@agent/lib/bigquery/access";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { internalRouteAuth } from "@agent/lib/schedules/request";
 import { settledToolResult } from "@agent/lib/settled-tool-result";
@@ -52,7 +53,7 @@ import {
   whatsappSessionOf,
 } from "@agent/lib/whatsapp-access";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
-import { bigqueryConfig, env } from "@shared/environment";
+import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 import { memberEmailOf } from "@shared/environment/whatsapp";
 
@@ -97,9 +98,13 @@ function lockReply() {
 }
 
 // The one fixed line a full chat opens with, from the channel, never the
-// model: what is on, and how to turn it off.
-function announcement() {
-  const on = bigqueryConfig()
+// model: what is on, and how to turn it off. BigQuery is named only for a
+// member the BigQuery tools are listed for.
+async function announcement(principal: SessionAuthContext) {
+  const bigquery = await bigqueryAccess({
+    session: { auth: { current: principal, initiator: principal } },
+  });
+  const on = bigquery
     ? "the browser, vault links, Personal Info, saved notes and the company's BigQuery data, read only"
     : "the browser, vault links, Personal Info and saved notes";
   return `Full access is on in this chat: ${on}. Reply /lock to turn it off.`;
@@ -871,8 +876,9 @@ async function openFullChat(
       principalId: `better-auth:${admitted.userId}`,
     });
     if (access !== "full") return;
+    const line = await announcement(options.auth);
     if (await claimWhatsappChatAnnouncement(chat.id)) {
-      await send(admitted.twilio, { Body: announcement() });
+      await send(admitted.twilio, { Body: line });
     }
   } catch (error) {
     console.warn("[whatsapp] the chat could not be recorded", {

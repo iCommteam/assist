@@ -12,8 +12,10 @@ import {
 } from "@agent/lib/bigquery/client";
 
 // The company's BigQuery, read only, in the web chat and in a full WhatsApp
-// chat (agent/lib/bigquery/access.ts), and nowhere while ASSIST_BIGQUERY_KEY
-// is unset. Each call checks the session again before it reads anything.
+// chat, for the members on ASSIST_BIGQUERY_EMAILS
+// (agent/lib/bigquery/access.ts), and nowhere while ASSIST_BIGQUERY_KEY is
+// unset. Each call checks the session and the member again before it reads
+// anything, so an email taken off the list loses the next call.
 
 // A table name as BigQuery allows one: letters, marks, digits, connectors,
 // dashes and spaces; never a decorator or a wildcard.
@@ -21,8 +23,8 @@ const tableNameSchema = z
   .string()
   .regex(/^[\p{L}\p{M}\p{N}\p{Pc}\p{Pd} ]{1,1024}$/u);
 
-export default defineDynamic((context) => {
-  const access = bigqueryAccess(context);
+export default defineDynamic(async (context) => {
+  const access = await bigqueryAccess(context);
   if (!access) return null;
   const { datasets, location, maxBytes, project } = access.config;
   const datasetSchema = z
@@ -75,9 +77,11 @@ export default defineDynamic((context) => {
 // Anything else is logged by name only.
 async function guarded<T>(
   ctx: ToolContext,
-  read: (access: NonNullable<ReturnType<typeof bigqueryAccess>>) => Promise<T>
+  read: (
+    access: NonNullable<Awaited<ReturnType<typeof bigqueryAccess>>>
+  ) => Promise<T>
 ) {
-  const access = bigqueryAccess(ctx);
+  const access = await bigqueryAccess(ctx);
   if (!access) {
     throw new BigqueryError("BigQuery is not available in this chat.");
   }

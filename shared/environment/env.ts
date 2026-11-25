@@ -190,12 +190,14 @@ export const env = createEnv({
     // The company's BigQuery, read only. ASSIST_BIGQUERY_KEY is a Google
     // service account key, its JSON as one value, kept a plain string here so
     // that no validation message can ever quote it: bigqueryConfig() below
-    // reads it. Unset means no BigQuery tools anywhere.
+    // reads it. Unset means no BigQuery tools anywhere. Only the members on
+    // ASSIST_BIGQUERY_EMAILS get them: unset or empty means nobody does.
     ASSIST_BIGQUERY_KEY: requiredValue.optional(),
     ASSIST_BIGQUERY_PROJECT: bigqueryProjectSchema.default("amzbi-418608"),
     ASSIST_BIGQUERY_LOCATION: bigqueryLocationSchema.default("europe-central2"),
     ASSIST_BIGQUERY_DATASETS: bigqueryDatasetsSchema.optional(),
     ASSIST_BIGQUERY_MAX_BYTES: bigqueryMaxBytesSchema.default(2 * 1024 ** 3),
+    ASSIST_BIGQUERY_EMAILS: emailListSchema.optional(),
 
     // TEEMIQ's finance MCP route, which a site chat reaches with the token
     // TEEMIQ gave that chat. Unset means site chats have no finance tools.
@@ -328,6 +330,12 @@ export function bigqueryConfig() {
     maxBytes: env.ASSIST_BIGQUERY_MAX_BYTES,
     project: env.ASSIST_BIGQUERY_PROJECT,
   };
+}
+
+// The members who may read the company's BigQuery, trimmed and lower-cased:
+// none while ASSIST_BIGQUERY_EMAILS is unset or empty.
+export function bigqueryMemberEmails() {
+  return env.ASSIST_BIGQUERY_EMAILS ?? [];
 }
 
 function parseServiceAccountKey(raw: string) {

@@ -39,6 +39,7 @@ let auth: Awaited<ReturnType<typeof getAuth>>;
 let session: typeof SessionReaders;
 let allowedUserIds: typeof AllowlistReaders.allowedUserIds;
 let enrolledTeamMemberId: typeof AllowlistReaders.enrolledTeamMemberId;
+let emailOfUser: typeof AllowlistReaders.emailOfUser;
 
 beforeAll(async () => {
   database = new PGlite();
@@ -76,6 +77,7 @@ beforeAll(async () => {
   session = sessionModule;
   allowedUserIds = allowlistModule.allowedUserIds;
   enrolledTeamMemberId = allowlistModule.enrolledTeamMemberId;
+  emailOfUser = allowlistModule.emailOfUser;
 }, 30_000);
 
 afterAll(async () => {
@@ -335,6 +337,19 @@ describe("team sign-in", () => {
     expect(await enrolledTeamMemberId("grace@example.test")).toBeUndefined();
     // Enrolled, and no longer on the team list.
     expect(await enrolledTeamMemberId("removed@example.test")).toBeUndefined();
+  });
+
+  // Reads the members the earlier cases created.
+  it("reads a user's email by their user id, and nothing for an id with no row", async () => {
+    const rows = await database.query<{ email: string; id: string }>(
+      'SELECT id, email FROM "user"'
+    );
+    const alice = rows.rows.find((row) => row.email === "alice@example.test");
+
+    expect(await emailOfUser(z.string().parse(alice?.id))).toBe(
+      "alice@example.test"
+    );
+    expect(await emailOfUser("no-such-user")).toBeUndefined();
   });
 
   // Runs last: it reads the members the earlier cases created.

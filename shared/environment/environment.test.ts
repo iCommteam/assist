@@ -19,6 +19,7 @@ describe("environment", () => {
     vi.stubEnv("ASSIST_ADMIN_EMAILS", "");
     vi.stubEnv("ASSIST_ALLOWED_EMAILS", "");
     vi.stubEnv("ASSIST_SIGNUP_CODE", "");
+    vi.stubEnv("ASSIST_BIGQUERY_EMAILS", "");
   });
 
   afterEach(() => {
@@ -46,19 +47,43 @@ describe("environment", () => {
       " Alice@Example.test, bob@example.test ,,"
     );
     vi.stubEnv("ASSIST_ADMIN_EMAILS", "ALICE@example.test");
+    vi.stubEnv(
+      "ASSIST_BIGQUERY_EMAILS",
+      " Bob@Example.TEST ,, alice@example.test"
+    );
 
-    const { env } = await import("@shared/environment");
+    const { bigqueryMemberEmails, env } = await import("@shared/environment");
 
     expect(env.ASSIST_ALLOWED_EMAILS).toEqual([
       "alice@example.test",
       "bob@example.test",
     ]);
     expect(env.ASSIST_ADMIN_EMAILS).toEqual(["alice@example.test"]);
+    expect(bigqueryMemberEmails()).toEqual([
+      "bob@example.test",
+      "alice@example.test",
+    ]);
   });
+
+  it.each([
+    ["unset", undefined],
+    ["empty", ""],
+    ["only commas and spaces", " , ,"],
+  ])(
+    "gives BigQuery to nobody while ASSIST_BIGQUERY_EMAILS is %s",
+    async (_case, value) => {
+      vi.stubEnv("ASSIST_BIGQUERY_EMAILS", value);
+
+      const { bigqueryMemberEmails } = await import("@shared/environment");
+
+      expect(bigqueryMemberEmails()).toEqual([]);
+    }
+  );
 
   it.each([
     ["ASSIST_ALLOWED_EMAILS", "alice@example.test, not-an-email"],
     ["ASSIST_ADMIN_EMAILS", "alice"],
+    ["ASSIST_BIGQUERY_EMAILS", "alice@example.test; bob@example.test"],
     ["ASSIST_SIGNUP_CODE", "too-short"],
     ["TEEMIQ_FINANCE_MCP_URL", "http://team.example/api/mcp/finance"],
     ["TEEMIQ_FINANCE_MCP_URL", "team.example/api/mcp/finance"],

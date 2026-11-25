@@ -14,7 +14,18 @@ import {
   withEvaluableDynamic,
 } from "@tests/helpers/dynamic";
 import { toolContextFor } from "@tests/helpers/tool-context";
+import * as Allowlist from "@db/services/auth/allowlist";
+import * as Environment from "@shared/environment";
 import { accessScopeForUser } from "@shared/identity/access-scope";
+
+// The members who read BigQuery here, written with the case and spaces the
+// variable may have. The environment module validates once on import.
+vi.hoisted(() => {
+  vi.stubEnv(
+    "ASSIST_BIGQUERY_EMAILS",
+    " Member@Example.test , dev@example.test"
+  );
+});
 
 // Test fixtures only: a made-up service account whose "key" is a marker,
 // never a key. The PEM armour is assembled so no scanner reads it as one.
@@ -106,6 +117,12 @@ const whatsappFull = principal("assist-whatsapp", {
   whatsappAccess: "full",
   whatsappNumber: "+15550000001",
 });
+const whatsappFullOffList = principal("assist-whatsapp", {
+  conversationChannel: "whatsapp",
+  email: "other@example.test",
+  whatsappAccess: "full",
+  whatsappNumber: "+15550000002",
+});
 const whatsappNarrow = principal("assist-whatsapp", {
   conversationChannel: "whatsapp",
   email: "member@example.test",
@@ -124,6 +141,14 @@ const sessions = {
   "a full WhatsApp chat typed on the web": {
     current: web,
     initiator: whatsappFull,
+  },
+  "a full WhatsApp chat of a member off the list": {
+    current: whatsappFullOffList,
+    initiator: whatsappFullOffList,
+  },
+  "a full WhatsApp chat of a member off the list, typed on the web": {
+    current: web,
+    initiator: whatsappFullOffList,
   },
   "a narrow WhatsApp chat": {
     current: whatsappNarrow,
@@ -285,6 +310,10 @@ beforeEach(() => {
   results = resultsWith(2);
   vi.restoreAllMocks();
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  // The web member's user row, as the auth services read it.
+  vi.spyOn(Allowlist, "emailOfUser").mockImplementation(async (userId) =>
+    userId === "user-1" ? "member@example.test" : undefined
+  );
   vi.stubGlobal(
     "fetch",
     vi.fn<typeof fetch>(async (input, init) => {
@@ -460,6 +489,136 @@ describe("where the BigQuery tools are", () => {
       "Figures you put in a WhatsApp reply are stored by WhatsApp and Twilio"
     );
   });
+});
+
+// --- Who reads it ------------------------------------------------------------
+
+describe("the members on ASSIST_BIGQUERY_EMAILS", () => {
+  const sql =
+    "SELECT brand FROM `amzbi-418608.icommsync_amazon_data.listings` LIMIT 10";
+
+  async function offered(session: SessionName) {
+    return {
+      instructions: await evaluateDynamic(
+        bigqueryInstructions,
+        contextOf(session)
+      ),
+      tools: await toolsOf(session),
+    };
+  }
+
+  it("reads a web member's email from their user row, whatever its case", async () => {
+    vi.mocked(Allowlist.emailOfUser).mockResolvedValue("Member@EXAMPLE.test");
+
+    const { instructions, tools } = await offered("the web chat");
+
+    expect(Object.keys(tools ?? {})).toHaveLength(3);
+    expect(instructions).not.toBeNull();
+    expect(Allowlist.emailOfUser).toHaveBeenCalledWith("user-1");
+  });
+
+  it.each([
+    "a full WhatsApp chat",
+    "a full WhatsApp chat typed on the web",
+  ] as const)(
+    "reads the member of %s from the chat's principal, not the database",
+    async (session) => {
+      const { instructions, tools } = await offered(session);
+
+      expect(Object.keys(tools ?? {})).toHaveLength(3);
+      expect(instructions).not.toBeNull();
+      expect(Allowlist.emailOfUser).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ["a web member whose email is not on the list", "the web chat", "other"],
+    ["a web session whose user has no email row", "the web chat", "none"],
+    [
+      "a full WhatsApp chat of a member not on the list",
+      "a full WhatsApp chat of a member off the list",
+      "member",
+    ],
+    [
+      "that chat typed on the web",
+      "a full WhatsApp chat of a member off the list, typed on the web",
+      "member",
+    ],
+  ] as const)(
+    "lists no tool and no instructions for %s",
+    async (_case, session, row) => {
+      vi.mocked(Allowlist.emailOfUser).mockResolvedValue(
+        {
+          member: "member@example.test",
+          none: undefined,
+          other: "other@example.test",
+        }[row]
+      );
+
+      expect(await offered(session)).toEqual({
+        instructions: null,
+        tools: null,
+      });
+    }
+  );
+
+  it("gives nobody BigQuery while the list is empty, and reads no user row", async () => {
+    vi.spyOn(Environment, "bigqueryMemberEmails").mockReturnValue([]);
+
+    for (const session of [
+      "the web chat",
+      "a full WhatsApp chat",
+      "a full WhatsApp chat typed on the web",
+    ] as const) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One session at a time keeps the failure readable.
+      expect(await offered(session)).toEqual({
+        instructions: null,
+        tools: null,
+      });
+    }
+    expect(Allowlist.emailOfUser).not.toHaveBeenCalled();
+  });
+
+  it("gives no access when a web member's email cannot be read, and logs only the error's name", async () => {
+    vi.mocked(Allowlist.emailOfUser).mockRejectedValue(
+      new Error('select "email" from "user" where "id" = user-1')
+    );
+
+    expect(await offered("the web chat")).toEqual({
+      instructions: null,
+      tools: null,
+    });
+    expect(console.warn).toHaveBeenCalledWith(
+      "[bigquery] the member's email could not be read",
+      { error: "Error" }
+    );
+    expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain(
+      "user-1"
+    );
+  });
+
+  it.each(["the web chat", "a full WhatsApp chat"] as const)(
+    "refuses the next call in %s once the member's email is off the list",
+    async (session) => {
+      const query = await tool("bigquery_query", session);
+      await run(query, { sql }, session);
+      const made = calls.length;
+      expect(made).toBeGreaterThan(0);
+
+      vi.spyOn(Environment, "bigqueryMemberEmails").mockReturnValue([
+        "dev@example.test",
+      ]);
+
+      await expect(run(query, { sql }, session)).rejects.toThrow(
+        "BigQuery is not available in this chat."
+      );
+      expect(calls).toHaveLength(made);
+      expect(await offered(session)).toEqual({
+        instructions: null,
+        tools: null,
+      });
+    }
+  );
 });
 
 // --- Queries -----------------------------------------------------------------

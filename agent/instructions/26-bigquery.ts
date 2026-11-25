@@ -3,9 +3,9 @@ import { bigqueryAccess } from "@agent/lib/bigquery/access";
 
 // Where the company's BigQuery tools are listed (agent/tools/bigquery.ts),
 // and only there, how to use them. Nothing is added while
-// ASSIST_BIGQUERY_KEY is unset.
-export default defineDynamic((context) => {
-  const access = bigqueryAccess(context);
+// ASSIST_BIGQUERY_KEY is unset, or for a member not on ASSIST_BIGQUERY_EMAILS.
+export default defineDynamic(async (context) => {
+  const access = await bigqueryAccess(context);
   if (!access) return null;
   const { datasets, location, maxBytes, project } = access.config;
   return defineInstructions({

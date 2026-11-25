@@ -8,8 +8,20 @@ import {
   evaluateDynamic,
   withEvaluableDynamic,
 } from "@tests/helpers/dynamic";
+import type * as Allowlist from "@db/services/auth/allowlist";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
+// The web member's user row, as the auth services read it.
+const emailOfUser = vi.hoisted(() =>
+  vi.fn<typeof Allowlist.emailOfUser>(async (userId) =>
+    userId === "user-1" ? "member@example.test" : undefined
+  )
+);
+
+vi.mock("@db/services/auth/allowlist", async (importOriginal) => ({
+  ...(await importOriginal<typeof Allowlist>()),
+  emailOfUser,
+}));
 vi.mock("eve", async (importOriginal) =>
   withEvaluableDynamic(await importOriginal<typeof Eve>())
 );
@@ -40,11 +52,29 @@ const whatsappFull: SessionAuthContext = {
   principalType: "user",
 };
 
+// A made-up service account whose "key" is a marker, never a key. The PEM
+// armour is assembled so no scanner reads it as one.
+const serviceAccountKey = JSON.stringify({
+  client_email: "reader@test-project.iam.gserviceaccount.com",
+  private_key: [
+    ["-----BEGIN", "PRIVATE", "KEY-----"].join(" "),
+    "TEST-ONLY-NOT-A-KEY",
+    ["-----END", "PRIVATE", "KEY-----"].join(" "),
+    "",
+  ].join("\n"),
+  type: "service_account",
+});
+
+const listed = "member@example.test";
+
 // The tools and their instructions as a fresh process loads them, with
-// ASSIST_BIGQUERY_KEY as given; the environment validates once on import.
-async function loaded(key: string | undefined) {
+// ASSIST_BIGQUERY_KEY and ASSIST_BIGQUERY_EMAILS as given; the environment
+// validates once on import. Each pair is the web chat's, then a full
+// WhatsApp chat's.
+async function loaded(key: string | undefined, emails: string | undefined) {
   vi.resetModules();
   vi.stubEnv("ASSIST_BIGQUERY_KEY", key);
+  vi.stubEnv("ASSIST_BIGQUERY_EMAILS", emails);
   const [{ default: tools }, { default: instructions }] = await Promise.all([
     import("@agent/tools/bigquery"),
     import("@agent/instructions/26-bigquery"),
@@ -71,7 +101,7 @@ describe("BigQuery while it is off", () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     vi.stubGlobal("fetch", fetch);
 
-    expect(await loaded(undefined)).toEqual([null, null, null, null]);
+    expect(await loaded(undefined, listed)).toEqual([null, null, null, null]);
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -92,7 +122,7 @@ describe("BigQuery while it is off", () => {
         .spyOn(console, "warn")
         .mockImplementation(() => undefined);
 
-      expect(await loaded(key)).toEqual([null, null, null, null]);
+      expect(await loaded(key, listed)).toEqual([null, null, null, null]);
 
       expect(warn).toHaveBeenCalledExactlyOnceWith(
         "[bigquery] ASSIST_BIGQUERY_KEY is not a Google service account key; BigQuery is off."
@@ -100,4 +130,48 @@ describe("BigQuery while it is off", () => {
       expect(JSON.stringify(warn.mock.calls)).not.toContain(key);
     }
   );
+});
+
+describe("BigQuery for the members on ASSIST_BIGQUERY_EMAILS", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    emailOfUser.mockClear();
+  });
+
+  it("offers the tools and their instructions to a listed member in the web chat and a full WhatsApp chat, whatever the list's case and spaces", async () => {
+    const offered = await loaded(
+      serviceAccountKey,
+      " MEMBER@Example.test ,  other@example.test,"
+    );
+
+    expect(offered.map((value) => value !== null)).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  it.each([
+    ["unset", undefined],
+    ["empty", ""],
+    ["only commas and spaces", " , "],
+    ["listing someone else", "other@example.test"],
+  ])(
+    "offers nothing to anyone while ASSIST_BIGQUERY_EMAILS is %s, even with a key",
+    async (_case, emails) => {
+      expect(await loaded(serviceAccountKey, emails)).toEqual([
+        null,
+        null,
+        null,
+        null,
+      ]);
+    }
+  );
+
+  it("reads no user row while nobody is listed", async () => {
+    await loaded(serviceAccountKey, undefined);
+
+    expect(emailOfUser).not.toHaveBeenCalled();
+  });
 });
