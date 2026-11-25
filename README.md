@@ -898,7 +898,8 @@ from a new number waits for the link, so it reaches the member it connected. A m
 hour and 200 in any day, `/new` and `/lock` included; past that, messages are
 dropped and assist says so once an hour. Only a member who can sign in is
 recorded, counted or told, except that a `link` message's id is recorded
-from any number, so Twilio posting it twice links once. A message Twilio
+from any number that is within its limit on failed attempts, so Twilio
+posting it twice links once. A message Twilio
 posts twice reaches the agent once. The message ids, the counts and the
 window live in the database, so they survive a restart. WhatsApp chats also
 appear in the member's chat list in assist's web app, and a turn the member
