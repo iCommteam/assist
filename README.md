@@ -495,9 +495,10 @@ task end with one line, `Where to look, as the owner noted for this account:
 assignment. The note only says where the documents are and which to save, or
 for a look to list: it never widens what the task may do or which site its
 browser opens. A note that asks for anything a pinned task may not do, such as
-paying, changing a setting or the account, deleting, sending a message, or
-downloading from outside the login's fence, ends the task `failed`, as such a
-task always has.
+paying, changing a setting or the account, deleting or sending a message, ends
+the task `failed`, as such a task always has. A note that places the documents
+on a website outside the login's fence ends the task `off_site`, as a task
+whose invoice is on another website always has.
 
 #### Lifetimes and cancelling
 
