@@ -20,7 +20,7 @@ import {
   FieldLabel,
 } from "@web/components/ui/field";
 import { Input } from "@web/components/ui/input";
-import { QrCode } from "./qr-code";
+import { QrCode } from "@app/_components/qr-code";
 
 const enrolmentSchema = z.object({
   backupCodes: z.array(z.string()).min(1),

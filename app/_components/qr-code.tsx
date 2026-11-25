@@ -1,8 +1,9 @@
 import { encode } from "uqr";
 
-// Rendered locally: the otpauth URI holds the TOTP secret and must never be
-// sent to an image service. Dark modules on a light field, as scanners expect.
-// The key printed beside it is the accessible alternative.
+// Rendered locally: a value such as an authenticator's otpauth URI holds a
+// secret and must never be sent to an image service. Dark modules on a light
+// field, as scanners expect. The text printed beside it is the accessible
+// alternative.
 export function QrCode({ value }: { readonly value: string }) {
   const { data, size } = encode(value, { border: 2, ecc: "M" });
   // One rectangle per horizontal run of dark modules avoids hairline seams.

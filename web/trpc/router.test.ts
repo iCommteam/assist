@@ -7,7 +7,9 @@ import * as BrowserTraces from "@db/services/browser-traces";
 import * as Chats from "@db/services/chats";
 import * as Vault from "@db/services/vault";
 import * as Whatsapp from "@db/services/whatsapp";
+import * as WhatsappLinks from "@db/services/whatsapp-links";
 import * as Loopback from "@shared/environment/loopback";
+import * as WhatsappEnvironment from "@shared/environment/whatsapp";
 import { kernelProfileNameForLogin } from "@shared/browser/kernel-profile";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { appRouter } from "./router";
@@ -234,6 +236,169 @@ describe("WhatsApp access", () => {
     );
     await whatsapp().unlockEveryone();
     expect(Whatsapp.unlockWhatsapp).toHaveBeenCalledWith("*");
+  });
+});
+
+describe("Connect WhatsApp", () => {
+  const linkId = "00000000-0000-4000-8000-000000000001";
+  const memberScope = {
+    userId: "better-auth:user-1",
+    workspaceId: "workspace-1",
+  } satisfies AccessScope;
+  const whatsapp = () =>
+    appRouter.createCaller({
+      origin: "https://example.com",
+      scope: memberScope,
+    }).whatsapp;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(WhatsappEnvironment, "whatsappChannelConfigured").mockReturnValue(
+      true
+    );
+    vi.spyOn(Allowlist, "emailOfUser").mockResolvedValue("Member@Example.test");
+    vi.spyOn(Allowlist, "enrolledTeamMemberId").mockResolvedValue("user-1");
+    vi.spyOn(Allowlist, "isAdminMember").mockResolvedValue(false);
+    vi.spyOn(WhatsappLinks, "createWhatsappLinkCode").mockResolvedValue({
+      code: "ABCD2345",
+      expiresAt: new Date("2026-11-25T12:10:00.000Z"),
+    });
+    vi.spyOn(WhatsappLinks, "cancelWhatsappLinkCode").mockResolvedValue();
+    vi.spyOn(WhatsappLinks, "whatsappLinkCodeLive").mockResolvedValue(true);
+    vi.spyOn(WhatsappLinks, "whatsappLinkOf").mockResolvedValue(undefined);
+    vi.spyOn(WhatsappLinks, "whatsappLinkById").mockResolvedValue(undefined);
+    vi.spyOn(WhatsappLinks, "deleteWhatsappLink").mockResolvedValue({
+      phone: "+15550000001",
+    });
+    vi.spyOn(Loopback, "postWhatsappLoopback").mockResolvedValue(
+      new Response(null, { status: 204 })
+    );
+  });
+
+  function linkOf(userId: string) {
+    return {
+      id: linkId,
+      linkedAt: new Date(),
+      phone: "+15550000001",
+      userId,
+    };
+  }
+
+  it("makes a link code for a member who may use WhatsApp, while the channel is open", async () => {
+    await expect(whatsapp().linkCode()).resolves.toEqual({
+      code: "ABCD2345",
+      expiresAt: "2026-11-25T12:10:00.000Z",
+    });
+    expect(Allowlist.enrolledTeamMemberId).toHaveBeenCalledWith(
+      "Member@Example.test"
+    );
+    expect(WhatsappLinks.createWhatsappLinkCode).toHaveBeenCalledWith("user-1");
+  });
+
+  it.each([
+    [
+      "the channel is closed",
+      () => {
+        vi.mocked(
+          WhatsappEnvironment.whatsappChannelConfigured
+        ).mockReturnValue(false);
+      },
+    ],
+    [
+      "the member can no longer sign in",
+      () => {
+        vi.mocked(Allowlist.enrolledTeamMemberId).mockResolvedValue(undefined);
+      },
+    ],
+    [
+      "the member has no user row",
+      () => {
+        vi.mocked(Allowlist.emailOfUser).mockResolvedValue(undefined);
+      },
+    ],
+  ])("makes no link code when %s", async (_case, arrange) => {
+    arrange();
+    await expect(whatsapp().linkCode()).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    expect(WhatsappLinks.createWhatsappLinkCode).not.toHaveBeenCalled();
+  });
+
+  it("cancels the member's own code, and says whether it is live and which number landed", async () => {
+    await whatsapp().cancelLinkCode();
+    expect(WhatsappLinks.cancelWhatsappLinkCode).toHaveBeenCalledWith("user-1");
+
+    await expect(whatsapp().linkStatus()).resolves.toEqual({
+      codeLive: true,
+      linkedId: null,
+    });
+    vi.mocked(WhatsappLinks.whatsappLinkOf).mockResolvedValue(linkOf("user-1"));
+    vi.mocked(WhatsappLinks.whatsappLinkCodeLive).mockResolvedValue(false);
+    await expect(whatsapp().linkStatus()).resolves.toEqual({
+      codeLive: false,
+      linkedId: linkId,
+    });
+    expect(WhatsappLinks.whatsappLinkOf).toHaveBeenCalledWith("user-1");
+  });
+
+  it("disconnects the member's own number and ends its chats on that number only", async () => {
+    vi.mocked(WhatsappLinks.whatsappLinkById).mockResolvedValue(
+      linkOf("user-1")
+    );
+
+    await whatsapp().disconnect({ id: linkId });
+
+    expect(WhatsappLinks.deleteWhatsappLink).toHaveBeenCalledWith(
+      linkId,
+      "user-1"
+    );
+    expect(Loopback.postWhatsappLoopback).toHaveBeenCalledExactlyOnceWith(
+      "/internal/whatsapp/end",
+      { member: "better-auth:user-1", phone: "+15550000001" }
+    );
+    expect(Allowlist.isAdminMember).not.toHaveBeenCalled();
+  });
+
+  it("lets an administrator disconnect anyone's number, and reads anyone else's as none", async () => {
+    vi.mocked(WhatsappLinks.whatsappLinkById).mockResolvedValue(
+      linkOf("user-2")
+    );
+
+    await expect(whatsapp().disconnect({ id: linkId })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    expect(WhatsappLinks.deleteWhatsappLink).not.toHaveBeenCalled();
+    expect(Loopback.postWhatsappLoopback).not.toHaveBeenCalled();
+
+    vi.mocked(Allowlist.isAdminMember).mockResolvedValue(true);
+    await whatsapp().disconnect({ id: linkId });
+    expect(Allowlist.isAdminMember).toHaveBeenCalledWith("user-1");
+    expect(WhatsappLinks.deleteWhatsappLink).toHaveBeenCalledWith(
+      linkId,
+      "user-2"
+    );
+    expect(Loopback.postWhatsappLoopback).toHaveBeenCalledWith(
+      "/internal/whatsapp/end",
+      { member: "better-auth:user-2", phone: "+15550000001" }
+    );
+  });
+
+  it("refuses a link that is not there, or is gone by the time it is deleted", async () => {
+    await expect(
+      whatsapp().disconnect({ id: "not-a-link" })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(whatsapp().disconnect({ id: linkId })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+
+    vi.mocked(WhatsappLinks.whatsappLinkById).mockResolvedValue(
+      linkOf("user-1")
+    );
+    vi.mocked(WhatsappLinks.deleteWhatsappLink).mockResolvedValue(undefined);
+    await expect(whatsapp().disconnect({ id: linkId })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    expect(Loopback.postWhatsappLoopback).not.toHaveBeenCalled();
   });
 });
 

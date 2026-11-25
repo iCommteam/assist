@@ -53,11 +53,13 @@ async function eveLoopbackOrigin() {
 }
 
 interface WhatsappLoopbackBodies {
-  "/internal/whatsapp/end": { member: string };
+  "/internal/whatsapp/end":
+    | { member: string }
+    | { member: string; phone: string };
 }
 
 // The WhatsApp channel's callback (agent/channels/whatsapp.ts): ending the
-// chats a lock covers.
+// chats a lock covers, or those on a number that was disconnected.
 export async function postWhatsappLoopback<
   Route extends keyof WhatsappLoopbackBodies,
 >(route: Route, body: WhatsappLoopbackBodies[Route]) {

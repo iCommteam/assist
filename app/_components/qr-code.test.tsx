@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { encode } from "uqr";
 import { describe, expect, it } from "vitest";
-import { QrCode } from "../_components/qr-code";
+import { QrCode } from "./qr-code";
 
 const uri =
   "otpauth://totp/iCommAssist:member%40example.test?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=iCommAssist";

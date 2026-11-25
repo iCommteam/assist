@@ -1,6 +1,10 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { isAdminMember } from "@db/services/auth/allowlist";
+import {
+  emailOfUser,
+  enrolledTeamMemberId,
+  isAdminMember,
+} from "@db/services/auth/allowlist";
 import { listBrowserTraces } from "@db/services/browser-traces";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
@@ -20,7 +24,16 @@ import {
   unlockWhatsapp,
   whatsappEveryone,
 } from "@db/services/whatsapp";
+import {
+  cancelWhatsappLinkCode,
+  createWhatsappLinkCode,
+  deleteWhatsappLink,
+  whatsappLinkById,
+  whatsappLinkCodeLive,
+  whatsappLinkOf,
+} from "@db/services/whatsapp-links";
 import { postWhatsappLoopback } from "@shared/environment/loopback";
+import { whatsappChannelConfigured } from "@shared/environment/whatsapp";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { deleteLoginProfile } from "@web/browser/login-profile";
 import { createTRPCRouter, protectedProcedure } from "./init";
@@ -69,7 +82,44 @@ export const appRouter = createTRPCRouter({
   // WhatsApp's full access, off and back on. A member locks
   // and unlocks their own; an administrator locks everyone, and only an
   // administrator lifts that. A lock also ends the full chats it covers.
+  // A member connects their own number with a link code, and disconnects it
+  // here; an administrator can disconnect anyone's linked number, never one
+  // ASSIST_WHATSAPP_NUMBERS sets.
   whatsapp: {
+    linkCode: protectedProcedure.mutation(async ({ ctx }) => {
+      const userId = betterAuthUserId(ctx.scope);
+      await requireWhatsappMember(userId);
+      const { code, expiresAt } = await createWhatsappLinkCode(userId);
+      return { code, expiresAt: expiresAt.toISOString() };
+    }),
+    cancelLinkCode: protectedProcedure.mutation(async ({ ctx }) => {
+      await cancelWhatsappLinkCode(betterAuthUserId(ctx.scope));
+    }),
+    linkStatus: protectedProcedure.query(async ({ ctx }) => {
+      const userId = betterAuthUserId(ctx.scope);
+      const [codeLive, link] = await Promise.all([
+        whatsappLinkCodeLive(userId),
+        whatsappLinkOf(userId),
+      ]);
+      return { codeLive, linkedId: link?.id ?? null };
+    }),
+    disconnect: protectedProcedure
+      .input(z.object({ id: z.uuid() }))
+      .mutation(async ({ ctx, input }) => {
+        const userId = betterAuthUserId(ctx.scope);
+        const link = await whatsappLinkById(input.id);
+        // Someone else's link reads as no link, unless the caller is an
+        // administrator.
+        if (
+          !link ||
+          (link.userId !== userId && !(await isAdminMember(userId)))
+        ) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        const removed = await deleteWhatsappLink(link.id, link.userId);
+        if (!removed) throw new TRPCError({ code: "NOT_FOUND" });
+        await endWhatsappChats(`better-auth:${link.userId}`, removed.phone);
+      }),
     lock: protectedProcedure.mutation(async ({ ctx }) => {
       await lockWhatsapp(betterAuthUserId(ctx.scope), "web");
       await endWhatsappChats(ctx.scope.userId);
@@ -101,21 +151,34 @@ async function requireAdmin(scope: AccessScope) {
   }
 }
 
-// The WhatsApp channel ends the chats over loopback. The lock already holds
-// when this fails: every turn of those chats is then cancelled by the access
-// hooks at its next step, and the member's next message ends the chat.
-async function endWhatsappChats(member: string) {
+// A link code only for a member who may use WhatsApp, while the channel is
+// open.
+async function requireWhatsappMember(userId: string) {
+  const email = whatsappChannelConfigured()
+    ? await emailOfUser(userId)
+    : undefined;
+  if (email === undefined || (await enrolledTeamMemberId(email)) !== userId) {
+    throw new TRPCError({ code: "FORBIDDEN" });
+  }
+}
+
+// The WhatsApp channel ends the chats over loopback. The lock, or the
+// disconnect, already holds when this fails: every turn of those chats is
+// then cancelled by the access hooks at its next step, and the member's next
+// message ends the chat.
+async function endWhatsappChats(member: string, phone?: string) {
   try {
-    const response = await postWhatsappLoopback("/internal/whatsapp/end", {
-      member,
-    });
+    const response = await postWhatsappLoopback(
+      "/internal/whatsapp/end",
+      phone === undefined ? { member } : { member, phone }
+    );
     if (response.status !== 204) {
-      console.warn("[whatsapp] the locked chats were not ended", {
+      console.warn("[whatsapp] the chats were not ended", {
         status: response.status,
       });
     }
   } catch (error) {
-    console.warn("[whatsapp] the locked chats were not ended", {
+    console.warn("[whatsapp] the chats were not ended", {
       error: error instanceof Error ? error.name : "unknown",
     });
   }

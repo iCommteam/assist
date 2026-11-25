@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { whatsappNumbersVariable } from "@shared/environment";
+import { env, whatsappNumbersVariable } from "@shared/environment";
 
 // ASSIST_WHATSAPP_NUMBERS maps each member's number to their assist email:
 // "+15551234567=member@example.com,...". It is the operator's override of the
@@ -72,6 +72,16 @@ export function numbersOfMember(email: string) {
   return listedWhatsappMembers()
     .filter((member) => member.email === normalized)
     .map(({ number }) => number);
+}
+
+// Whether the WhatsApp channel is open: without all three Twilio variables,
+// every webhook is refused.
+export function whatsappChannelConfigured() {
+  return (
+    env.TWILIO_ACCOUNT_SID !== undefined &&
+    env.TWILIO_AUTH_TOKEN !== undefined &&
+    env.TWILIO_WHATSAPP_FROM !== undefined
+  );
 }
 
 const reportedProblems = new Set<string>();

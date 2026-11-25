@@ -1,13 +1,8 @@
 import { CloudIcon, MessageSquareIcon } from "lucide-react";
-import { headers } from "next/headers";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { WhatsappAccess } from "./_components/whatsapp-access";
-import { isAdminMember } from "@db/services/auth/allowlist";
-import { getAuthSession } from "@db/services/auth/session";
-import { whatsappLockOf } from "@db/services/whatsapp";
-import { env } from "@shared/environment";
-import { numbersOfMember } from "@shared/environment/whatsapp";
+import { whatsappSection } from "./_data/whatsapp";
 import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
 import { requireRequestScope } from "@web/auth/request-scope";
@@ -41,30 +36,6 @@ export default async function Page() {
       </WorkspaceSection>
     </div>
   );
-}
-
-// Shown while the WhatsApp channel is configured, to a member whose number
-// is listed and to an administrator.
-async function whatsappSection() {
-  if (
-    env.TWILIO_ACCOUNT_SID === undefined ||
-    env.TWILIO_AUTH_TOKEN === undefined ||
-    env.TWILIO_WHATSAPP_FROM === undefined
-  ) {
-    return undefined;
-  }
-  const session = await getAuthSession(await headers());
-  if (!session) return undefined;
-  const numbers = numbersOfMember(session.user.email);
-  const admin = await isAdminMember(session.user.id);
-  if (numbers.length === 0 && !admin) return undefined;
-  const lock = await whatsappLockOf(session.user.id);
-  return {
-    admin,
-    lockedEveryone: lock.everyone,
-    lockedSelf: lock.self,
-    numbers,
-  };
 }
 
 function ChannelsSection({ browserReady }: { readonly browserReady: boolean }) {
