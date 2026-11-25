@@ -2,6 +2,7 @@ import { auth } from "@googleapis/gmail";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
 import { googleAuth, googleAuthOptions } from "@agent/lib/google/auth";
+import { markGoogleUsed } from "@agent/lib/google/browser-gate";
 import { redactSecrets } from "@agent/lib/google/content";
 
 type GoogleAuthClient = InstanceType<typeof auth.OAuth2>;
@@ -10,13 +11,15 @@ type GoogleAuthClient = InstanceType<typeof auth.OAuth2>;
 // the model as a plain error with the status and Google's reason: the
 // client's own error carries the request, Authorization header included, so
 // it never leaves here. A token Google rejected asks the member to connect
-// again.
+// again. Every call first marks the session, so its browser tasks ask the
+// member from then on (agent/lib/google/browser-gate.ts).
 export async function withGoogle<T>(
   ctx: ToolContext,
   service: string,
   call: (client: GoogleAuthClient) => Promise<T>
 ) {
   const { token } = await ctx.getToken(googleAuth, googleAuthOptions);
+  markGoogleUsed();
   const client = new auth.OAuth2();
   client.setCredentials({ access_token: token });
   let failure: ReturnType<typeof googleFailure>;

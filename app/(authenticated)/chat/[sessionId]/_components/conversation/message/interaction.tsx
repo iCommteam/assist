@@ -136,7 +136,10 @@ export function InteractionActions({
 
   return (
     <Alert variant="warning">
-      <AlertTitle>{request.prompt}</AlertTitle>
+      {/* An approval can show a whole email or event, line by line. */}
+      <AlertTitle className="wrap-break-word whitespace-pre-line">
+        {request.prompt}
+      </AlertTitle>
       <AlertDescription>
         {answer ? (
           <p>

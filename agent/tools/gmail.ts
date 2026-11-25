@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
-import type { ApprovalContext } from "eve/tools/approval";
 import { z } from "zod";
+import {
+  googleApproval,
+  shownLine,
+  shownText,
+} from "@agent/lib/google/approval";
 import { withGoogle } from "@agent/lib/google/client";
 import { boundedText, untrustedNotice } from "@agent/lib/google/content";
 import { googleToolsFor } from "@agent/lib/google/tools";
@@ -14,36 +18,49 @@ type GmailPart = gmail_v1.Schema$MessagePart;
 const service = "Gmail";
 const metadataHeaders = ["From", "To", "Cc", "Subject", "Date", "Message-ID"];
 
+const pageTokenSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(1_000)
+  .optional()
+  .describe("The nextPageToken of an earlier call, for the next page.");
+
 const gmailSearch = defineTool({
   availableInSubagents: false,
   description:
-    "Search the member's own Gmail with Gmail's search syntax (from:, to:, subject:, after:, has:attachment, is:unread, and words). Returns each match's sender, recipients, subject, date and snippet. Read a whole conversation with gmail_read_thread.",
+    "Search the member's own Gmail with Gmail's search syntax (from:, to:, subject:, after:, has:attachment, is:unread, and words). Returns each match's sender, recipients, subject, date and snippet, newest first. When nextPageToken is not null, more mail matches: pass it as pageToken for the next page. Read a whole conversation with gmail_read_thread.",
   inputSchema: z.object({
     maxResults: z.number().int().min(1).max(25).default(10),
+    pageToken: pageTokenSchema,
     query: z.string().trim().min(1).max(500),
   }),
   label: { start: ({ query }) => `Search Gmail for “${query}”` },
-  async execute({ maxResults, query }, ctx) {
+  async execute({ maxResults, pageToken, query }, ctx) {
     requireGoogleScope(ctx);
-    const messages = await withGmail(ctx, async (client) => {
+    const { messages, nextPageToken } = await withGmail(ctx, async (client) => {
       const listed = await client.users.messages.list(
-        { maxResults, q: query, userId: "me" },
+        { maxResults, pageToken, q: query, userId: "me" },
         { signal: ctx.abortSignal }
       );
       const ids = (listed.data.messages ?? []).flatMap(({ id }) =>
         id ? [id] : []
       );
-      return Promise.all(
-        ids.map(async (id) => {
-          const { data } = await client.users.messages.get(
-            { format: "metadata", id, metadataHeaders, userId: "me" },
-            { signal: ctx.abortSignal }
-          );
-          return data;
-        })
-      );
+      return {
+        messages: await Promise.all(
+          ids.map(async (id) => {
+            const { data } = await client.users.messages.get(
+              { format: "metadata", id, metadataHeaders, userId: "me" },
+              { signal: ctx.abortSignal }
+            );
+            return data;
+          })
+        ),
+        nextPageToken: listed.data.nextPageToken ?? null,
+      };
     });
     return {
+      nextPageToken,
       messages: messages.map((message) =>
         Object.assign(messageHeaders(message), {
           snippet: boundedText(message.snippet ?? "", 300).text,
@@ -112,6 +129,16 @@ const draftInputSchema = z.object({
 
 type DraftInput = z.infer<typeof draftInputSchema>;
 
+// A send is shown whole in its approval, so its subject and text are capped
+// at what the approval shows and hold only what the member can see. Longer
+// mail is saved as a draft, which the member sends from Gmail.
+const sendInputSchema = draftInputSchema.extend({
+  body: shownText(4_000),
+  subject: shownLine(200),
+});
+
+type SendInput = z.infer<typeof sendInputSchema>;
+
 const gmailCreateDraft = defineTool({
   availableInSubagents: false,
   description:
@@ -139,15 +166,15 @@ const gmailCreateDraft = defineTool({
 });
 
 // Nothing leaves the mailbox without the member's yes: every call waits for
-// their approval in the chat, which names the recipients and the subject.
+// their approval in the chat, which shows everything that is sent.
 const gmailSend = defineTool({
   availableInSubagents: false,
   description:
-    "Send a plain-text email from the member's own Gmail. Show the member the exact recipients, subject and text first; the member then approves this call in the chat before anything is sent. For a reply, pass the threadId and the Message-ID of the message it answers.",
-  inputSchema: draftInputSchema,
+    "Send a plain-text email of at most 4,000 characters from the member's own Gmail; save longer mail with gmail_create_draft instead, for the member to send from Gmail. Show the member the exact recipients, subject and text first; the member then approves this call in the chat, which shows all of it, before anything is sent. For a reply, pass the threadId and the Message-ID of the message it answers.",
+  inputSchema: sendInputSchema,
   approval: {
     prompt: ({ input }) => sendPrompt(input),
-    request: (context) => approvalOf(context),
+    request: (context) => googleApproval(context),
   },
   label: { start: ({ subject }) => `Send “${subject}” from Gmail` },
   async execute(input, ctx) {
@@ -176,29 +203,23 @@ export default defineDynamic((context) =>
   })
 );
 
-function approvalOf(context: Pick<ApprovalContext, "session">) {
-  try {
-    requireGoogleScope(context);
-  } catch {
-    return {
-      reason: "Google is not available in this conversation.",
-      type: "denied",
-    } as const;
-  }
-  return "user-approval" as const;
-}
-
-// Every address is named, copies and blind copies included: the member
-// approves exactly who receives the mail.
-function sendPrompt(input: DraftInput) {
-  const cc = input.cc.length > 0 ? `, cc ${input.cc.join(", ")}` : "";
-  const bcc = input.bcc.length > 0 ? `, bcc ${input.bcc.join(", ")}` : "";
-  return `Send “${excerpt(input.subject, 120)}” to ${input.to.join(", ")}${cc}${bcc} from your Gmail? “${excerpt(input.body, 240)}”`;
-}
-
-function excerpt(text: string, limit: number) {
-  const line = text.replace(/\s+/gu, " ").trim();
-  return line.length > limit ? `${line.slice(0, limit)}…` : line;
+// The approval shows all that is sent. Every address comes first, copies and
+// blind copies included, then whether the mail answers a conversation; the
+// subject and the whole text, which the model wrote, come last, so nothing in
+// them can pass for a recipient.
+function sendPrompt(input: SendInput) {
+  return [
+    "Send this email from your Gmail?",
+    `To: ${input.to.join(", ")}`,
+    ...(input.cc.length > 0 ? [`Cc: ${input.cc.join(", ")}`] : []),
+    ...(input.bcc.length > 0 ? [`Bcc: ${input.bcc.join(", ")}`] : []),
+    ...(input.threadId || input.inReplyTo
+      ? ["As a reply in an existing conversation"]
+      : []),
+    `Subject: ${input.subject}`,
+    "",
+    input.body,
+  ].join("\n");
 }
 
 function withGmail<T>(

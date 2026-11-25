@@ -1,11 +1,18 @@
 import { defineWorkflowTool } from "eve/tools";
 import { z } from "zod";
+import { browserApproval, browserPrompt } from "@agent/lib/google/browser-gate";
 import { resolveModeValue } from "@agent/lib/mode";
 import { taskCompletionSchema } from "@agent/subagents/browser-agent/lib/completion";
 
 export default defineWorkflowTool({
   description:
-    "Execute one bounded browser assignment and return a verified result. Pass taskId to continue an idle worker with its browser state and context. The completion schema is supplied automatically.",
+    "Execute one bounded browser assignment and return a verified result. Pass taskId to continue an idle worker with its browser state and context. The completion schema is supplied automatically. In a chat that used the member's Google account, each call waits for the member's approval, which shows the whole assignment.",
+  // The approval runs outside the workflow body, which never reaches the
+  // Google gate's imports.
+  approval: {
+    prompt: ({ input }) => browserPrompt(input.message),
+    request: () => browserApproval(),
+  },
   inputSchema: z.object({
     message: z.string().min(1),
   }),

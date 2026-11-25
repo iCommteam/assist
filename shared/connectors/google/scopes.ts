@@ -1,6 +1,6 @@
 // What assist asks Google for when a member connects their account, and what
 // each grant lets the agent do. The README's "Google Workspace" section lists
-// the same scopes; tests/agent/google/scopes.test.ts keeps the two equal.
+// the same scopes; tests/connectors/google-setup.test.ts keeps the two equal.
 // Each scope is the narrowest one Google's API reference accepts for its
 // methods:
 // - gmail.readonly: messages.list, messages.get, threads.get.

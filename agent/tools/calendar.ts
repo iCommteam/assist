@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import { calendar, type calendar_v3 } from "@googleapis/calendar";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
-import type { ApprovalContext } from "eve/tools/approval";
 import { z } from "zod";
+import {
+  googleApproval,
+  shownLine,
+  shownText,
+} from "@agent/lib/google/approval";
 import { googleApiStatus, withGoogle } from "@agent/lib/google/client";
 import { boundedText, untrustedNotice } from "@agent/lib/google/content";
 import { requireGoogleScope } from "@agent/lib/google/offer";
@@ -35,10 +39,17 @@ const calendarIdSchema = z
 const calendarListEvents = defineTool({
   availableInSubagents: false,
   description:
-    "List the events of one Google calendar between two instants, recurring events expanded, earliest first. Optionally only those matching words.",
+    "List the events of one Google calendar between two instants, recurring events expanded, earliest first. Optionally only those matching words. When nextPageToken is not null, more events fall in the range: pass it as pageToken for the next page before saying what the range holds.",
   inputSchema: z.object({
     calendarId: calendarIdSchema,
     maxResults: z.number().int().min(1).max(50).default(20),
+    pageToken: z
+      .string()
+      .trim()
+      .min(1)
+      .max(1_000)
+      .optional()
+      .describe("The nextPageToken of an earlier call, for the next page."),
     query: z.string().trim().min(1).max(200).optional(),
     timeMax: instantSchema,
     timeMin: instantSchema,
@@ -46,14 +57,15 @@ const calendarListEvents = defineTool({
   label: { start: () => "Read Google Calendar" },
   async execute(input, ctx) {
     requireGoogleScope(ctx);
-    const events = await withCalendar(ctx, async (client) => {
+    const listed = await withCalendar(ctx, async (client) => {
       const { data } = await client.events.list(
         {
           calendarId: input.calendarId,
           fields:
-            "items(id,status,summary,description,location,start,end,organizer(email),attendees(email,responseStatus),hangoutLink,htmlLink)",
+            "nextPageToken,items(id,status,summary,description,location,start,end,organizer(email),attendees(email,responseStatus),hangoutLink,htmlLink)",
           maxResults: input.maxResults,
           orderBy: "startTime",
+          pageToken: input.pageToken,
           q: input.query,
           singleEvents: true,
           timeMax: input.timeMax,
@@ -61,10 +73,11 @@ const calendarListEvents = defineTool({
         },
         { signal: ctx.abortSignal }
       );
-      return data.items ?? [];
+      return data;
     });
     return {
-      events: events.map(eventSummary),
+      events: (listed.items ?? []).map(eventSummary),
+      nextPageToken: listed.nextPageToken ?? null,
       notice: untrustedNotice,
     };
   },
@@ -119,14 +132,17 @@ const calendarFreeBusy = defineTool({
   },
 });
 
+// Everything an event carries to other people is shown whole in its
+// approval, so each text is capped at what the approval shows and holds only
+// what the member can see.
 const createEventInputSchema = z.object({
   attendees: z.array(z.email()).max(50).default([]),
   calendarId: calendarIdSchema,
-  description: z.string().max(8_000).optional(),
+  description: shownText(2_000).optional(),
   end: instantSchema,
-  location: z.string().trim().max(1_000).optional(),
+  location: shownLine(300).optional(),
   start: instantSchema,
-  summary: z.string().trim().min(1).max(500),
+  summary: shownLine(200),
   timeZone: timeZoneSchema.describe(
     "The IANA time zone the event is shown in, such as Asia/Jerusalem."
   ),
@@ -139,11 +155,11 @@ type CreateEventInput = z.infer<typeof createEventInputSchema>;
 const calendarCreateEvent = defineTool({
   availableInSubagents: false,
   description:
-    "Create an event on the member's Google calendar and invite its attendees, who get Google's invitation email. Agree the title, time and attendees with the member first; the member then approves this call in the chat before anything is created or sent.",
+    "Create an event on a Google calendar the member can write to (primary is their own) and invite its attendees, who get Google's invitation email with the title, time, location and description (at most 2,000 characters). Agree all of them with the member first; the member then approves this call in the chat, which shows all of it, before anything is created or sent.",
   inputSchema: createEventInputSchema,
   approval: {
     prompt: ({ input }) => createPrompt(input),
-    request: (context) => approvalOf(context),
+    request: (context) => googleApproval(context),
   },
   label: { start: ({ summary }) => `Create “${summary}” in Google Calendar` },
   async execute(input, ctx) {
@@ -206,29 +222,32 @@ export default defineDynamic((context) =>
   })
 );
 
-function approvalOf(context: Pick<ApprovalContext, "session">) {
-  try {
-    requireGoogleScope(context);
-  } catch {
-    return {
-      reason: "Google is not available in this conversation.",
-      type: "denied",
-    } as const;
-  }
-  return "user-approval" as const;
-}
-
+// The approval shows all that the event carries. The calendar it lands on
+// and every guest Google emails come first, then its time; the title,
+// location and description, which the model wrote, come last, the
+// description at the very end, so nothing in them can pass for a guest or
+// the calendar.
 function createPrompt(input: CreateEventInput) {
-  const when = formatRange(input.start, input.end, input.timeZone);
-  const guests =
+  return [
+    input.calendarId === "primary"
+      ? "Create this event in your own Google Calendar?"
+      : `Create this event in the Google calendar ${input.calendarId}?`,
     input.attendees.length > 0
-      ? ` and invite ${input.attendees.join(", ")}`
-      : "";
-  return `Create “${input.summary}” on ${when}${guests} in your Google Calendar?`;
+      ? `Guests, each emailed an invitation with everything below: ${input.attendees.join(", ")}`
+      : "Guests: none",
+    `When: ${formatRange(input.start, input.end, input.timeZone)}`,
+    `Title: ${input.summary}`,
+    ...(input.location === undefined ? [] : [`Where: ${input.location}`]),
+    ...(input.description === undefined
+      ? []
+      : ["Description:", input.description]),
+  ].join("\n");
 }
 
+// The start's day and time, and the end's time, or its day as well when it
+// falls on another day in the event's time zone.
 function formatRange(start: string, end: string, timeZone: string) {
-  const day = new Intl.DateTimeFormat("en-GB", {
+  const dayAndTime = new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
@@ -242,7 +261,11 @@ function formatRange(start: string, end: string, timeZone: string) {
     minute: "2-digit",
     timeZone,
   });
-  return `${day.format(new Date(start))}–${time.format(new Date(end))} (${timeZone})`;
+  const date = new Intl.DateTimeFormat("en-CA", { timeZone });
+  const [from, to] = [new Date(start), new Date(end)];
+  return date.format(from) === date.format(to)
+    ? `${dayAndTime.format(from)}–${time.format(to)} (${timeZone})`
+    : `${dayAndTime.format(from)} to ${dayAndTime.format(to)} (${timeZone})`;
 }
 
 function isTimeZone(value: string) {
