@@ -1,5 +1,9 @@
 import { defineHook, type HookContext } from "eve/hooks";
-import { whatsappRootAccessOf } from "@agent/lib/whatsapp-access";
+import {
+  whatsappAccessOf,
+  whatsappRootAccessOf,
+  whatsappSessionOf,
+} from "@agent/lib/whatsapp-access";
 
 // The root agent's WhatsApp kill switch (agent/hooks/whatsapp-access.ts)
 // never fires for a worker's turns, and a background worker runs on after
@@ -25,7 +29,24 @@ async function checkRootAccess(ctx: HookContext) {
   const root = ctx.session.parent?.rootSessionId;
   if (!root) return;
   const access = await whatsappRootAccessOf(root);
-  if (access === undefined || access === "unknown") return;
-  if (access.level === "full") return;
-  ctx.cancel("WhatsApp full access is off for this member.");
+  if (access !== undefined && access !== "unknown") {
+    if (access.level !== "full") {
+      ctx.cancel("WhatsApp full access is off for this member.");
+    }
+    return;
+  }
+  // No row for the root chat yet, or none could be read: a worker that a
+  // WhatsApp message started still carries the member's principal, so its
+  // access is checked from that, and it stops when that cannot be read.
+  const member = whatsappSessionOf(ctx.session.auth.initiator);
+  if (member?.level !== "full") return;
+  let level: Awaited<ReturnType<typeof whatsappAccessOf>>;
+  try {
+    level = await whatsappAccessOf(member);
+  } catch {
+    level = "none";
+  }
+  if (level !== "full") {
+    ctx.cancel("WhatsApp full access is off for this member.");
+  }
 }

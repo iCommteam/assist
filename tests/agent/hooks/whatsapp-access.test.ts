@@ -354,6 +354,19 @@ describe("the browser worker's WhatsApp kill switch", () => {
     expect(await fireWorker(full)).toHaveBeenCalledOnce();
   });
 
+  it("checks a worker a WhatsApp message started from its own principal while its chat has no row", async () => {
+    expect(await fireWorker(full)).not.toHaveBeenCalled();
+
+    mocks.whatsappLockOf.mockResolvedValue({ everyone: false, self: true });
+    expect(await fireWorker(full)).toHaveBeenCalledOnce();
+
+    mocks.whatsappLockOf.mockRejectedValue(new Error("database down"));
+    expect(await fireWorker(full)).toHaveBeenCalledOnce();
+
+    mocks.whatsappChatOfSession.mockRejectedValue(new Error("database down"));
+    expect(await fireWorker(full)).toHaveBeenCalledOnce();
+  });
+
   it("leaves a worker of any other chat alone, even when its chat cannot be read", async () => {
     expect(await fireWorker(web)).not.toHaveBeenCalled();
     mocks.whatsappChatOfSession.mockRejectedValue(new Error("database down"));
