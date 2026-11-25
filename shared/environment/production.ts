@@ -121,6 +121,24 @@ export function productionEnvironmentProblems(
     problems.push("ASSIST_SIGNUP_CODE must contain at least 16 characters.");
   }
 
+  // The Google connector is off until both are set; one alone is a mistake
+  // that would leave it off without saying why.
+  const googleClientId = value("GOOGLE_CLIENT_ID");
+  const googleClientSecret = value("GOOGLE_CLIENT_SECRET");
+  if ((googleClientId === undefined) !== (googleClientSecret === undefined)) {
+    problems.push(
+      "Set both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, or leave both unset."
+    );
+  }
+  if (
+    googleClientId !== undefined &&
+    !/^[\w.-]+\.apps\.googleusercontent\.com$/u.test(googleClientId)
+  ) {
+    problems.push(
+      "GOOGLE_CLIENT_ID must be an OAuth client ID ending in .apps.googleusercontent.com."
+    );
+  }
+
   const scheduledRunSecret = value("SCHEDULED_RUN_SECRET");
   if (scheduledRunSecret === undefined) {
     problems.push("SCHEDULED_RUN_SECRET is required.");

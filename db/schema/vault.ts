@@ -59,11 +59,14 @@ export const vaultItems = pgTable(
   ]
 );
 
+// Each namespace seals its values under its own key: the vault's saved
+// secrets, and a member's connected accounts, such as Google
+// (db/services/connectors/google.ts).
 export const encryptedSecrets = pgTable(
   "encrypted_secrets",
   {
     workspaceId: text("workspace_id").notNull(),
-    namespace: text("namespace", { enum: ["vault"] }).notNull(),
+    namespace: text("namespace", { enum: ["vault", "connector"] }).notNull(),
     id: text("id").notNull(),
     encryptedValue: text("encrypted_value").notNull(),
     updatedAt: timestamp("updated_at", {
@@ -86,7 +89,7 @@ export const encryptedSecrets = pgTable(
     }).onDelete("cascade"),
     check(
       "encrypted_secrets_namespace_check",
-      sql`${table.namespace} = 'vault'`
+      sql`${table.namespace} IN ('vault', 'connector')`
     ),
   ]
 );

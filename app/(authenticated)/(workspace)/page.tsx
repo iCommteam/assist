@@ -1,6 +1,7 @@
 import { CloudIcon, MessageSquareIcon } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { ConnectorsSection } from "./_components/connectors";
 import { WhatsappAccess } from "./_components/whatsapp-access";
 import { whatsappSection } from "./_data/whatsapp";
 import { Badge } from "@web/components/ui/badge";
@@ -23,6 +24,8 @@ export default async function Page() {
           <WhatsappAccess {...whatsapp} />
         </WorkspaceSection>
       )}
+
+      <ConnectorsSection />
 
       <WorkspaceSection headingId="connectors-heading" title="Infrastructure">
         <div className="divide-y divide-border/50 border-y border-border/50">

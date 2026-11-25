@@ -23,6 +23,9 @@ describe("root and worker capability boundaries", () => {
       "ask_question.ts",
       // Read-only company data, not browser execution (agent/tools/bigquery.ts).
       "bigquery.ts",
+      "calendar.ts",
+      "drive.ts",
+      "gmail.ts",
       "messaging.ts",
       "run_browser.ts",
       "schedules.ts",
