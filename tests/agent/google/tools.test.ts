@@ -458,10 +458,11 @@ describe("approvals", () => {
 
     expect(body).toHaveLength(4_000);
     expect(prompt.endsWith(`\n\n${body}`)).toBe(true);
-    expect(prompt.split("\n").slice(0, 4)).toEqual([
+    expect(prompt.split("\n").slice(0, 5)).toEqual([
       "Send this email from your Gmail?",
       "To: dana@vendor.example",
       "As a reply in an existing conversation",
+      "In reply to: <meeting@vendor.example>",
       "Subject: Re: Meeting",
     ]);
     expect(validates(tools.gmail_send, { ...input, body: `${body}.` })).toBe(
@@ -474,6 +475,61 @@ describe("approvals", () => {
     expect(
       validates(tools.gmail_create_draft, { ...input, body: `${body}.` })
     ).toBe(true);
+  });
+
+  it("puts every header the recipients receive into the approval, and takes one Message-ID alone to answer", async () => {
+    mocks.gmail.users.messages.send.mockResolvedValue({
+      data: { id: "message-1", threadId: "thread-1" },
+    });
+    const tools = await toolsFor(webChat);
+    const input = inputOf(tools.gmail_send, {
+      bcc: ["archive@icommteam.com"],
+      body: "Hi Dana,\nThursday at 10 works for me.",
+      cc: ["finance@icommteam.com"],
+      inReplyTo: "<CA+meeting-1@mail.gmail.com>",
+      subject: "Re: Meeting",
+      threadId: "thread-1",
+      to: ["dana@vendor.example", "ops@vendor.example"],
+    });
+    const prompt = promptOf(tools.gmail_send, input).split("\n");
+
+    await dynamicTool(await gmailTools(), "gmail_send").execute(
+      input,
+      callContext(webChat, "call-send")
+    );
+
+    const [request] = mocks.gmail.users.messages.send.mock.calls[0] ?? [];
+    const raw = Buffer.from(
+      request?.requestBody.raw ?? "",
+      "base64url"
+    ).toString("utf8");
+    const [head = "", body = ""] = raw.split("\r\n\r\n");
+    // assist's own headers say nothing the model wrote.
+    const ours =
+      /^(?:Message-ID|MIME-Version|Content-Type|Content-Transfer-Encoding):/u;
+    const written = head.split("\r\n").filter((line) => !ours.test(line));
+    expect(written).toHaveLength(6);
+    for (const line of written) {
+      const value = line.slice(line.indexOf(": ") + 2);
+      expect({
+        line,
+        shown: prompt.some((shown) => shown.endsWith(value)),
+      }).toEqual({ line, shown: true });
+    }
+    expect(prompt.join("\n")).toContain(
+      Buffer.from(body.replaceAll("\r\n", ""), "base64").toString()
+    );
+
+    for (const inReplyTo of [
+      "<CA+meeting-1@mail.gmail.com> and the payroll sheet",
+      "<CA+meeting-1@mail.gmail.com>\nBcc: x@y.example",
+      "CA+meeting-1@mail.gmail.com",
+    ]) {
+      expect({
+        inReplyTo,
+        valid: validates(tools.gmail_send, { ...input, inReplyTo }),
+      }).toEqual({ inReplyTo, valid: false });
+    }
   });
 
   it("names the calendar, every guest and the whole event before it is created", async () => {

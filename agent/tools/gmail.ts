@@ -111,12 +111,20 @@ const draftInputSchema = z.object({
   bcc: z.array(z.email()).max(20).default([]),
   body: z.string().min(1).max(50_000),
   cc: z.array(z.email()).max(20).default([]),
+  // Written into In-Reply-To and References, which the recipients receive,
+  // so it is one Message-ID and nothing else: <left@right> in printable ASCII.
   inReplyTo: z
     .string()
     .trim()
-    .max(998)
+    .max(300)
+    .regex(
+      /^<[!-;=?A-~]+@[!-;=?A-~]+>$/u,
+      "Pass the Message-ID exactly as read."
+    )
     .optional()
-    .describe("The Message-ID header of the message this one answers."),
+    .describe(
+      "The Message-ID header of the message this one answers, such as <id@mail.gmail.com>."
+    ),
   subject: z.string().trim().min(1).max(500),
   threadId: z
     .string()
@@ -204,9 +212,9 @@ export default defineDynamic((context) =>
 );
 
 // The approval shows all that is sent. Every address comes first, copies and
-// blind copies included, then whether the mail answers a conversation; the
-// subject and the whole text, which the model wrote, come last, so nothing in
-// them can pass for a recipient.
+// blind copies included, then whether the mail answers a conversation and
+// the Message-ID it answers; the subject and the whole text, which the model
+// wrote, come last, so nothing in them can pass for a recipient.
 function sendPrompt(input: SendInput) {
   return [
     "Send this email from your Gmail?",
@@ -216,6 +224,7 @@ function sendPrompt(input: SendInput) {
     ...(input.threadId || input.inReplyTo
       ? ["As a reply in an existing conversation"]
       : []),
+    ...(input.inReplyTo ? [`In reply to: ${input.inReplyTo}`] : []),
     `Subject: ${input.subject}`,
     "",
     input.body,

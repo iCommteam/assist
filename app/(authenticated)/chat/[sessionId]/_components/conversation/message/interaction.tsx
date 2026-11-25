@@ -136,8 +136,9 @@ export function InteractionActions({
 
   return (
     <Alert variant="warning">
-      {/* An approval can show a whole email or event, line by line. */}
-      <AlertTitle className="wrap-break-word whitespace-pre-line">
+      {/* An approval can show a whole email, event or browser assignment,
+          line by line; a long address or token wraps inside the card. */}
+      <AlertTitle className="min-w-0 wrap-anywhere whitespace-pre-line">
         {request.prompt}
       </AlertTitle>
       <AlertDescription>
