@@ -1,4 +1,8 @@
-import type { ChannelFrom, RouteHandlerArgs } from "eve/channels";
+import type {
+  ChannelFrom,
+  ChannelSource,
+  RouteHandlerArgs,
+} from "eve/channels";
 import {
   twilioChannel,
   type TwilioChannelState,
@@ -6,6 +10,7 @@ import {
   type TwilioInboundResult,
   type TwilioTextMessage,
 } from "eve/channels/twilio";
+import { SessionNotActiveError } from "eve/client";
 import type { SessionAuthContext } from "eve/context";
 import { z } from "zod";
 import { enrolledTeamMemberId } from "@db/services/auth/allowlist";
@@ -49,9 +54,16 @@ const channel = twilioChannel({
       const message = sendMessageToolResultSchema.safeParse(
         settledToolResult(event, ctx.view)
       );
-      if (message.success) {
-        await deliver(ctx.channel.twilio, message.data.output);
+      if (!message.success) return;
+      if (
+        !listedForChatMember(ctx.channel.twilio, ctx.session.auth.initiator)
+      ) {
+        console.warn(
+          "[whatsapp] the chat's number is no longer listed for its member; the reply is not sent"
+        );
+        return;
       }
+      await deliver(ctx.channel.twilio, message.data.output);
     },
     // A reply reaches WhatsApp only through send_message, so the model's own
     // text is never posted.
@@ -68,8 +80,8 @@ const channel = twilioChannel({
 });
 
 // Unset, every webhook is refused before anything reads it. A message the
-// messages route dispatches goes to its sender's current chat, which /new and
-// a long silence replace.
+// messages route dispatches goes to its member's current chat on that number,
+// which /new and a long silence replace.
 export default {
   ...channel,
   // oxlint-disable-next-line oxc/no-map-spread -- Keep eve's original route definitions intact when adding the closed check.
@@ -114,8 +126,8 @@ function publicWebhookUrl(request: Request) {
 
 // Decides whether a verified message reaches the agent, and as whom. Only a
 // WhatsApp message to the configured number from a listed member does, once
-// per message id and within its sender's limits; the member must still be
-// able to sign in to assist.
+// per message id, while the member can still sign in to assist, and within
+// their limits. Only such a member is counted, or ever told of the limit.
 async function admit(
   twilio: TwilioHandle,
   message: TwilioTextMessage
@@ -125,20 +137,29 @@ async function admit(
   const email = memberEmailOf(sender);
   if (!email) return null;
   if (!message.messageSid || !firstArrival(message.messageSid)) return null;
-  const claimed = claimMessage(sender);
-  if (!claimed.ok) {
-    await tellLimitOnce(twilio, sender);
-    return null;
+  // Taken before the first await, so the sender's messages keep the order in
+  // which they reach this point.
+  const turn = takeTurn(sender);
+  let handedOn = false;
+  try {
+    const userId = await enrolledTeamMemberId(email);
+    if (!userId) {
+      console.warn("[whatsapp] a listed member cannot sign in; ignoring");
+      return null;
+    }
+    if (!claimMessage(sender).ok) {
+      await tellLimitOnce(twilio, sender);
+      return null;
+    }
+    handOn(message.messageSid, {
+      newChat: isNewChatCommand(message) ? twilio : undefined,
+      turn,
+    });
+    handedOn = true;
+    return { auth: whatsappPrincipal(userId, email) };
+  } finally {
+    if (!handedOn) turn.release();
   }
-  const userId = await enrolledTeamMemberId(email);
-  if (!userId) {
-    console.warn("[whatsapp] a listed member cannot sign in; ignoring");
-    return null;
-  }
-  if (isNewChatCommand(message)) {
-    newChatRequests.set(message.messageSid, twilio);
-  }
-  return { auth: whatsappPrincipal(userId, email) };
 }
 
 const whatsappAddressPattern = /^whatsapp:(\+[1-9]\d{6,14})$/u;
@@ -206,6 +227,23 @@ function memberEmailOf(sender: string) {
     return undefined;
   }
   return [...emails][0];
+}
+
+// A chat's reply goes to its number only while that number is still listed
+// for the member whose chat it is, so a number given to someone else never
+// receives the earlier member's replies, even from a turn sent on the web.
+// eve's own prompts and notices (ask_question's options, a failed turn's
+// notice) do not pass here: eve does not export them to wrap.
+function listedForChatMember(
+  twilio: TwilioHandle,
+  initiator: SessionAuthContext | null
+) {
+  const number = whatsappNumberOf(twilio.from);
+  return (
+    number !== undefined &&
+    initiator?.authenticator === whatsappAuthenticator &&
+    memberEmailOf(number) === initiator.attributes.email
+  );
 }
 
 const reportedProblems = new Set<string>();
@@ -276,57 +314,123 @@ async function tellLimitOnce(twilio: TwilioHandle, sender: string) {
   }
 }
 
-// The /new messages admitted but not yet dispatched, by message id, with the
-// conversation to confirm them in.
-const newChatRequests = new Map<string, TwilioHandle>();
+// A sender's messages reach their chat one at a time, in the order they reach
+// admit, which is after eve's signature check; Twilio itself promises no
+// order. Each message takes its turn there, before any await, and waits for
+// the turn before it to settle, so a message right after /new or a long
+// silence cannot reach the chat being ended, or end the new one. The service
+// runs one replica, so memory holds the queue: its last turn for each listed
+// number, since only those take one.
+const senderQueues = new Map<string, Promise<unknown>>();
 
-// One chat per sender. /new ends it and starts nothing, and a message more
-// than 8 hours after the chat's last activity starts a new one; eve keeps the
-// address, so the next message after an end starts a fresh session there. A
-// sender's messages pass one at a time, so a message right after /new or a
-// long silence cannot reach the chat being ended, or end the new one.
-function chatSessions(
-  args: RouteHandlerArgs<TwilioChannelState>
-): ChannelFrom<TwilioChannelState> {
-  return (address) => {
-    const source = args.from(address);
-    return {
-      ...source,
-      send: (message, options) =>
-        oneAtATime(address, async () => {
-          const messageSid = options.state?.lastMessageSid;
-          const newChat = messageSid
-            ? newChatRequests.get(messageSid)
-            : undefined;
-          if (messageSid) newChatRequests.delete(messageSid);
-          if (newChat) {
-            const ended = await source.end({
-              reason: "The member started a new chat.",
-            });
-            await send(newChat, { Body: newChatReply });
-            return ended;
-          }
-          if (await idleTooLong(args, address)) {
-            await source.end({ reason: "The chat was idle for 8 hours." });
-          }
-          return source.send(message, options);
-        }),
-    };
+function takeTurn(sender: string) {
+  const previous = senderQueues.get(sender) ?? Promise.resolve();
+  const settled = Promise.withResolvers<undefined>();
+  senderQueues.set(sender, Promise.all([previous, settled.promise]));
+  return {
+    previous,
+    release: () => {
+      settled.resolve(undefined);
+    },
   };
 }
 
-const chatsInUse = new Map<string, Promise<unknown>>();
+// The messages admit let through that their chat has not yet taken, by
+// message id: each one's turn and, for /new, the conversation to confirm it
+// in. eve hands an admitted message to its chat at once; one it never hands
+// on gives its turn up after 10 seconds, so it cannot hold up the sender's
+// later messages.
+const unclaimedTurnMs = 10_000;
+const admittedMessages = new Map<
+  string,
+  {
+    readonly newChat: TwilioHandle | undefined;
+    readonly timer: ReturnType<typeof setTimeout>;
+    readonly turn: ReturnType<typeof takeTurn>;
+  }
+>();
 
-// The service runs one replica, so memory can serialize a sender's messages:
-// each starts once the one before it has settled.
-async function oneAtATime<T>(address: string, run: () => Promise<T>) {
-  const previous = chatsInUse.get(address) ?? Promise.resolve();
-  const current = previous.then(run, run);
-  chatsInUse.set(address, current);
+function handOn(
+  messageSid: string,
+  admitted: {
+    readonly newChat: TwilioHandle | undefined;
+    readonly turn: ReturnType<typeof takeTurn>;
+  }
+) {
+  const timer = setTimeout(() => {
+    claimAdmitted(messageSid)?.turn.release();
+  }, unclaimedTurnMs);
+  admittedMessages.set(messageSid, { ...admitted, timer });
+}
+
+function claimAdmitted(messageSid: string | null | undefined) {
+  const admitted = messageSid ? admittedMessages.get(messageSid) : undefined;
+  if (!messageSid || !admitted) return undefined;
+  admittedMessages.delete(messageSid);
+  clearTimeout(admitted.timer);
+  return admitted;
+}
+
+// One chat per member and number. /new ends it and starts nothing, and a
+// message more than 8 hours after the chat's last activity starts a new one;
+// eve keeps the address, so the next message after an end starts a fresh
+// session there. Only send is used on the messages route.
+function chatSessions(
+  args: RouteHandlerArgs<TwilioChannelState>
+): ChannelFrom<TwilioChannelState> {
+  return (address) => ({
+    ...args.from(address),
+    async send(message, options) {
+      const admitted = claimAdmitted(options.state?.lastMessageSid);
+      await admitted?.turn.previous;
+      try {
+        const chat = memberChat(address, options.auth);
+        const source = args.from(chat);
+        if (admitted?.newChat) {
+          const ended = await endChat(source, "The member started a new chat.");
+          await send(admitted.newChat, { Body: newChatReply });
+          return ended;
+        }
+        if (await idleTooLong(args, chat)) {
+          await endChat(source, "The chat was idle for 8 hours.");
+        }
+        return await source.send(message, options);
+      } finally {
+        admitted?.turn.release();
+      }
+    },
+  });
+}
+
+// The chat's address joins the member to the number: a number later listed
+// for someone else starts a chat of theirs, and never reaches the earlier
+// member's.
+function memberChat(address: string, auth: SessionAuthContext | null) {
+  if (!auth) throw new Error("A WhatsApp message reached its chat unadmitted.");
+  return `${address}|${auth.principalId}`;
+}
+
+// Ends the chat at the address. With none open there, or one that stopped
+// meanwhile, there is nothing to end: the receipt then names no session, and
+// waiting on it says why. Any other failure is the caller's.
+async function endChat(
+  source: ChannelSource<TwilioChannelState>,
+  reason: string
+): ReturnType<ChannelSource<TwilioChannelState>["end"]> {
   try {
-    return await current;
-  } finally {
-    if (chatsInUse.get(address) === current) chatsInUse.delete(address);
+    return await source.end({ reason });
+  } catch (error) {
+    if (!SessionNotActiveError.is(error) || error.retryable) throw error;
+    return {
+      deliveryId: "",
+      result: async () => {
+        throw error;
+      },
+      sessionId: "",
+      async *stream() {
+        yield* [];
+      },
+    };
   }
 }
 

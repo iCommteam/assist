@@ -645,13 +645,18 @@ https://assist.icommteam.com/eve/v1/whatsapp/messages
 The signature is checked against that public URL, built from
 `BETTER_AUTH_URL`, so the webhook must use exactly that origin and path.
 
-Each member has one chat. Replying `/new` ends it, and the next message starts
-a fresh one; a message more than 8 hours after the chat's last activity starts
-a new chat by itself. A member may send 30 messages in any hour and 200 in any
-day; past that, messages are dropped and assist says so once an hour. A
-message Twilio posts twice reaches the agent once. These counts live in memory
-and reset when the service restarts. WhatsApp chats also appear in the
-member's chat list in assist's web app.
+Each member has one chat on their number. Replying `/new` ends it, and the
+next message starts a fresh one; a message more than 8 hours after the chat's
+last activity starts a new chat by itself. A chat belongs to its member as well
+as its number: when a number is listed for someone else, their messages start a
+chat of their own, and the earlier member's chat no longer sends its replies to
+that number (a question it asks, or eve's notice of a failed turn, still can).
+A sender's messages reach their chat one at a time, in the order assist
+receives them. A member may send 30 messages in any hour and 200 in any day;
+past that, messages are dropped and assist says so once an hour. Only a member
+who can sign in is counted or told. A message Twilio posts twice reaches the
+agent once. These counts live in memory and reset when the service restarts.
+WhatsApp chats also appear in the member's chat list in assist's web app.
 
 Meta's WhatsApp Business terms bar general-purpose AI assistants on the
 platform since 15 January 2026; an assistant for the company's own business is

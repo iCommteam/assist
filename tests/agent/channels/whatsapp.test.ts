@@ -12,6 +12,7 @@ import type {
   TwilioEventContext,
   TwilioHandle,
 } from "eve/channels/twilio";
+import { SessionNotActiveError } from "eve/client";
 import type { CallSettled, Fact } from "eve/events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { enrolledTeamMemberId } from "@db/services/auth/allowlist";
@@ -142,6 +143,18 @@ function messageParams(
   };
 }
 
+// The principal a listed member's messages run as.
+const memberPrincipal = {
+  attributes: {
+    conversationChannel: "whatsapp",
+    email: "member@example.test",
+    workspaceId: accessScopeForUser("better-auth:user-1").workspaceId,
+  },
+  authenticator: "assist-whatsapp",
+  principalId: "better-auth:user-1",
+  principalType: "user",
+};
+
 // Twilio's signature: HMAC-SHA1 over the URL it called and the sorted
 // parameters, keyed with the account's auth token.
 function signature(
@@ -225,7 +238,19 @@ function routeHarness(session?: ChatSession) {
       fakeDelivery()
     ),
   } satisfies ChannelSource<TwilioChannelState>;
-  const from = vi.fn<ChannelFrom<TwilioChannelState>>(() => source);
+  // What reached each chat address, in order.
+  const operations: { address: string; operation: "end" | "send" }[] = [];
+  const from = vi.fn<ChannelFrom<TwilioChannelState>>((address) => ({
+    ...source,
+    async end(options) {
+      operations.push({ address, operation: "end" });
+      return source.end(options);
+    },
+    async send(message, options) {
+      operations.push({ address, operation: "send" });
+      return source.send(message, options);
+    },
+  }));
   const resolveSession = vi.fn<ChannelResolveSession>(async () => session);
   const args = {
     attachSession:
@@ -246,6 +271,7 @@ function routeHarness(session?: ChatSession) {
   } satisfies RouteHandlerArgs<TwilioChannelState>;
   return {
     from,
+    operations,
     resolveSession,
     source,
     async post(request: Request, path = messagesPath) {
@@ -311,24 +337,15 @@ describe("WhatsApp webhook", () => {
     expect(mocks.enrolledTeamMemberId).toHaveBeenCalledExactlyOnceWith(
       "member@example.test"
     );
-    expect(harness.from).toHaveBeenCalledExactlyOnceWith(
-      `whatsapp:${memberNumber}:${companyNumber}`
-    );
-    const scope = accessScopeForUser("better-auth:user-1");
+    expect(harness.operations).toEqual([
+      {
+        address: `whatsapp:${memberNumber}:${companyNumber}|better-auth:user-1`,
+        operation: "send",
+      },
+    ]);
     expect(harness.source.send).toHaveBeenCalledExactlyOnceWith(
       "Which suppliers did we pay twice this month?",
-      expect.objectContaining({
-        auth: {
-          attributes: {
-            conversationChannel: "whatsapp",
-            email: "member@example.test",
-            workspaceId: scope.workspaceId,
-          },
-          authenticator: "assist-whatsapp",
-          principalId: "better-auth:user-1",
-          principalType: "user",
-        },
-      })
+      expect.objectContaining({ auth: memberPrincipal })
     );
   });
 
@@ -356,6 +373,32 @@ describe("WhatsApp webhook", () => {
 
     expect(response.status).toBe(200);
     expect(harness.from).not.toHaveBeenCalled();
+  });
+
+  it("never counts or answers a listed number whose member cannot sign in, even past the limit", async () => {
+    const unenrolled = "+15550000006";
+    mocks.config.numbers = `${unenrolled}=unenrolled@example.test`;
+    const harness = routeHarness();
+    const fromUnenrolled = () =>
+      harness.post(webhook(messageParams({ From: `whatsapp:${unenrolled}` })));
+
+    for (let sent = 0; sent < 31; sent += 1) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The webhooks arrive one after another.
+      await fromUnenrolled();
+    }
+
+    expect(twilioCalls).toEqual([]);
+    expect(harness.from).not.toHaveBeenCalled();
+
+    // Enrolled later, the member has the whole hour's messages.
+    mocks.enrolledTeamMemberId.mockResolvedValue("user-3");
+    for (let sent = 0; sent < 30; sent += 1) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The webhooks arrive one after another.
+      await fromUnenrolled();
+    }
+
+    expect(harness.source.send).toHaveBeenCalledTimes(30);
+    expect(twilioCalls).toEqual([]);
   });
 
   it("reaches nobody through a number listed for two emails, or an entry that does not parse", async () => {
@@ -469,6 +512,164 @@ describe("WhatsApp chats", () => {
     expect(recent.source.send).toHaveBeenCalledOnce();
   });
 
+  it("confirms /new when no chat is open, for a first message or a second /new", async () => {
+    const harness = routeHarness();
+    harness.source.end.mockRejectedValue(new SessionNotActiveError());
+
+    await harness.post(webhook(messageParams({ Body: "/new" })));
+    await harness.post(webhook(messageParams({ Body: "/new" })));
+
+    expect(harness.source.end).toHaveBeenCalledTimes(2);
+    expect(harness.source.send).not.toHaveBeenCalled();
+    expect(sentBodies().map(({ Body }) => Body)).toEqual([
+      "Started a new chat. What can I help with?",
+      "Started a new chat. What can I help with?",
+    ]);
+  });
+
+  it("says nothing of a new chat when the open one could not be ended", async () => {
+    const harness = routeHarness(sessionLastActiveAt(new Date().toISOString()));
+    harness.source.end.mockRejectedValue(
+      new Error("The runtime is unreachable.")
+    );
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await harness.post(webhook(messageParams({ Body: "/new" })));
+
+    expect(harness.source.end).toHaveBeenCalledOnce();
+    expect(twilioCalls).toEqual([]);
+    expect(harness.source.send).not.toHaveBeenCalled();
+  });
+
+  it("starts a new chat for a message after a long silence when the idle chat stopped first", async () => {
+    const harness = routeHarness(
+      sessionLastActiveAt(
+        new Date(Date.now() - 8 * 60 * 60_000 - 60_000).toISOString()
+      )
+    );
+    harness.source.end.mockRejectedValue(new SessionNotActiveError());
+
+    await harness.post(webhook(messageParams()));
+
+    expect(harness.source.end).toHaveBeenCalledOnce();
+    expect(harness.source.send).toHaveBeenCalledOnce();
+  });
+
+  it("starts the new member's own chat when their number was listed for someone else", async () => {
+    const number = "+15550000010";
+    const chatOf = (userId: string) =>
+      `whatsapp:${number}:${companyNumber}|better-auth:${userId}`;
+    const users = new Map([
+      ["member@example.test", "user-1"],
+      ["other@example.test", "user-2"],
+    ]);
+    mocks.enrolledTeamMemberId.mockImplementation(async (email) =>
+      users.get(email)
+    );
+    const harness = routeHarness();
+    harness.resolveSession.mockImplementation(async (address) =>
+      address === chatOf("user-1")
+        ? sessionLastActiveAt(new Date().toISOString())
+        : undefined
+    );
+    const fromNumber = () =>
+      harness.post(webhook(messageParams({ From: `whatsapp:${number}` })));
+
+    mocks.config.numbers = `${number}=member@example.test`;
+    await fromNumber();
+    mocks.config.numbers = `${number}=other@example.test`;
+    await fromNumber();
+
+    expect(harness.operations).toEqual([
+      { address: chatOf("user-1"), operation: "send" },
+      { address: chatOf("user-2"), operation: "send" },
+    ]);
+    expect(
+      harness.source.send.mock.calls.map(([, options]) => options.auth)
+    ).toEqual([
+      expect.objectContaining({ principalId: "better-auth:user-1" }),
+      expect.objectContaining({ principalId: "better-auth:user-2" }),
+    ]);
+  });
+
+  it("passes a sender's messages on in the order they arrived, when a later one is admitted first", async () => {
+    const sender = "+15550000008";
+    mocks.config.numbers = `${sender}=member@example.test`;
+    const lookups: ((userId: string | undefined) => void)[] = [];
+    mocks.enrolledTeamMemberId.mockImplementation(
+      async () =>
+        new Promise((resolve) => {
+          lookups.push(resolve);
+        })
+    );
+    const harness = routeHarness(sessionLastActiveAt(new Date().toISOString()));
+    const fromSender = (Body: string) =>
+      harness.post(
+        webhook(messageParams({ Body, From: `whatsapp:${sender}` }))
+      );
+
+    const newChat = fromSender("/new");
+    await vi.waitFor(() => {
+      expect(lookups).toHaveLength(1);
+    });
+    const payList = fromSender("Pay list for March");
+    await vi.waitFor(() => {
+      expect(lookups).toHaveLength(2);
+    });
+    lookups[1]?.("user-1");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(harness.operations).toEqual([]);
+
+    lookups[0]?.("user-1");
+    await Promise.all([newChat, payList]);
+
+    expect(harness.operations.map(({ operation }) => operation)).toEqual([
+      "end",
+      "send",
+    ]);
+    expect(harness.source.send).toHaveBeenCalledExactlyOnceWith(
+      "Pay list for March",
+      expect.anything()
+    );
+    expect(sentBodies().map(({ Body }) => Body)).toEqual([
+      "Started a new chat. What can I help with?",
+    ]);
+  });
+
+  it("holds a sender's next message for 10 seconds at most behind one that never reached its chat", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const sender = "+15550000007";
+    mocks.config.numbers = `${sender}=member@example.test`;
+    const harness = routeHarness();
+
+    // A media address eve cannot read: admitted, the message never reaches
+    // its chat.
+    await harness.post(
+      webhook({
+        ...messageParams({ From: `whatsapp:${sender}` }),
+        MediaUrl0: "not a URL",
+        NumMedia: "1",
+      })
+    );
+    const next = harness.post(
+      webhook(messageParams({ From: `whatsapp:${sender}` }))
+    );
+    while (harness.from.mock.calls.length < 2) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Waits for the next message to reach its chat's queue.
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await vi.advanceTimersByTimeAsync(9000);
+
+    expect(harness.source.send).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await next;
+
+    expect(harness.source.send).toHaveBeenCalledOnce();
+  });
+
   it("goes on in the same chat when there is none yet", async () => {
     const harness = routeHarness();
 
@@ -549,7 +750,7 @@ describe("WhatsApp replies", () => {
       },
       position: { index: 0, line: 2 },
       session: {
-        auth: { current: null, initiator: null },
+        auth: { current: null, initiator: memberPrincipal },
         id: "session-1",
         turn: { id: "turn-1", sequence: 0 },
       },
@@ -639,6 +840,30 @@ describe("WhatsApp replies", () => {
     await expect(
       handleCallSettled(settledReply({ kind: "message", text: "Hi" }), context)
     ).rejects.toThrow("Twilio refused a WhatsApp message with HTTP 400.");
+  });
+
+  it("sends a chat's reply only while its number is listed for the chat's member", async () => {
+    const reply = settledReply({ kind: "message", text: "Your pay list." });
+    const listedForAnother = conversation();
+    mocks.config.numbers = `${memberNumber}=other@example.test`;
+
+    await handleCallSettled(reply, listedForAnother.context);
+
+    expect(listedForAnother.request).not.toHaveBeenCalled();
+
+    // A chat no WhatsApp member started.
+    const notWhatsapp = conversation();
+    mocks.config.numbers = `${memberNumber}=member@example.test`;
+
+    await handleCallSettled(reply, {
+      ...notWhatsapp.context,
+      session: {
+        ...notWhatsapp.context.session,
+        auth: { current: null, initiator: null },
+      },
+    });
+
+    expect(notWhatsapp.request).not.toHaveBeenCalled();
   });
 
   it("posts nothing of the model's own text", async () => {
