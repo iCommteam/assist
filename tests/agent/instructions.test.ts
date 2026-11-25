@@ -595,13 +595,16 @@ describe("WhatsApp instructions", () => {
       "Help with the company's business work",
       "WhatsApp's business terms allow an assistant for a company's own business, not a general-purpose AI assistant",
       "on WhatsApp you help with the company's work only",
-      "on WhatsApp you have no browser, no vault or saved logins, no schedules, no Personal Info or saved notes",
+      "on WhatsApp you have no browser, no vault or saved logins, no schedules, no Personal Info or saved notes, and no company systems",
       "Write for a phone. Keep replies short",
       "Reply /new to start a new chat.",
     ]) {
       expect(selected?.content).toContain(text);
     }
     expect(selected?.content).not.toContain("root coordinator");
+    // A locked member's chat is a general business assistant too, never an
+    // accounting one.
+    expect(selected?.content).not.toMatch(/accounting|bookkeeping|teemiq/iu);
   });
 
   it("gives a WhatsApp chat none of the task, browser, execution or chat-app style instructions", async () => {
@@ -631,7 +634,7 @@ describe("WhatsApp full-access instructions", () => {
       "Delegate every browser task through `run_browser`",
       "on WhatsApp you help with the company's work only",
       "A one-time code is never typed on WhatsApp",
-      "send the member the web chat's link from this turn's context",
+      "send the member this chat's link in assist's web app from this turn's context",
       "Schedules, reminders, recurring jobs and monitors are not available on WhatsApp yet",
       "Write for a phone. Keep replies short",
       "Reply /new to start a new chat.",
@@ -643,6 +646,24 @@ describe("WhatsApp full-access instructions", () => {
     expect(selected?.content).not.toContain("schedules-create");
     expect(selected?.content).not.toContain("iMessage");
     expect(selected?.content).not.toMatch(/accounting|bookkeeping|teemiq/iu);
+  });
+
+  // The chat's own page keeps the chat's mode, which has no schedules, so a
+  // schedule needs a new web chat; the chat's link is for a one-time code.
+  it("sends a member who asks for a schedule to a new web chat, never to this chat's page", async () => {
+    const selected = await evaluateDynamic(
+      roleInstructions,
+      whatsappFullContext()
+    );
+    const schedules = selected?.content
+      .split("\n")
+      .find((line) => line.includes("Schedules, reminders"));
+    expect(schedules).toContain(
+      "send the link to a new chat in assist's web app from this turn's context"
+    );
+    expect(schedules).toContain("nor in this chat's page in assist's web app");
+    expect(schedules).not.toContain("send this chat's link");
+    expect(schedules).not.toContain("the web chat's link");
   });
 
   it("gives a full chat execution safety and the worker contract, but not the chat app's voice or a site task's rules", async () => {
@@ -668,6 +689,9 @@ describe("WhatsApp full-access instructions", () => {
     );
     expect(fromWhatsapp?.content).toContain(
       "This chat in assist's web app: https://example.com/chat/session-whatsapp-full"
+    );
+    expect(fromWhatsapp?.content).toContain(
+      "A new chat in assist's web app: https://example.com/chat\n"
     );
     const fromWeb = await evaluateDynamic(
       whatsappTurn,

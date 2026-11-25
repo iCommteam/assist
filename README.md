@@ -795,8 +795,9 @@ BigQuery data, read only" too.
 - The $10 usage limit's continue prompt is answered once per chat; a second
   one stops the turn and the member is told to reply `/new`.
 - An approval or a connector sign-in stops the turn: WhatsApp cannot show
-  one. Schedules are not offered on WhatsApp yet; the agent sends the web
-  chat's link instead.
+  one. Schedules are not offered on WhatsApp yet, nor in the WhatsApp chat's
+  own page on the web, which keeps the chat's tools; the agent sends the link
+  to a new chat in assist's web app, `/chat`, instead.
 - A one-time code is never typed on WhatsApp. The agent sends the chat's link
   in assist's web app, `/chat/{sessionId}`, and the member types the code
   there for the same parked browser worker. Passwords go only into the vault
