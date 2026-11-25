@@ -787,6 +787,28 @@ describe("POST /api/site/tasks owner's note", () => {
       "an email address with a combining accent",
       `billing@vendo${combiningAcute}r.example`,
     ],
+    // An email address with a look-alike @ or dot reads as one once its
+    // letters are folded (NFKC), as TEEMIQ reads it.
+    [
+      "an email address with a fullwidth @ and dot",
+      `billing${String.fromCodePoint(0xff_20)}vendor${String.fromCodePoint(0xff_0e)}example`,
+    ],
+    [
+      "an email address with a fullwidth dot",
+      `billing@vendor${String.fromCodePoint(0xff_0e)}example`,
+    ],
+    [
+      "an email address with a small @",
+      `billing${String.fromCodePoint(0xfe_6b)}vendor.example`,
+    ],
+    [
+      "an email address with a one dot leader",
+      `billing@vendor${String.fromCodePoint(0x20_24)}example`,
+    ],
+    [
+      "an email address with a small full stop",
+      `billing@vendor${String.fromCodePoint(0xfe_52)}example`,
+    ],
   ])(
     "refuses %s with invalid_input before any lookup, starting nothing",
     async (_case, note) => {

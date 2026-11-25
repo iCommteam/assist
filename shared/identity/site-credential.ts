@@ -37,15 +37,20 @@ const invisible = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 // The owner's note for a pinned task's account, as the site's people saved
 // it: where the account keeps its documents and which of them to save. One
 // line of 1 to 300 characters once trimmed, with no email address, so no
-// username rides along. Its shape alone: the site API also checks every
-// address in it against the login's fence.
+// username rides along: not as typed, as it reads, or with its look-alike
+// letters folded, as TEEMIQ reads it. Its shape alone: the site API also
+// checks every address in it against the login's fence.
 export const siteTaskNoteSchema = z
   .string()
   .refine((note) => !noteBreak.test(note))
   .trim()
   .min(1)
   .max(300)
-  .refine((note) => !emailAddress.test(noteAsRead(note)));
+  .refine((note) =>
+    [note, noteAsRead(note), noteFolded(note)].every(
+      (text) => !emailAddress.test(text)
+    )
+  );
 
 // A note as it reads, which is how it is checked: a character that shows
 // nothing and that a note may carry, a direction mark, a grapheme joiner, a
@@ -53,6 +58,15 @@ export const siteTaskNoteSchema = z
 // address it splits one to read. The note itself keeps them.
 export function noteAsRead(note: string) {
   return note.replaceAll(invisible, "");
+}
+
+// A note as it reads with its look-alike letters folded, as TEEMIQ folds it:
+// NFKC, with what shows nothing taken out before and after, so a fullwidth or
+// small @, dot, colon or slash, as in "billing＠vendor．example" or
+// "https:／／", reads as the one it looks like. It is checked as well as the
+// note as it reads, never instead.
+function noteFolded(note: string) {
+  return noteAsRead(noteAsRead(note).normalize("NFKC"));
 }
 
 // The site's own id for the person a chat belongs to, such as a TEEMIQ user

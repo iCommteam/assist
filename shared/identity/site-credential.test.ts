@@ -109,6 +109,15 @@ describe("site channel credential", () => {
       `Send it to billing@vendor${String.fromCodePoint(0x20_0f)}.example`,
       `Send it to billing@vendor${String.fromCodePoint(0x20_0b)}.example`,
       `Send it to billing@vendo${String.fromCodePoint(0x03_01)}r.example`,
+      // Or with a look-alike @ or dot, as it reads once folded: fullwidth,
+      // small, or a one dot leader.
+      `Send it to billing${String.fromCodePoint(0xff_20)}vendor${String.fromCodePoint(0xff_0e)}example`,
+      `Send it to billing@vendor${String.fromCodePoint(0xff_0e)}example`,
+      `Send it to billing${String.fromCodePoint(0xfe_6b)}vendor.example`,
+      `Send it to billing@vendor${String.fromCodePoint(0x20_24)}example`,
+      `Send it to billing@vendor${String.fromCodePoint(0xfe_52)}example`,
+      // Or as typed, though the marks it is made of read as nothing.
+      `Send it to ${String.fromCodePoint(0x20_0e)}@${String.fromCodePoint(0x20_0e)}.${String.fromCodePoint(0x20_0e)}`,
     ]) {
       expect(
         verifySiteCredential(

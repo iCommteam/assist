@@ -470,7 +470,10 @@ characters, which spell words no one sees. The left-to-right and
 right-to-left marks, U+200E and U+200F, are kept, since Hebrew text carries
 them. Unassigned characters are left to the site: TEEMIQ refuses them before
 it sends a note, and which are unassigned depends on the runtime's Unicode
-version. No email address either, anything shaped `name@host.part`. An
+version. No email address either, anything shaped `name@host.part`, as
+typed, as it reads (below) or with its look-alike letters folded as TEEMIQ
+folds them (NFKC, with what shows nothing taken out before and after), so a
+fullwidth or small `@` or dot, as in `billing＠vendor．example`, hides none. An
 address written with a colon and two slashes (a backslash counts as a slash)
 must have text before its colon that ends in `https`, whatever its case, and
 a host after its slashes that the task's browser may open: under the origin's
