@@ -66,6 +66,15 @@ describe("environment", () => {
     ["TWILIO_ACCOUNT_SID", "AC0000"],
     ["TWILIO_WHATSAPP_FROM", "+15551234567"],
     ["TWILIO_WHATSAPP_FROM", "whatsapp:15551234567"],
+    ["ASSIST_BIGQUERY_PROJECT", "Amzbi_418608"],
+    ["ASSIST_BIGQUERY_PROJECT", "a"],
+    ["ASSIST_BIGQUERY_LOCATION", "europe central2"],
+    ["ASSIST_BIGQUERY_DATASETS", "finance"],
+    ["ASSIST_BIGQUERY_DATASETS", "icommsync_amazon_data, finance"],
+    ["ASSIST_BIGQUERY_DATASETS", " , "],
+    ["ASSIST_BIGQUERY_MAX_BYTES", "1000"],
+    ["ASSIST_BIGQUERY_MAX_BYTES", String(11 * 1024 ** 3)],
+    ["ASSIST_BIGQUERY_MAX_BYTES", "two gigabytes"],
   ])("rejects an invalid %s during import", async (name, value) => {
     vi.stubEnv(name, value);
 
@@ -109,6 +118,54 @@ describe("environment", () => {
     }
     const { env } = await import("@shared/environment");
     expect(env).toMatchObject(twilio);
+  });
+
+  it("leaves BigQuery off by default, with the company's project, location, datasets and a 2 GiB cap", async () => {
+    const { bigqueryConfig, env } = await import("@shared/environment");
+
+    expect(bigqueryConfig()).toBeUndefined();
+    expect(env.ASSIST_BIGQUERY_PROJECT).toBe("amzbi-418608");
+    expect(env.ASSIST_BIGQUERY_LOCATION).toBe("europe-central2");
+    expect(env.ASSIST_BIGQUERY_DATASETS).toBeUndefined();
+    expect(env.ASSIST_BIGQUERY_MAX_BYTES).toBe(2 * 1024 ** 3);
+  });
+
+  it("reads a service account key into BigQuery's configuration, and lets the datasets list only narrow the company's three", async () => {
+    // A made-up account; the PEM armour is assembled so no scanner reads it
+    // as a key.
+    const privateKey = [
+      ["-----BEGIN", "PRIVATE", "KEY-----"].join(" "),
+      "TEST-ONLY-NOT-A-KEY",
+      ["-----END", "PRIVATE", "KEY-----"].join(" "),
+      "",
+    ].join("\n");
+    vi.stubEnv(
+      "ASSIST_BIGQUERY_KEY",
+      JSON.stringify({
+        client_email: "reader@test-project.iam.gserviceaccount.com",
+        private_key: privateKey,
+        type: "service_account",
+      })
+    );
+    vi.stubEnv(
+      "ASSIST_BIGQUERY_DATASETS",
+      " amazon_source_data , icommsync_amazon_data,amazon_source_data"
+    );
+    vi.stubEnv("ASSIST_BIGQUERY_MAX_BYTES", String(512 * 1024 ** 2));
+
+    const { bigqueryConfig } = await import("@shared/environment");
+
+    expect(bigqueryConfig()).toEqual({
+      credentials: {
+        clientEmail: "reader@test-project.iam.gserviceaccount.com",
+        privateKey,
+        privateKeyId: undefined,
+      },
+      datasets: ["amazon_source_data", "icommsync_amazon_data"],
+      location: "europe-central2",
+      maxBytes: 512 * 1024 ** 2,
+      project: "amzbi-418608",
+    });
   });
 
   it("reads the WhatsApp members on every call", async () => {

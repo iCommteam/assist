@@ -32,6 +32,7 @@ vi.mock("eve/connections", async (importOriginal) =>
 import teemiq from "@agent/connections/teemiq";
 import personalInfoMemory from "@agent/memory/personal_info";
 import workstreamMemory from "@agent/memory/workstreams";
+import bigquery from "@agent/tools/bigquery";
 import messaging from "@agent/tools/messaging";
 import schedules from "@agent/tools/schedules";
 import siteTask from "@agent/tools/site_task";
@@ -39,10 +40,13 @@ import vault from "@agent/tools/vault";
 
 const member = accessScopeForUser("better-auth:user-1");
 
-const groupedTools = [messaging, schedules, siteTask, vault];
+// BigQuery stays off here: ASSIST_BIGQUERY_KEY is unset, so it adds nothing
+// to any mode (tests/agent/tools/bigquery.test.ts covers it with a key).
+const groupedTools = [bigquery, messaging, schedules, siteTask, vault];
 // The tool files whose tools depend on the session's mode, which
 // groupedTools evaluates; every other root tool file is static.
 const dynamicToolFiles = new Set([
+  "bigquery.ts",
   "messaging.ts",
   "schedules.ts",
   "site_task.ts",

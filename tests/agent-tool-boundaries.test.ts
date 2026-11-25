@@ -21,6 +21,8 @@ describe("root and worker capability boundaries", () => {
     expect(rootAgent.defaultTools).toBe(false);
     expect(toolFiles(rootTools)).toEqual([
       "ask_question.ts",
+      // Read-only company data, not browser execution (agent/tools/bigquery.ts).
+      "bigquery.ts",
       "messaging.ts",
       "run_browser.ts",
       "schedules.ts",

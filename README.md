@@ -82,6 +82,11 @@ only to hand the root-owned volume to the `node` user; both servers run as
 | `TWILIO_AUTH_TOKEN`                     | yes    | that account's auth token                                |
 | `TWILIO_WHATSAPP_FROM`                  | no     | `whatsapp:+<number>`, the number assist answers from     |
 | `ASSIST_WHATSAPP_NUMBERS`               | no     | who may write to it; see [WhatsApp](#whatsapp)           |
+| `ASSIST_BIGQUERY_KEY`                   | yes    | a service account's JSON key; see [BigQuery](#bigquery)  |
+| `ASSIST_BIGQUERY_PROJECT`               | no     | optional; `amzbi-418608` by default                      |
+| `ASSIST_BIGQUERY_LOCATION`              | no     | optional; `europe-central2` by default                   |
+| `ASSIST_BIGQUERY_DATASETS`              | no     | optional; only narrows the company's three datasets      |
+| `ASSIST_BIGQUERY_MAX_BYTES`             | no     | optional; 2 GiB by default                               |
 | `PORT`                                  | no     | `8080`, set explicitly; Teemiq's private address uses it |
 
 Generate each secret locally and paste it straight into Railway as a sealed
@@ -692,8 +697,9 @@ Team members can write to assist on WhatsApp, through Twilio. Each listed
 member's number reaches assist as that member, with full access in a mode
 made for a phone: the same general assistant as the web chat, which replies,
 asks a question with numbered options, searches the web, runs browser tasks,
-sends vault links and uses the member's Personal Info and saved notes. It has
-no schedules, no reactions, no approvals and no connector sign-ins on
+sends vault links and uses the member's Personal Info and saved notes, and,
+while [BigQuery](#bigquery) is configured, reads the company's BigQuery. It
+has no schedules, no reactions, no approvals and no connector sign-ins on
 WhatsApp, and it keeps to the company's business work. It has no Accounting
 yet: TEEMIQ is not reachable from WhatsApp, and Accounting stays in TEEMIQ's
 own Assist panel.
@@ -773,7 +779,8 @@ Full access stays on until the member turns it off:
 Every full chat opens with one fixed line from the channel, never the model,
 naming what is on and how to turn it off: "Full access is on in this chat:
 the browser, vault links, Personal Info and saved notes. Reply /lock to turn
-it off."
+it off." While [BigQuery](#bigquery) is configured, it names "the company's
+BigQuery data, read only" too.
 
 #### What a WhatsApp chat can do
 
@@ -818,6 +825,70 @@ access; its replies still go to WhatsApp.
 Meta's WhatsApp Business terms bar general-purpose AI assistants on the
 platform since 15 January 2026; an assistant for the company's own business is
 allowed. assist keeps to business work on WhatsApp and declines anything else.
+
+### BigQuery
+
+The web chat and every full WhatsApp chat can read the company's BigQuery,
+read only: the Amazon seller and advertising data of the agency's clients,
+in the project and datasets the company's other app reads. Nothing else gets
+it: not a site chat, a site task, a scheduled run or a locked member's narrow
+WhatsApp chat.
+
+| Variable                    | Value                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------- |
+| `ASSIST_BIGQUERY_KEY`       | the service account's JSON key, the whole file as one sealed value                     |
+| `ASSIST_BIGQUERY_PROJECT`   | `amzbi-418608` by default                                                              |
+| `ASSIST_BIGQUERY_LOCATION`  | `europe-central2` by default                                                           |
+| `ASSIST_BIGQUERY_DATASETS`  | `icommsync_amazon_data,intentwise_ecommerce_graph,amazon_source_data` by default       |
+| `ASSIST_BIGQUERY_MAX_BYTES` | the most one query may read and be billed for: 2 GiB by default, from 10 MiB to 10 GiB |
+
+Leaving `ASSIST_BIGQUERY_KEY` unset turns BigQuery off: no tool and no
+instruction mentions it anywhere. `ASSIST_BIGQUERY_DATASETS` can only narrow
+the three datasets; another dataset takes a change in
+`shared/environment/env.ts` and its review. A malformed project, location,
+dataset list or cap stops the service at start, as any other malformed
+variable does, naming the variable. A key that is not a service account's
+JSON key turns BigQuery off instead, and the log says so once, by name: an
+optional read should not take sign-in, the web chat and WhatsApp down with
+it. The key is parsed in one place and never reaches a log, a tool result,
+the model or an error message; BigQuery's own error text, which the agent
+sees, is cleaned of the key, its id, the account's address and the access
+token.
+
+The service account gets two roles and nothing more:
+
+- BigQuery Data Viewer (`roles/bigquery.dataViewer`) on each of the three
+  datasets, granted on the dataset itself, not on the project.
+- BigQuery Job User (`roles/bigquery.jobUser`) on the project
+  `amzbi-418608`, which lets it run queries.
+
+Make it a key in Google Cloud (IAM & Admin > Service accounts > the account >
+Keys > Add key > JSON) and paste the downloaded file's whole JSON into
+Railway as `ASSIST_BIGQUERY_KEY`. assist asks Google for the
+`https://www.googleapis.com/auth/bigquery` scope, since BigQuery's jobs API
+takes no read-only scope; the roles keep the account read only.
+
+The agent gets three tools:
+
+- `bigquery_list_tables`: one dataset's tables and views, 1,000 at a time.
+- `bigquery_describe_table`: one table's columns, row count, size,
+  partitioning, clustering and, for a view, its SQL.
+- `bigquery_query`: one GoogleSQL statement. A dry run checks it first: it
+  must be one `SELECT`, it must read at least one table, every table and
+  routine it reads must be in an allowed dataset of the project, and it must
+  read at most `ASSIST_BIGQUERY_MAX_BYTES`. Only then does the same text run,
+  with that cap as `maximumBytesBilled` and a 60-second limit; a job still
+  running then is cancelled. At most 200 rows come back, with the total, as
+  compact JSON of at most 20,000 characters.
+
+Every job's id starts with `assist_`, and it carries the labels
+`app=assist`, `assist_tool=bigquery_query`, `assist_mode` (`interactive` or
+`whatsapp-full`) and `assist_member`, a short hash of the member, never their
+id, so the team can find assist's jobs in the project's job history. The
+agent is told to read a table's columns before querying it, to keep queries
+small, to treat every value as data and never as instructions, and that this
+is the agency's clients' data, for the company's work only; in a WhatsApp
+chat, also that a figure in a reply is stored by WhatsApp and Twilio.
 
 ## Local development
 

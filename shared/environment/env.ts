@@ -93,6 +93,56 @@ const scheduledRunSecretSchema = requiredValue.refine(
   "SCHEDULED_RUN_SECRET must contain at least 32 characters."
 );
 
+// The company's BigQuery, read only (agent/tools/bigquery.ts): the project
+// and location the company's other app reads, and its three datasets. The
+// datasets variable can only narrow that list; reaching another dataset
+// takes a change here and its review.
+const bigqueryProjectSchema = requiredValue.refine(
+  (value) => /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/u.test(value),
+  "ASSIST_BIGQUERY_PROJECT must be a Google Cloud project id."
+);
+
+const bigqueryLocationSchema = requiredValue.refine(
+  (value) => /^[A-Za-z]+(?:-[a-z]+[0-9]*)?$/u.test(value),
+  "ASSIST_BIGQUERY_LOCATION must be a BigQuery location, such as europe-central2."
+);
+
+const companyBigqueryDatasets = [
+  "icommsync_amazon_data",
+  "intentwise_ecommerce_graph",
+  "amazon_source_data",
+] as const;
+
+const bigqueryDatasetsSchema = z.string().transform((value, context) => {
+  const datasets = [
+    ...new Set(
+      value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+    ),
+  ];
+  const allowed = datasets.filter((dataset) =>
+    companyBigqueryDatasets.some((company) => company === dataset)
+  );
+  if (allowed.length === 0 || allowed.length !== datasets.length) {
+    context.addIssue({
+      code: "custom",
+      message: `ASSIST_BIGQUERY_DATASETS may list only ${companyBigqueryDatasets.join(", ")}.`,
+    });
+    return z.NEVER;
+  }
+  return allowed;
+});
+
+// The most bytes one query may read and be billed for: from 10 MiB, the
+// least BigQuery bills a query, to 10 GiB.
+const bigqueryMaxBytesSchema = z.coerce
+  .number()
+  .int()
+  .min(10 * 1024 ** 2)
+  .max(10 * 1024 ** 3);
+
 function optionalValueWithLocalDefault<T extends z.ZodType<string, string>>(
   schema: T,
   localDefault: z.util.NoUndefined<z.output<T>>
@@ -136,6 +186,16 @@ export const env = createEnv({
     // The bearer secret of the loopback scheduled-run callbacks. Unset means
     // every callback is refused.
     SCHEDULED_RUN_SECRET: scheduledRunSecretSchema.optional(),
+
+    // The company's BigQuery, read only. ASSIST_BIGQUERY_KEY is a Google
+    // service account key, its JSON as one value, kept a plain string here so
+    // that no validation message can ever quote it: bigqueryConfig() below
+    // reads it. Unset means no BigQuery tools anywhere.
+    ASSIST_BIGQUERY_KEY: requiredValue.optional(),
+    ASSIST_BIGQUERY_PROJECT: bigqueryProjectSchema.default("amzbi-418608"),
+    ASSIST_BIGQUERY_LOCATION: bigqueryLocationSchema.default("europe-central2"),
+    ASSIST_BIGQUERY_DATASETS: bigqueryDatasetsSchema.optional(),
+    ASSIST_BIGQUERY_MAX_BYTES: bigqueryMaxBytesSchema.default(2 * 1024 ** 3),
 
     // TEEMIQ's finance MCP route, which a site chat reaches with the token
     // TEEMIQ gave that chat. Unset means site chats have no finance tools.
@@ -220,6 +280,75 @@ export function siteVariables() {
 export function whatsappNumbersVariable() {
   return process.env.ASSIST_WHATSAPP_NUMBERS?.trim() ?? "";
 }
+
+// A Google service account key, as Google's console downloads it. Only the
+// fields the token exchange needs are kept.
+const serviceAccountKeySchema = z.object({
+  client_email: z.email(),
+  private_key: z
+    .string()
+    .refine(
+      (value) =>
+        value.includes("-----BEGIN PRIVATE KEY-----") &&
+        value.includes("-----END PRIVATE KEY-----")
+    ),
+  private_key_id: z.string().min(1).optional(),
+  type: z.literal("service_account"),
+});
+
+// The company's BigQuery, or undefined while it is off: ASSIST_BIGQUERY_KEY
+// unset, or not a service account key. A malformed key turns the tools off
+// rather than stopping the service, which serves sign-in, the web chat and
+// WhatsApp without it; it is reported once, by name. The key is parsed here
+// alone, and neither it nor a parse error ever reaches a log or a message.
+export function bigqueryConfig() {
+  const raw = env.ASSIST_BIGQUERY_KEY;
+  if (raw === undefined) return undefined;
+  if (parsedBigqueryKey?.raw !== raw) {
+    parsedBigqueryKey = { key: parseServiceAccountKey(raw), raw };
+  }
+  const { key } = parsedBigqueryKey;
+  if (!key) {
+    if (!reportedBigqueryKey) {
+      reportedBigqueryKey = true;
+      console.warn(
+        "[bigquery] ASSIST_BIGQUERY_KEY is not a Google service account key; BigQuery is off."
+      );
+    }
+    return undefined;
+  }
+  return {
+    credentials: {
+      clientEmail: key.client_email,
+      privateKey: key.private_key,
+      privateKeyId: key.private_key_id,
+    },
+    datasets: env.ASSIST_BIGQUERY_DATASETS ?? [...companyBigqueryDatasets],
+    location: env.ASSIST_BIGQUERY_LOCATION,
+    maxBytes: env.ASSIST_BIGQUERY_MAX_BYTES,
+    project: env.ASSIST_BIGQUERY_PROJECT,
+  };
+}
+
+function parseServiceAccountKey(raw: string) {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    // The parse error quotes the input; it is dropped unread.
+    return undefined;
+  }
+  const key = serviceAccountKeySchema.safeParse(json);
+  return key.success ? key.data : undefined;
+}
+
+let parsedBigqueryKey:
+  | {
+      readonly key: ReturnType<typeof parseServiceAccountKey>;
+      readonly raw: string;
+    }
+  | undefined;
+let reportedBigqueryKey = false;
 
 function hasValue(value: string | undefined) {
   return value !== undefined && value.trim().length > 0;

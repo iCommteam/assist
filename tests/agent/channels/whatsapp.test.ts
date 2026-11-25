@@ -57,6 +57,7 @@ const messagesPath = "/eve/v1/whatsapp/messages";
 // What the mocked environment reads; undefined is unset.
 interface TestConfig {
   accountSid: string | undefined;
+  bigquery: boolean;
   authToken: string | undefined;
   from: string | undefined;
   numbers: string;
@@ -65,6 +66,7 @@ interface TestConfig {
 const mocks = vi.hoisted(() => {
   const config: TestConfig = {
     accountSid: undefined,
+    bigquery: false,
     authToken: undefined,
     from: undefined,
     numbers: "",
@@ -92,6 +94,8 @@ vi.mock("@shared/environment", () => ({
       return mocks.config.from;
     },
   },
+  // Only whether BigQuery is configured reaches the channel.
+  bigqueryConfig: () => (mocks.config.bigquery ? {} : undefined),
   whatsappNumbersVariable: () => mocks.config.numbers,
 }));
 vi.mock("@shared/environment/origin", () => ({
@@ -158,6 +162,7 @@ beforeEach(async () => {
   );
   Object.assign(mocks.config, {
     accountSid,
+    bigquery: false,
     authToken,
     from: companyNumber,
     numbers: `${memberNumber}=Member@Example.test, +15550000009=other@example.test`,
@@ -499,6 +504,17 @@ describe("WhatsApp webhook", () => {
       `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages/${params.MessageSid}.json`
     );
     expect(sentTexts()).toEqual([announcement]);
+  });
+
+  it("names the company's BigQuery in the fixed line while it is configured", async () => {
+    mocks.config.bigquery = true;
+    const harness = routeHarness();
+
+    await harness.post(webhook(messageParams()));
+
+    expect(sentTexts()).toEqual([
+      "Full access is on in this chat: the browser, vault links, Personal Info, saved notes and the company's BigQuery data, read only. Reply /lock to turn it off.",
+    ]);
   });
 
   it.each([

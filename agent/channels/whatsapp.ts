@@ -52,7 +52,7 @@ import {
   whatsappSessionOf,
 } from "@agent/lib/whatsapp-access";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
-import { env } from "@shared/environment";
+import { bigqueryConfig, env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 import { memberEmailOf } from "@shared/environment/whatsapp";
 
@@ -99,7 +99,10 @@ function lockReply() {
 // The one fixed line a full chat opens with, from the channel, never the
 // model: what is on, and how to turn it off.
 function announcement() {
-  return "Full access is on in this chat: the browser, vault links, Personal Info and saved notes. Reply /lock to turn it off.";
+  const on = bigqueryConfig()
+    ? "the browser, vault links, Personal Info, saved notes and the company's BigQuery data, read only"
+    : "the browser, vault links, Personal Info and saved notes";
+  return `Full access is on in this chat: ${on}. Reply /lock to turn it off.`;
 }
 
 const events = {
