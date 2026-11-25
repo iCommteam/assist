@@ -81,7 +81,7 @@ only to hand the root-owned volume to the `node` user; both servers run as
 | `TWILIO_ACCOUNT_SID`                    | no     | the Twilio account; see [WhatsApp](#whatsapp)            |
 | `TWILIO_AUTH_TOKEN`                     | yes    | that account's auth token                                |
 | `TWILIO_WHATSAPP_FROM`                  | no     | `whatsapp:+<number>`, the number assist answers from     |
-| `ASSIST_WHATSAPP_NUMBERS`               | no     | who may write to it; see [WhatsApp](#whatsapp)           |
+| `ASSIST_WHATSAPP_NUMBERS`               | no     | numbers the server sets; see [WhatsApp](#whatsapp)       |
 | `ASSIST_BIGQUERY_KEY`                   | yes    | a service account's JSON key; see [BigQuery](#bigquery)  |
 | `ASSIST_BIGQUERY_EMAILS`                | no     | `vkolek@icommerceteam.com`; see [BigQuery](#bigquery)    |
 | `ASSIST_BIGQUERY_PROJECT`               | no     | optional; `amzbi-418608` by default                      |
@@ -694,34 +694,38 @@ format; re-run it after the upgrade.
 
 ### WhatsApp
 
-Team members can write to assist on WhatsApp, through Twilio. Each listed
-member's number reaches assist as that member, with full access in a mode
-made for a phone: the same general assistant as the web chat, which replies,
-asks a question with numbered options, searches the web, runs browser tasks,
-sends vault links and uses the member's Personal Info and saved notes, and,
-for a member who has [BigQuery](#bigquery), reads the company's BigQuery. It
-has no schedules, no reactions, no approvals and no connector sign-ins on
-WhatsApp, and it keeps to the company's business work. It has no Accounting
-yet: TEEMIQ is not reachable from WhatsApp, and Accounting stays in TEEMIQ's
-own Assist panel.
+Team members can write to assist on WhatsApp, through Twilio. Each member
+connects their own number from the Workspace page (see
+[Connect WhatsApp](#connect-whatsapp)), or an operator sets it in
+`ASSIST_WHATSAPP_NUMBERS`. That number reaches assist as that member, with
+full access in a mode made for a phone: the same general assistant as the web
+chat, which replies, asks a question with numbered options, searches the web,
+runs browser tasks, sends vault links and uses the member's Personal Info and
+saved notes, and, for a member who has [BigQuery](#bigquery), reads the
+company's BigQuery. It has no schedules, no reactions, no approvals and no
+connector sign-ins on WhatsApp, and it keeps to the company's business work.
+It has no Accounting yet: TEEMIQ is not reachable from WhatsApp, and
+Accounting stays in TEEMIQ's own Assist panel.
 Replies are short text for a phone, split at Twilio's 1,600 characters per
 message, and each attachment goes as a message of its own.
 
-| Variable                  | Value                                                                        |
-| ------------------------- | ---------------------------------------------------------------------------- |
-| `TWILIO_ACCOUNT_SID`      | the Twilio account's SID, `AC` and 32 hex digits                             |
-| `TWILIO_AUTH_TOKEN`       | that account's auth token, sealed; it checks every webhook's signature       |
-| `TWILIO_WHATSAPP_FROM`    | the WhatsApp number assist answers from, such as `whatsapp:+14155238886`     |
-| `ASSIST_WHATSAPP_NUMBERS` | each member's number and assist email, `+15551234567=member@example.com,...` |
+| Variable                  | Value                                                                    |
+| ------------------------- | ------------------------------------------------------------------------ |
+| `TWILIO_ACCOUNT_SID`      | the Twilio account's SID, `AC` and 32 hex digits                         |
+| `TWILIO_AUTH_TOKEN`       | that account's auth token, sealed; it checks every webhook's signature   |
+| `TWILIO_WHATSAPP_FROM`    | the WhatsApp number assist answers from, such as `whatsapp:+14155238886` |
+| `ASSIST_WHATSAPP_NUMBERS` | optional: numbers the server sets, `+15551234567=member@example.com,...` |
 
 Leaving any of the three `TWILIO_` variables unset closes the channel: every
-webhook is refused. `ASSIST_WHATSAPP_NUMBERS` is the only setup: every number
-on it gets full access, and it is read on every message, reply, turn and model
-call. A number listed for two emails, or an entry that does not parse, reaches
-nobody, and the log says so without the values. A member must also pass
-assist's own sign-in rules: on `ASSIST_ALLOWED_EMAILS`, registered, and
-enrolled in an authenticator. A message from anyone else gets an empty reply
-and reaches nothing, and so does a call.
+webhook is refused. Who a number reaches is read on every message, reply, turn
+and model call: `ASSIST_WHATSAPP_NUMBERS` first, then the numbers members
+connected themselves. Every number that reaches a member gets full access, a
+connected one exactly as a listed one. A number listed for two emails, or an
+entry that does not parse, reaches nobody, and the log says so without the
+values. A member must also pass assist's own sign-in rules: on
+`ASSIST_ALLOWED_EMAILS`, registered, and enrolled in an authenticator. A
+message from anyone else gets an empty reply and reaches nothing, and so does
+a call; only a `link` message with a code, below, gets an answer.
 
 Set the webhook that Twilio posts each incoming message to (HTTP POST):
 
@@ -737,11 +741,65 @@ https://assist.icommteam.com/eve/v1/whatsapp/messages
 The signature is checked against that public URL, built from
 `BETTER_AUTH_URL`, so the webhook must use exactly that origin and path.
 
+#### Connect WhatsApp
+
+A member connects their own number on assist's Workspace page, which shows a
+WhatsApp section to every signed-in member while the channel is configured:
+
+1. Press Connect WhatsApp. The page shows a link code, a QR code to scan with
+   the phone, and an Open WhatsApp button for someone already on their phone.
+   Both open a WhatsApp message to the company's number with `link <code>` in
+   it; the code can also be typed there by hand.
+2. Send that message. The page checks every few seconds, and when the page
+   regains focus, and shows the number as connected once it is. WhatsApp
+   answers with one line naming the assist email the number is now connected
+   to, that full access is on, and that `/lock` turns it off; for a member
+   who had locked WhatsApp, that it is off, with the link to turn it back on.
+
+A code is 8 letters and digits with no 0, O, 1, I or L, read in any case,
+and works once, for 10 minutes. A new code replaces the member's earlier one,
+and Cancel deletes it. Only an HMAC of the code is stored, keyed from
+`BETTER_AUTH_SECRET`. A `link` message is checked as a full chat's message
+is, whoever sends it: its signature, its message id once, and Twilio's own
+record of it, so a forged or replayed webhook links nothing. Then one
+transaction checks the limits, finds the live code, checks that its member
+may use WhatsApp (the sign-in rules above), uses the code up and saves the
+number. A member has one connected number, and a number one member: a member
+who connects a new number has it in place of the old one, whose full chats
+end, as a lock ends them.
+
+Every failure, a wrong, expired or used code or a member who cannot use
+WhatsApp, gets the same line, which names nothing: the code did not work, and
+a new one is on the Workspace page, with its link. Five failed attempts from
+one number in an hour, or 50 from all numbers, and further attempts get no
+answer until the hour has passed; the counts live in the database. A `link`
+message from a number that is already connected answers that it is connected
+to the same member, or that it belongs to another account and must be
+disconnected first; from any number, a message that is only `link` and a
+code never reaches the agent.
+
+`ASSIST_WHATSAPP_NUMBERS` is the operator's override. A number on it always
+reaches its listed email, is never connected by a code, and its member is told
+it is set by the server; a connection made before the number was listed is
+ignored while it is, and counts again once the entry goes. To give a member a
+number that way, add `+<number>=<email>` to the list; to take it away,
+remove the entry.
+
+A connected number shows on the Workspace page in full, with since when, the
+lock and Disconnect, behind a confirm; a number the server sets shows "Set by
+the server" and no Disconnect. A member whose only numbers the server sets
+can still connect one of their own. Disconnect deletes the connection and
+ends that number's full chats through the same loopback route the lock uses;
+nothing is sent on WhatsApp. Only the member or an administrator
+(`ASSIST_ADMIN_EMAILS`) may disconnect it: an administrator also sees every
+connected number, partly hidden, with its email, since when and whether it
+is connected or set by the server, beside Lock everyone.
+
 #### Twilio's record of each message
 
 A signed webhook proves only that the poster holds the auth token. So every
-message of a full chat must also match Twilio's own record of it, which assist
-reads with the account's credentials
+message of a full chat, and every `link` message, must also match Twilio's
+own record of it, which assist reads with the account's credentials
 (`GET /2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}.json`): an
 inbound message of this account, to `TWILIO_WHATSAPP_FROM`, from the member's
 number, with the same body and the same number of media items, created at most
@@ -767,7 +825,7 @@ Full access stays on until the member turns it off:
 - A lock ends the member's full chats at once, any number's, through a
   loopback route of the WhatsApp channel (`/internal/whatsapp/end`, with
   `SCHEDULED_RUN_SECRET` as the bearer). Before every turn, model call and
-  tool call, the root agent and the browser worker also check the listing,
+  tool call, the root agent and the browser worker also check the number,
   the sign-in rules and the lock again, so a turn or a background worker that
   is still running stops at its next step. An emptied
   `ASSIST_WHATSAPP_NUMBERS` takes effect once the deploy that applies it is
@@ -791,7 +849,7 @@ BigQuery data, read only" too.
 
 - Questions reach the member as numbered options; a typed number answers.
   The channel draws each one itself, through the same check as a reply: the
-  number still listed for the chat's member, full access still on for a full
+  number still reaching the chat's member, full access still on for a full
   chat, and the member's 24-hour window open.
 - The $10 usage limit's continue prompt is answered once per chat; a second
   one stops the turn and the member is told to reply `/new`.
@@ -821,17 +879,18 @@ Replying `/new` ends it, and the next message starts a fresh one; a message
 more than 8 hours after the chat's last activity starts a new chat by itself,
 and so does the first message after a lock or an unlock, which also ends the
 chat at the other level. A chat belongs to its member as well as its number:
-when a number is listed for someone else, their messages start a chat of their
+when a number reaches someone else, their messages start a chat of their
 own, and the earlier member's chat no longer sends its replies, its questions
 or its notices to that number. A sender's messages reach their chat one at a
 time, in the order assist receives them. A member may send 30 messages in any
 hour and 200 in any day, `/new` and `/lock` included; past that, messages are
 dropped and assist says so once an hour. Only a member who can sign in is
-recorded, counted or told. A message Twilio posts twice reaches the agent
-once. The message ids, the counts and the window live in the database, so
-they survive a restart. WhatsApp chats also appear in the member's chat list
-in assist's web app, and a turn the member types there keeps the chat's
-access; its replies still go to WhatsApp.
+recorded, counted or told, except that a `link` message's id is recorded
+from any number, so Twilio posting it twice links once. A message Twilio
+posts twice reaches the agent once. The message ids, the counts and the
+window live in the database, so they survive a restart. WhatsApp chats also
+appear in the member's chat list in assist's web app, and a turn the member
+types there keeps the chat's access; its replies still go to WhatsApp.
 
 Meta's WhatsApp Business terms bar general-purpose AI assistants on the
 platform since 15 January 2026; an assistant for the company's own business is
@@ -870,9 +929,10 @@ access token.
 `ASSIST_BIGQUERY_EMAILS` decides who has it. Unset or empty, nobody does,
 even with a key. Like `ASSIST_ALLOWED_EMAILS`, it is comma-separated and
 case-insensitive. A web chat's member is the account they signed in with,
-read from the database on every call; a full WhatsApp chat's is the email
-`ASSIST_WHATSAPP_NUMBERS` lists for its number. The tools, their instructions
-and the full chat's fixed line all follow the list. Each tool call checks it
+read from the database on every call; a full WhatsApp chat's is the email its
+number reaches, listed in `ASSIST_WHATSAPP_NUMBERS` or connected by the
+member. The tools, their instructions and the full chat's fixed line all
+follow the list. Each tool call checks it
 again, so an email taken off the list loses BigQuery at its next call, once
 the deploy that applies the change is live.
 
