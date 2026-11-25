@@ -13,6 +13,7 @@ vi.mock("eve/instructions", async (importOriginal) =>
 import executionSafety from "@agent/instructions/10-execution-safety";
 import roleInstructions from "@agent/instructions/20-role";
 import siteTask from "@agent/instructions/22-site-task";
+import whatsappTurn from "@agent/instructions/24-whatsapp-turn";
 import workerCoordination from "@agent/instructions/25-worker-coordination";
 import messageStyle from "@agent/instructions/30-message-style";
 import workerSiteLogin from "@agent/subagents/browser-agent/instructions/site-login";
@@ -617,6 +618,95 @@ describe("WhatsApp instructions", () => {
     expect(selected).toEqual([null, null, null, null, null]);
   });
 });
+
+describe("WhatsApp full-access instructions", () => {
+  it("makes a full chat the member's business assistant on a phone, with the browser, vault links and memory, and nothing of iMessage", async () => {
+    const selected = await evaluateDynamic(
+      roleInstructions,
+      whatsappFullContext()
+    );
+    for (const text of [
+      "You are iCommAssist, the company's business assistant on WhatsApp, talking with one member of the company's own team, with their full access",
+      "Delegate every browser task through `run_browser`",
+      "on WhatsApp you help with the company's work only",
+      "A one-time code is never typed on WhatsApp",
+      "send the member the web chat's link from this turn's context",
+      "Schedules, reminders, recurring jobs and monitors are not available on WhatsApp yet",
+      "Write for a phone. Keep replies short",
+      "Reply /new to start a new chat.",
+      "There are no reactions on WhatsApp.",
+    ]) {
+      expect(selected?.content).toContain(text);
+    }
+    expect(selected?.content).not.toContain("react_to_message");
+    expect(selected?.content).not.toContain("schedules-create");
+    expect(selected?.content).not.toContain("iMessage");
+  });
+
+  it("gives a full chat execution safety and the worker contract, but not the chat app's voice or a site task's rules", async () => {
+    const context = whatsappFullContext();
+    const [safety, coordination, style, task] = await Promise.all(
+      [executionSafety, workerCoordination, messageStyle, siteTask].map(
+        (definition) => evaluateDynamic(definition, context)
+      )
+    );
+    expect(safety?.content).toContain("# Execution safety");
+    expect(coordination?.content).toContain("# Browser worker contract");
+    expect(style).toBeNull();
+    expect(task).toBeNull();
+  });
+
+  it("says where this turn's message came from and links the chat in the web app", async () => {
+    const fromWhatsapp = await evaluateDynamic(
+      whatsappTurn,
+      whatsappFullContext()
+    );
+    expect(fromWhatsapp?.content).toContain(
+      "This turn's message came from the member's WhatsApp."
+    );
+    expect(fromWhatsapp?.content).toContain(
+      "This chat in assist's web app: https://example.com/chat/session-whatsapp-full"
+    );
+    const fromWeb = await evaluateDynamic(
+      whatsappTurn,
+      whatsappFullContext("web")
+    );
+    expect(fromWeb?.content).toContain(
+      "This turn's message came from assist's web app"
+    );
+    expect(await evaluateDynamic(whatsappTurn, whatsappContext())).toBeNull();
+  });
+});
+
+function whatsappFullContext(sender: "whatsapp" | "web" = "whatsapp") {
+  const workspaceId = accessScopeForUser("better-auth:member-1").workspaceId;
+  const whatsapp = {
+    attributes: {
+      conversationChannel: "whatsapp",
+      email: "member@example.test",
+      whatsappAccess: "full",
+      whatsappNumber: "+15550000001",
+      workspaceId,
+    },
+    authenticator: "assist-whatsapp",
+    principalId: "better-auth:member-1",
+    principalType: "user",
+  };
+  const web = {
+    attributes: { conversationChannel: "eve", workspaceId },
+    authenticator: "authjs",
+    principalId: "better-auth:member-1",
+    principalType: "user",
+  };
+  return dynamicContextFor({
+    auth: {
+      current: sender === "whatsapp" ? whatsapp : web,
+      initiator: whatsapp,
+    },
+    channel: { kind: "channel:whatsapp", metadata: {} },
+    sessionId: "session-whatsapp-full",
+  });
+}
 
 function whatsappContext() {
   const whatsapp = {

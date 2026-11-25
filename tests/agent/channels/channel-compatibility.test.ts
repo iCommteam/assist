@@ -26,6 +26,11 @@ describe("compiled channel compatibility", () => {
     expect(whatsapp.adapter["call.settled"]).toBeTypeOf("function");
     expect(whatsapp.adapter["content.completed"]).toBeTypeOf("function");
     expect(whatsapp.adapter["interaction.opened"]).toBeTypeOf("function");
+    // eve registers the channel's own prompt drawing in place of its
+    // ungated prompt queue (agent/channels/whatsapp.ts).
+    expect(whatsapp.adapter.committed).toBeTypeOf("function");
+    expect(whatsapp.adapter["turn.settled"]).toBeTypeOf("function");
+    expect(whatsapp.adapter["session.ended"]).toBeTypeOf("function");
   });
 
   it.each([

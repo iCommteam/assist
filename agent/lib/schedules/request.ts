@@ -1,11 +1,7 @@
-import { readFile } from "node:fs/promises";
-import { z } from "zod";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { extractBearerToken, type AuthFn } from "eve/channels/auth";
 import { env } from "@shared/environment";
-
-const eveDevServerSchema = z.object({
-  appRoot: z.string(),
-  origin: z.url(),
-});
+import { postLoopbackRoute } from "@shared/environment/loopback";
 
 interface ScheduledRunRequestBodies {
   "/internal/scheduled-run/report": { runId: string };
@@ -22,40 +18,12 @@ interface ScheduledRunRequestBodies {
 export async function postScheduledRunRoute<
   Route extends keyof ScheduledRunRequestBodies,
 >(route: Route, body: ScheduledRunRequestBodies[Route]) {
-  const secret = env.SCHEDULED_RUN_SECRET;
-  if (!secret) {
+  if (!env.SCHEDULED_RUN_SECRET) {
     throw new Error(
       "Scheduled-run callbacks are disabled. Set SCHEDULED_RUN_SECRET."
     );
   }
-  const origin = await scheduledRunOrigin();
-  return fetch(new URL(route, origin), {
-    body: JSON.stringify(body),
-    headers: {
-      authorization: `Bearer ${secret}`,
-      "content-type": "application/json",
-    },
-    method: "POST",
-    redirect: "error",
-  });
-}
-
-// `eve dev` listens on a port it picks itself and records it for Next; every
-// other process is the eve server that `withEve` starts beside `next start`.
-async function scheduledRunOrigin() {
-  if (env.NODE_ENV === "development") {
-    try {
-      const registry = eveDevServerSchema.parse(
-        JSON.parse(await readFile(".eve/next-dev-server.json", "utf8"))
-      );
-      if (registry.appRoot === process.cwd()) {
-        return new URL(registry.origin).origin;
-      }
-    } catch {
-      // Standalone development does not create the Next.js server registry.
-    }
-  }
-  return `http://127.0.0.1:${String(env.EVE_NEXT_PRODUCTION_PORT ?? 4274)}`;
+  return postLoopbackRoute(route, body);
 }
 
 export async function postScheduledReport(runId: string) {
@@ -68,4 +36,25 @@ export async function postScheduledReport(runId: string) {
       `Scheduled report callback failed (${String(response.status)}).`
     );
   }
+}
+
+// The loopback callbacks' authentication, for every channel route outside
+// eve's protocol namespace (shared/environment/loopback.ts). Hashing both sides gives
+// equal-length buffers for the constant-time compare. Unset, every callback
+// is refused.
+export const internalRouteAuth: AuthFn = (request) => {
+  const secret = env.SCHEDULED_RUN_SECRET;
+  const presented = extractBearerToken(request.headers.get("authorization"));
+  if (!secret || !presented) return null;
+  if (!timingSafeEqual(digest(presented), digest(secret))) return null;
+  return {
+    attributes: {},
+    authenticator: "scheduled-run",
+    principalId: "scheduled-run",
+    principalType: "service",
+  };
+};
+
+function digest(value: string) {
+  return createHash("sha256").update(value, "utf8").digest();
 }

@@ -41,5 +41,7 @@ export default defineDynamic((context) => {
     "scheduled-report": { send_message },
     "site-chat": { send_message },
     whatsapp: { send_message },
+    // WhatsApp's channel posts text, links and media only, never a reaction.
+    "whatsapp-full": { send_message },
   });
 });

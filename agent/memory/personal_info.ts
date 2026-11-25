@@ -70,7 +70,10 @@ export default defineMemory({
       if (
         current?.principalType !== "user" ||
         siteOfSession(context.session.auth.initiator) ||
-        resolveModeValue(context, { interactive: true }) !== true
+        resolveModeValue(context, {
+          interactive: true,
+          "whatsapp-full": true,
+        }) !== true
       ) {
         return null;
       }
@@ -92,6 +95,7 @@ export default defineMemory({
     return resolveModeValue(context, {
       interactive: scope,
       "scheduled-worker": scope,
+      "whatsapp-full": scope,
     });
   },
 });

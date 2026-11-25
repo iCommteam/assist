@@ -2,9 +2,12 @@ import type * as KernelSdk from "@onkernel/sdk";
 import { NotFoundError } from "@onkernel/sdk";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as Allowlist from "@db/services/auth/allowlist";
 import * as BrowserTraces from "@db/services/browser-traces";
 import * as Chats from "@db/services/chats";
 import * as Vault from "@db/services/vault";
+import * as Whatsapp from "@db/services/whatsapp";
+import * as Loopback from "@shared/environment/loopback";
 import { kernelProfileNameForLogin } from "@shared/browser/kernel-profile";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { appRouter } from "./router";
@@ -166,6 +169,71 @@ describe("appRouter", () => {
         { error: "TypeError" }
       );
     });
+  });
+});
+
+describe("WhatsApp access", () => {
+  const whatsappScope = {
+    userId: "better-auth:user-1",
+    workspaceId: "workspace-1",
+  } satisfies AccessScope;
+  const whatsapp = () =>
+    appRouter.createCaller({
+      origin: "https://example.com",
+      scope: whatsappScope,
+    }).whatsapp;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(Whatsapp, "lockWhatsapp").mockResolvedValue();
+    vi.spyOn(Whatsapp, "unlockWhatsapp").mockResolvedValue();
+    vi.spyOn(Loopback, "postWhatsappLoopback").mockResolvedValue(
+      new Response(null, { status: 204 })
+    );
+    vi.spyOn(Allowlist, "isAdminMember").mockResolvedValue(false);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  it("locks the member's own WhatsApp and ends their full chats, and turns it back on", async () => {
+    await whatsapp().lock();
+    expect(Whatsapp.lockWhatsapp).toHaveBeenCalledWith("user-1", "web");
+    expect(Loopback.postWhatsappLoopback).toHaveBeenCalledWith(
+      "/internal/whatsapp/end",
+      { member: "better-auth:user-1" }
+    );
+
+    await whatsapp().unlock();
+    expect(Whatsapp.unlockWhatsapp).toHaveBeenCalledWith("user-1");
+  });
+
+  it("keeps the lock when the chats cannot be ended", async () => {
+    vi.mocked(Loopback.postWhatsappLoopback).mockRejectedValue(
+      new TypeError("fetch failed")
+    );
+    await expect(whatsapp().lock()).resolves.toBeUndefined();
+    expect(Whatsapp.lockWhatsapp).toHaveBeenCalledOnce();
+  });
+
+  it("lets only an administrator lock everyone, or turn everyone back on", async () => {
+    await expect(whatsapp().lockEveryone()).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    await expect(whatsapp().unlockEveryone()).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    expect(Whatsapp.lockWhatsapp).not.toHaveBeenCalled();
+    expect(Whatsapp.unlockWhatsapp).not.toHaveBeenCalled();
+    expect(Allowlist.isAdminMember).toHaveBeenCalledWith("user-1");
+
+    vi.mocked(Allowlist.isAdminMember).mockResolvedValue(true);
+    await whatsapp().lockEveryone();
+    expect(Whatsapp.lockWhatsapp).toHaveBeenCalledWith("*", "admin");
+    expect(Loopback.postWhatsappLoopback).toHaveBeenCalledWith(
+      "/internal/whatsapp/end",
+      { member: "*" }
+    );
+    await whatsapp().unlockEveryone();
+    expect(Whatsapp.unlockWhatsapp).toHaveBeenCalledWith("*");
   });
 });
 

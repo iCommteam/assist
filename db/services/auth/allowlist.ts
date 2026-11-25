@@ -45,3 +45,18 @@ export async function enrolledTeamMemberId(email: string) {
 function digest(value: string) {
   return createHash("sha256").update(value, "utf8").digest();
 }
+
+// Whether the member with this Better Auth user id is an administrator: their
+// email is on ASSIST_ADMIN_EMAILS and still on the team list.
+export async function isAdminMember(userId: string) {
+  const admins = env.ASSIST_ADMIN_EMAILS ?? [];
+  if (admins.length === 0) return false;
+  const [member] = await db
+    .select({ email: user.email })
+    .from(user)
+    .where(eq(user.id, userId))
+    .limit(1);
+  if (!member) return false;
+  const email = member.email.trim().toLowerCase();
+  return admins.includes(email) && isAllowedEmail(email);
+}

@@ -6,5 +6,6 @@ export default defineDynamic((context) =>
   resolveModeInstructions(context, {
     interactive: workerCoordination,
     "scheduled-worker": workerCoordination,
+    "whatsapp-full": workerCoordination,
   })
 );

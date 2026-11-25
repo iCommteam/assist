@@ -6,5 +6,6 @@ export default defineDynamic((context) =>
   resolveModeInstructions(context, {
     interactive: executionSafety,
     "scheduled-worker": executionSafety,
+    "whatsapp-full": executionSafety,
   })
 );

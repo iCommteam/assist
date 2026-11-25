@@ -1,6 +1,5 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import { defineChannel, POST } from "eve/channels";
-import { extractBearerToken, routeAuth, type AuthFn } from "eve/channels/auth";
+import { routeAuth } from "eve/channels/auth";
 import { parseAnswers, SessionNotActiveError } from "eve/client";
 import {
   APPROVE_OPTION_ID,
@@ -9,8 +8,8 @@ import {
   type Interaction,
 } from "eve/events";
 import { z } from "zod";
-import { env } from "@shared/environment";
 import { dispatchScheduledReport } from "@agent/lib/schedules/report";
+import { internalRouteAuth } from "@agent/lib/schedules/request";
 import {
   claimScheduledAgentRunInput,
   finishScheduledAgentRunInput,
@@ -29,22 +28,7 @@ const respondSchema = z.strictObject({
 });
 
 // Both callbacks come from this eve server itself, over loopback, with
-// SCHEDULED_RUN_SECRET as the bearer (agent/lib/schedules/request.ts). Hashing
-// both sides gives equal-length buffers for the constant-time compare. Unset,
-// every callback is refused.
-const internalRouteAuth: AuthFn = (request) => {
-  const secret = env.SCHEDULED_RUN_SECRET;
-  const presented = extractBearerToken(request.headers.get("authorization"));
-  if (!secret || !presented) return null;
-  if (!timingSafeEqual(digest(presented), digest(secret))) return null;
-  return {
-    attributes: {},
-    authenticator: "scheduled-run",
-    principalId: "scheduled-run",
-    principalType: "service",
-  };
-};
-
+// SCHEDULED_RUN_SECRET as the bearer (agent/lib/schedules/request.ts).
 export default defineChannel({
   audience({ caller }) {
     return caller.type === "principal" && caller.principal.kind === "user"
@@ -143,10 +127,6 @@ export default defineChannel({
     ),
   ],
 });
-
-function digest(value: string) {
-  return createHash("sha256").update(value, "utf8").digest();
-}
 
 const approvalAliases = new Map([
   ["approve", APPROVE_OPTION_ID],

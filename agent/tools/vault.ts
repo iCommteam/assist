@@ -43,5 +43,11 @@ export default defineDynamic((context) =>
       request_vault_setup: requestVaultSetup,
     },
     "scheduled-report": { request_vault_setup: requestVaultSetup },
+    // Both answer with a link to assist's own vault page, where the secret
+    // is typed; nothing secret passes through WhatsApp.
+    "whatsapp-full": {
+      request_vault_import: requestVaultImport,
+      request_vault_setup: requestVaultSetup,
+    },
   })
 );

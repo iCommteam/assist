@@ -36,7 +36,10 @@ function interactiveWorkstreamScope(
   )
     return null;
   const scope = scopeFromPrincipal(caller);
-  return resolveModeValue(context, { interactive: scope });
+  return resolveModeValue(context, {
+    interactive: scope,
+    "whatsapp-full": scope,
+  });
 }
 
 async function recall(context: MemoryOperationContext) {

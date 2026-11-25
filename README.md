@@ -689,11 +689,13 @@ format; re-run it after the upgrade.
 ### WhatsApp
 
 Team members can write to assist on WhatsApp, through Twilio. Each listed
-member's number reaches assist as that member, in a narrow business mode: it
-replies, asks a question with numbered options, and searches the web, and it
-has no browser, vault, schedules, Personal Info, saved notes, supplier sites or
-Accounting tools. Replies are short text for a phone, split at Twilio's 1,600
-characters per message, and each attachment goes as a message of its own.
+member's number reaches assist as that member, with full access in a mode
+made for a phone: it replies, asks a question with numbered options, searches
+the web, runs browser tasks, sends vault links and uses the member's Personal
+Info and saved notes. It has no schedules, no reactions, no approvals and no
+connector sign-ins on WhatsApp, and it keeps to the company's business work.
+Replies are short text for a phone, split at Twilio's 1,600 characters per
+message, and each attachment goes as a message of its own.
 
 | Variable                  | Value                                                                        |
 | ------------------------- | ---------------------------------------------------------------------------- |
@@ -703,12 +705,13 @@ characters per message, and each attachment goes as a message of its own.
 | `ASSIST_WHATSAPP_NUMBERS` | each member's number and assist email, `+15551234567=member@example.com,...` |
 
 Leaving any of the three `TWILIO_` variables unset closes the channel: every
-webhook is refused. `ASSIST_WHATSAPP_NUMBERS` is read on every message; a
-number listed for two emails, or an entry that does not parse, reaches nobody,
-and the log says so without the values. A member must also pass assist's own
-sign-in rules: on `ASSIST_ALLOWED_EMAILS`, registered, and enrolled in an
-authenticator. A message from anyone else gets an empty reply and reaches
-nothing, and so does a call.
+webhook is refused. `ASSIST_WHATSAPP_NUMBERS` is the only setup: every number
+on it gets full access, and it is read on every message, reply, turn and model
+call. A number listed for two emails, or an entry that does not parse, reaches
+nobody, and the log says so without the values. A member must also pass
+assist's own sign-in rules: on `ASSIST_ALLOWED_EMAILS`, registered, and
+enrolled in an authenticator. A message from anyone else gets an empty reply
+and reaches nothing, and so does a call.
 
 Set the webhook that Twilio posts each incoming message to (HTTP POST):
 
@@ -724,24 +727,86 @@ https://assist.icommteam.com/eve/v1/whatsapp/messages
 The signature is checked against that public URL, built from
 `BETTER_AUTH_URL`, so the webhook must use exactly that origin and path.
 
-Each member has one chat on their number. Replying `/new` ends it, and the
-next message starts a fresh one; a message more than 8 hours after the chat's
-last activity starts a new chat by itself. A chat belongs to its member as well
-as its number: when a number is listed for someone else, their messages start a
-chat of their own, and the earlier member's chat no longer sends its replies to
-that number (a question it asks, or eve's notice of a failed turn, still can).
-A sender's messages reach their chat one at a time, in the order assist
-receives them. A member may send 30 messages in any hour and 200 in any day;
-past that, messages are dropped and assist says so once an hour. Only a member
-who can sign in is counted or told. A message Twilio posts twice reaches the
-agent once. These counts live in memory and reset when the service restarts.
-WhatsApp chats also appear in the member's chat list in assist's web app.
+#### Twilio's record of each message
+
+A signed webhook proves only that the poster holds the auth token. So every
+message of a full chat must also match Twilio's own record of it, which assist
+reads with the account's credentials
+(`GET /2010-04-01/Accounts/{AccountSid}/Messages/{MessageSid}.json`): an
+inbound message of this account, to `TWILIO_WHATSAPP_FROM`, from the member's
+number, with the same body and the same number of media items, created at most
+10 minutes ago. A message Twilio has no record of, read once more after a
+short pause, or one whose record differs is dropped and logged without its
+values. When Twilio's API cannot be reached, the member is told to try again
+in a minute and no turn runs. `/lock` needs no record: it only ever turns
+access off.
+
+#### The lock
+
+Full access stays on until the member turns it off:
+
+- `/lock` on WhatsApp, or Lock on assist's Workspace page, locks the member's
+  own WhatsApp. An administrator (`ASSIST_ADMIN_EMAILS`) can also Lock
+  everyone there; only an administrator turns that back on.
+- A lock ends the member's full chats at once, any number's, through a
+  loopback route of the WhatsApp channel (`/internal/whatsapp/end`, with
+  `SCHEDULED_RUN_SECRET` as the bearer). Before every turn, model call and
+  tool call, the root agent and the browser worker also check the listing,
+  the sign-in rules and the lock again, so a turn or a background worker that
+  is still running stops at its next step. An emptied
+  `ASSIST_WHATSAPP_NUMBERS` takes effect once the deploy that applies it is
+  live, then at each chat's next step.
+- A locked member keeps the narrow chat every member had before full access:
+  replies, numbered questions and web search, at the chat address it always
+  had, with no record check. Turn back on, one press on the Workspace page
+  while signed in to assist, takes effect with the member's next message.
+
+Every full chat opens with one fixed line from the channel, never the model:
+"Full access is on in this chat. Reply /lock to turn it off."
+
+#### What a WhatsApp chat can do
+
+- Questions reach the member as numbered options; a typed number answers.
+  The channel draws each one itself, through the same check as a reply: the
+  number still listed for the chat's member, full access still on for a full
+  chat, and the member's 24-hour window open.
+- The $10 usage limit's continue prompt is answered once per chat; a second
+  one stops the turn and the member is told to reply `/new`.
+- An approval or a connector sign-in stops the turn: WhatsApp cannot show
+  one. Schedules are not offered on WhatsApp yet; the agent sends the web
+  chat's link instead.
+- A one-time code is never typed on WhatsApp. The agent sends the chat's link
+  in assist's web app, `/chat/{sessionId}`, and the member types the code
+  there for the same parked browser worker. Passwords go only into the vault
+  page that `request_vault_setup` links to.
+- A member may start 10 browser workers a day from WhatsApp; the eleventh
+  stops the turn.
+- Meta lets a business send free-form replies only within 24 hours of the
+  member's last message. A reply later than that, less a 10-minute margin, is
+  held and sent first, in order, when the member next writes from the same
+  number; a full chat's held reply is dropped if the member locked WhatsApp
+  meanwhile. The reply also shows in the web chat meanwhile.
+
+Each member has one chat on their number at each level, full or narrow.
+Replying `/new` ends it, and the next message starts a fresh one; a message
+more than 8 hours after the chat's last activity starts a new chat by itself,
+and so does the first message after a lock or an unlock, which also ends the
+chat at the other level. A chat belongs to its member as well as its number:
+when a number is listed for someone else, their messages start a chat of their
+own, and the earlier member's chat no longer sends its replies, its questions
+or its notices to that number. A sender's messages reach their chat one at a
+time, in the order assist receives them. A member may send 30 messages in any
+hour and 200 in any day, `/new` and `/lock` included; past that, messages are
+dropped and assist says so once an hour. Only a member who can sign in is
+recorded, counted or told. A message Twilio posts twice reaches the agent
+once. The message ids, the counts and the window live in the database, so
+they survive a restart. WhatsApp chats also appear in the member's chat list
+in assist's web app, and a turn the member types there keeps the chat's
+access; its replies still go to WhatsApp.
 
 Meta's WhatsApp Business terms bar general-purpose AI assistants on the
 platform since 15 January 2026; an assistant for the company's own business is
-allowed. assist keeps to business work on WhatsApp and declines anything else,
-and WhatsApp allows free-form replies only within 24 hours of the member's last
-message.
+allowed. assist keeps to business work on WhatsApp and declines anything else.
 
 ## Local development
 

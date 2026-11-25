@@ -267,6 +267,36 @@ describe("structured browser workflow", () => {
     });
   });
 
+  it("serves a full-access WhatsApp chat, even on a turn the member sends into it on the web", async () => {
+    const whatsapp = {
+      attributes: {
+        conversationChannel: "whatsapp",
+        email: "member@example.test",
+        whatsappAccess: "full",
+        whatsappNumber: "+15550000001",
+        workspaceId: "personal:workspace",
+      },
+      authenticator: "assist-whatsapp",
+      principalId: "user-1",
+      principalType: "user",
+    };
+    const { error, reply, send } = await serveCalls(
+      [
+        serveCall("Open the supplier's billing page"),
+        serveCall("And download March"),
+      ],
+      [completed(completion), completed(completion)],
+      [
+        { current: whatsapp, initiator: whatsapp },
+        { current: callerAuth("authjs").current, initiator: whatsapp },
+      ]
+    );
+
+    expect(error).toBeInstanceOf(ReceiveDrained);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(reply).toHaveBeenCalledWith(completion);
+  });
+
   it("serves scheduled workers", async () => {
     const { error, reply, send } = await serveCalls(
       [serveCall("Inspect the heading")],

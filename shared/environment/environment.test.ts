@@ -66,6 +66,10 @@ describe("environment", () => {
     ["TWILIO_ACCOUNT_SID", "AC0000"],
     ["TWILIO_WHATSAPP_FROM", "+15551234567"],
     ["TWILIO_WHATSAPP_FROM", "whatsapp:15551234567"],
+    ["TEEMIQ_WHATSAPP_URL", "http://team.example"],
+    ["TEEMIQ_WHATSAPP_URL", "https://team.example/api/mcp/finance-wa"],
+    ["TEEMIQ_WHATSAPP_URL", "team.example"],
+    ["ASSIST_WHATSAPP_VOUCH_TOKEN", "too-short"],
   ])("rejects an invalid %s during import", async (name, value) => {
     vi.stubEnv(name, value);
 
@@ -110,6 +114,52 @@ describe("environment", () => {
     const { env } = await import("@shared/environment");
     expect(env).toMatchObject(twilio);
   });
+
+  it("leaves Accounting on WhatsApp off unless TEEMIQ's origin and the vouch bearer are both set", async () => {
+    const vouchToken = "vouch-token-0123456789abcdefghijklmnopqrstuv";
+    const { whatsappAccountingConfig: unset } =
+      await import("@shared/environment");
+    expect(unset()).toBeUndefined();
+
+    for (const [url, token, expected] of [
+      ["https://team.example", undefined, undefined],
+      [undefined, vouchToken, undefined],
+      [
+        "https://team.example/",
+        vouchToken,
+        { origin: "https://team.example", token: vouchToken },
+      ],
+    ] as const) {
+      vi.resetModules();
+      vi.stubEnv("TEEMIQ_WHATSAPP_URL", url);
+      vi.stubEnv("ASSIST_WHATSAPP_VOUCH_TOKEN", token);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each configuration needs a fresh import.
+      const { whatsappAccountingConfig } = await import("@shared/environment");
+      expect(whatsappAccountingConfig()).toEqual(expected);
+    }
+  });
+
+  it.each([
+    "BETTER_AUTH_SECRET",
+    "TWILIO_AUTH_TOKEN",
+    "ASSIST_SITE_TOKEN_TEEMIQ",
+  ])(
+    "refuses a vouch bearer equal to %s, without logging either",
+    async (other) => {
+      const shared = "shared-secret-0123456789abcdefghijklmnopqrstuv";
+      const warn = vi
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      vi.stubEnv(other, shared);
+      vi.stubEnv("TEEMIQ_WHATSAPP_URL", "https://team.example");
+      vi.stubEnv("ASSIST_WHATSAPP_VOUCH_TOKEN", shared);
+
+      const { whatsappAccountingConfig } = await import("@shared/environment");
+
+      expect(whatsappAccountingConfig()).toBeUndefined();
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(shared);
+    }
+  );
 
   it("reads the WhatsApp members on every call", async () => {
     const { whatsappNumbersVariable } = await import("@shared/environment");

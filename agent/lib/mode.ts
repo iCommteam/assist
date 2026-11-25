@@ -16,10 +16,14 @@ function agentMode(authenticator: string | undefined) {
   return "interactive" as const;
 }
 
-// A site chat and a WhatsApp chat are narrow assistants: every capability
-// that does not list their mode stays off, as for any mode a value leaves
-// out.
-type AgentMode = ReturnType<typeof agentMode> | "site-chat" | "whatsapp";
+// A site chat and a narrow WhatsApp chat are narrow assistants: every
+// capability that does not list their mode stays off, as for any mode a value
+// leaves out. A full-access WhatsApp chat lists its own capabilities too.
+type AgentMode =
+  | ReturnType<typeof agentMode>
+  | "site-chat"
+  | "whatsapp"
+  | "whatsapp-full";
 
 // A scheduled worker, a site chat and a WhatsApp chat keep their mode for
 // every turn of the session, whoever sends it, so the initiator decides them.
@@ -37,8 +41,14 @@ function sessionAgentMode(
   if (auth.initiator?.authenticator === "assist-site-chat") {
     return "site-chat";
   }
+  // Only the WhatsApp channel's principal sets whatsappAccess, and only for
+  // a listed member who has not locked it (agent/channels/whatsapp.ts). Any
+  // other value, or none, is the narrow chat, as every chat started before
+  // full access existed is.
   if (auth.initiator?.authenticator === "assist-whatsapp") {
-    return "whatsapp";
+    return auth.initiator.attributes.whatsappAccess === "full"
+      ? "whatsapp-full"
+      : "whatsapp";
   }
   const caller = auth.current ?? auth.initiator;
   return agentMode(caller?.authenticator);

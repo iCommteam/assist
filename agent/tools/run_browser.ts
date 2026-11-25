@@ -27,10 +27,11 @@ export default defineWorkflowTool({
       const browserAllowed = resolveModeValue(ctx, {
         interactive: true,
         "scheduled-worker": true,
+        "whatsapp-full": true,
       });
       // Every other mode is refused, the site chat among them: it visits a
       // supplier's site only through a look or a fetch its site runs. A
-      // WhatsApp chat has no browser at all.
+      // narrow WhatsApp chat, a locked member's, has no browser at all.
       if (!browserAllowed) {
         ctx.reply(
           taskCompletionSchema.parse({

@@ -1,4 +1,6 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { isAdminMember } from "@db/services/auth/allowlist";
 import { listBrowserTraces } from "@db/services/browser-traces";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
@@ -13,6 +15,13 @@ import {
   vaultCreateItemSchema,
   vaultImportItemsSchema,
 } from "@shared/vault/schema";
+import {
+  lockWhatsapp,
+  unlockWhatsapp,
+  whatsappEveryone,
+} from "@db/services/whatsapp";
+import { postWhatsappLoopback } from "@shared/environment/loopback";
+import type { AccessScope } from "@shared/identity/access-scope";
 import { deleteLoginProfile } from "@web/browser/login-profile";
 import { createTRPCRouter, protectedProcedure } from "./init";
 
@@ -57,6 +66,57 @@ export const appRouter = createTRPCRouter({
         return removed;
       }),
   },
+  // WhatsApp's full access and Accounting, off and back on. A member locks
+  // and unlocks their own; an administrator locks everyone, and only an
+  // administrator lifts that. A lock also ends the full chats it covers.
+  whatsapp: {
+    lock: protectedProcedure.mutation(async ({ ctx }) => {
+      await lockWhatsapp(betterAuthUserId(ctx.scope), "web");
+      await endWhatsappChats(ctx.scope.userId);
+    }),
+    lockEveryone: protectedProcedure.mutation(async ({ ctx }) => {
+      await requireAdmin(ctx.scope);
+      await lockWhatsapp(whatsappEveryone, "admin");
+      await endWhatsappChats(whatsappEveryone);
+    }),
+    unlock: protectedProcedure.mutation(async ({ ctx }) => {
+      await unlockWhatsapp(betterAuthUserId(ctx.scope));
+    }),
+    unlockEveryone: protectedProcedure.mutation(async ({ ctx }) => {
+      await requireAdmin(ctx.scope);
+      await unlockWhatsapp(whatsappEveryone);
+    }),
+  },
 });
 
 export type AppRouter = typeof appRouter;
+
+function betterAuthUserId(scope: AccessScope) {
+  return scope.userId.slice("better-auth:".length);
+}
+
+async function requireAdmin(scope: AccessScope) {
+  if (!(await isAdminMember(betterAuthUserId(scope)))) {
+    throw new TRPCError({ code: "FORBIDDEN" });
+  }
+}
+
+// The WhatsApp channel ends the chats over loopback. The lock already holds
+// when this fails: every turn of those chats is then cancelled by the access
+// hooks at its next step, and the member's next message ends the chat.
+async function endWhatsappChats(member: string) {
+  try {
+    const response = await postWhatsappLoopback("/internal/whatsapp/end", {
+      member,
+    });
+    if (response.status !== 204) {
+      console.warn("[whatsapp] the locked chats were not ended", {
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    console.warn("[whatsapp] the locked chats were not ended", {
+      error: error instanceof Error ? error.name : "unknown",
+    });
+  }
+}

@@ -5,5 +5,6 @@ export * from "./schedules";
 export * from "./sessions";
 export * from "./sites";
 export * from "./vault";
+export * from "./whatsapp";
 export * from "./workspaces";
 export * from "./workstreams";

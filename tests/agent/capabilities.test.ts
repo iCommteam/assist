@@ -1,6 +1,8 @@
 import { readdirSync } from "node:fs";
 import type * as Eve from "eve";
 import type * as EveConnections from "eve/connections";
+import type { SessionAuthContext } from "eve/context";
+import type { MemoryScopeContext } from "eve/memory";
 import type * as EveTools from "eve/tools";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -166,6 +168,78 @@ describe("WhatsApp capabilities", () => {
     ).toEqual(["ask_question", "send_message", "web_search"]);
   });
 });
+
+describe("WhatsApp full-access capabilities", () => {
+  const full = {
+    attributes: {
+      conversationChannel: "whatsapp",
+      email: "member@example.test",
+      whatsappAccess: "full",
+      whatsappNumber: "+15550000001",
+      workspaceId: member.workspaceId,
+    },
+    authenticator: "assist-whatsapp",
+    principalId: member.userId,
+    principalType: "user",
+  };
+
+  it("gives a full chat the reply, vault links, Personal Info and saved notes, and none of interactive's reactions or schedules", async () => {
+    // A turn the member sends into the chat on the web keeps the chat's mode.
+    for (const current of [
+      full,
+      dynamicContext("authjs").session.auth.current,
+    ]) {
+      const context = dynamicContextFor({
+        auth: { current, initiator: full },
+        channel: { kind: "channel:whatsapp", metadata: {} },
+        sessionId: "session-whatsapp-full",
+      });
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each turn is checked on its own.
+      expect(await capabilitiesOf(context)).toEqual([
+        "personal_info__update",
+        "request_vault_import",
+        "request_vault_setup",
+        "send_message",
+        "workstreams__find",
+        "workstreams__forget",
+        "workstreams__read",
+        "workstreams__save",
+      ]);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each turn is checked on its own.
+      expect(await evaluateDynamic(teemiq, context)).toBeNull();
+    }
+  });
+
+  it("recalls Personal Info and saved notes in a full chat and its browser worker, and never in a narrow one", () => {
+    const narrow = {
+      ...full,
+      attributes: {
+        conversationChannel: "whatsapp",
+        email: "member@example.test",
+        workspaceId: member.workspaceId,
+      },
+    };
+    expect(personalInfoMemory.scope(memoryScopeContext(full))).toBe(
+      member.workspaceId
+    );
+    expect(workstreamMemory.scope(memoryScopeContext(full))).toBe(
+      member.workspaceId
+    );
+    expect(personalInfoMemory.scope(memoryScopeContext(narrow))).toBeNull();
+    expect(workstreamMemory.scope(memoryScopeContext(narrow))).toBeNull();
+  });
+});
+
+function memoryScopeContext(initiator: SessionAuthContext): MemoryScopeContext {
+  return {
+    abortSignal: new AbortController().signal,
+    channel: { kind: "channel:whatsapp", metadata: {} },
+    session: {
+      auth: { current: initiator, initiator },
+      id: "session-whatsapp-full",
+    },
+  };
+}
 
 async function authoredCapabilities(authenticator: string, site?: string) {
   return capabilitiesOf(dynamicContext(authenticator, site));
