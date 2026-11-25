@@ -1,4 +1,15 @@
-import { and, asc, count, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lt,
+  ne,
+  sql,
+} from "drizzle-orm";
 import {
   db,
   whatsappBrowserTasks,
@@ -81,8 +92,14 @@ export async function countWhatsappMessage(
 }
 
 // Whether the member wrote from this number, by a message that passed the
-// checks, within the last `withinMs`, by the database's clock.
-export async function whatsappWrittenWithin(phone: string, withinMs: number) {
+// checks, within the last `withinMs`, by the database's clock. `except`
+// leaves one message out: a reply that answers an approval asks whether the
+// window was still open before that reply came.
+export async function whatsappWrittenWithin(
+  phone: string,
+  withinMs: number,
+  except?: string
+) {
   const [row] = await db
     .select({ sid: whatsappMessages.sid })
     .from(whatsappMessages)
@@ -90,6 +107,7 @@ export async function whatsappWrittenWithin(phone: string, withinMs: number) {
       and(
         eq(whatsappMessages.phone, phone),
         eq(whatsappMessages.admitted, true),
+        except === undefined ? undefined : ne(whatsappMessages.sid, except),
         gt(
           whatsappMessages.receivedAt,
           sql`now() - make_interval(secs => ${withinMs / 1000})`

@@ -1,5 +1,6 @@
 import { defineWorkflowTool } from "eve/tools";
 import { z } from "zod";
+import { approvalResponse } from "@agent/lib/approval-response";
 import { browserApproval, browserPrompt } from "@agent/lib/google/browser-gate";
 import { resolveModeValue } from "@agent/lib/mode";
 import { taskCompletionSchema } from "@agent/subagents/browser-agent/lib/completion";
@@ -12,6 +13,7 @@ export default defineWorkflowTool({
   approval: {
     prompt: ({ input }) => browserPrompt(input.message),
     request: () => browserApproval(),
+    response: approvalResponse,
   },
   inputSchema: z.object({
     message: z.string().min(1),

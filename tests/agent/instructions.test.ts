@@ -666,6 +666,30 @@ describe("WhatsApp full-access instructions", () => {
     expect(schedules).not.toContain("the web chat's link");
   });
 
+  it("tells a full chat that an approval arrives as a numbered message the member answers, while a sign-in stops the turn", async () => {
+    const [role, safety, web] = await Promise.all([
+      evaluateDynamic(roleInstructions, whatsappFullContext()),
+      evaluateDynamic(executionSafety, whatsappFullContext()),
+      evaluateDynamic(executionSafety, dynamicContext("linq-message")),
+    ]);
+    expect(role?.content).toContain(
+      'reaches the member on WhatsApp as its own message, which shows the whole step and ends with "Reply 1 to approve or 2 to decline." Only a reply of 1 approves it; any other reply declines it, and so does a reply after 30 minutes.'
+    );
+    expect(role?.content).toContain(
+      "A sign-in in the chat, such as Google's, cannot be shown on WhatsApp and stops the turn."
+    );
+    expect(role?.content).toContain(
+      "saved notes and, when they connected it, their own Google account"
+    );
+    expect(safety?.content).toContain(
+      "Tools run without a separate Eve approval step, except a step whose approval reaches the member on WhatsApp as its own message"
+    );
+    expect(safety?.content).not.toContain("approval card");
+    expect(web?.content).toContain(
+      "which the user approves in an approval card"
+    );
+  });
+
   it("gives a full chat execution safety and the worker contract, but not the chat app's voice or a site task's rules", async () => {
     const context = whatsappFullContext();
     const [safety, coordination, style, task] = await Promise.all(

@@ -4,12 +4,14 @@ import type * as EveConnections from "eve/connections";
 import type { SessionAuthContext } from "eve/context";
 import type { MemoryScopeContext } from "eve/memory";
 import type * as EveTools from "eve/tools";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import type { GoogleAccountSummary } from "@db/services/connectors/google";
 import {
   dynamicContextFor,
   evaluateDynamic,
   withEvaluableDynamic,
 } from "@tests/helpers/dynamic";
+import { googleRequestedScopes } from "@shared/connectors/google/scopes";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { sitePrincipal } from "@agent/lib/site-principal";
 
@@ -18,6 +20,26 @@ import { sitePrincipal } from "@agent/lib/site-principal";
 vi.hoisted(() => {
   vi.stubEnv("TEEMIQ_FINANCE_MCP_URL", "https://team.example/api/mcp/finance");
 });
+
+// Google, set up and connected only where a case says so.
+const google = vi.hoisted(() => ({
+  account: vi.fn<() => Promise<GoogleAccountSummary | undefined>>(),
+  configured: false,
+}));
+vi.mock(import("@shared/connectors/google/oauth"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  googleOAuthClient: () =>
+    google.configured
+      ? {
+          clientId: "client.apps.googleusercontent.com",
+          clientSecret: "secret",
+        }
+      : undefined,
+}));
+vi.mock(import("@db/services/connectors/google"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  googleAccountOf: google.account,
+}));
 
 vi.mock("eve", async (importOriginal) =>
   withEvaluableDynamic(await importOriginal<typeof Eve>())
@@ -45,8 +67,8 @@ const member = accessScopeForUser("better-auth:user-1");
 
 // BigQuery stays off here: ASSIST_BIGQUERY_KEY is unset, so it adds nothing
 // to any mode (tests/agent/tools/bigquery.test.ts covers it with a key).
-// Google is not set up in this file either, so its tools are evaluated and
-// offer nothing; tests/agent/google covers them with it set up.
+// Google is set up only in the one case that pins which modes it reaches;
+// tests/agent/google covers its tools in full.
 const groupedTools = [
   bigquery,
   calendar,
@@ -231,6 +253,50 @@ describe("WhatsApp full-access capabilities", () => {
     }
   });
 
+  it("adds a connected member's Google tools to a full chat, and none to the narrow chat", async () => {
+    google.configured = true;
+    google.account.mockResolvedValue({
+      connectedAt: "2026-11-25T08:00:00.000Z",
+      email: "member@example.test",
+      needsReconnect: false,
+      scopes: [...googleRequestedScopes],
+    });
+    onTestFinished(() => {
+      google.configured = false;
+      google.account.mockReset();
+    });
+    const narrow = {
+      ...full,
+      attributes: {
+        conversationChannel: "whatsapp",
+        email: "member@example.test",
+        workspaceId: member.workspaceId,
+      },
+    };
+    expect(await capabilitiesOf(whatsappChat(full))).toEqual([
+      "calendar_create_event",
+      "calendar_free_busy",
+      "calendar_list_events",
+      "drive_read_file",
+      "drive_search",
+      "gmail_create_draft",
+      "gmail_read_thread",
+      "gmail_search",
+      "gmail_send",
+      "personal_info__update",
+      "request_vault_import",
+      "request_vault_setup",
+      "send_message",
+      "workstreams__find",
+      "workstreams__forget",
+      "workstreams__read",
+      "workstreams__save",
+    ]);
+    expect(await capabilitiesOf(whatsappChat(narrow))).toEqual([
+      "send_message",
+    ]);
+  });
+
   it("recalls Personal Info and saved notes in a full chat and its browser worker, and never in a narrow one", () => {
     const narrow = {
       ...full,
@@ -250,6 +316,14 @@ describe("WhatsApp full-access capabilities", () => {
     expect(workstreamMemory.scope(memoryScopeContext(narrow))).toBeNull();
   });
 });
+
+function whatsappChat(principal: SessionAuthContext) {
+  return dynamicContextFor({
+    auth: { current: principal, initiator: principal },
+    channel: { kind: "channel:whatsapp", metadata: {} },
+    sessionId: "session-whatsapp-full",
+  });
+}
 
 function memoryScopeContext(initiator: SessionAuthContext): MemoryScopeContext {
   return {

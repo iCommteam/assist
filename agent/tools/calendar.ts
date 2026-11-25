@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { calendar, type calendar_v3 } from "@googleapis/calendar";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
+import { approvalResponse } from "@agent/lib/approval-response";
 import {
   googleApproval,
   shownLine,
@@ -160,6 +161,7 @@ const calendarCreateEvent = defineTool({
   approval: {
     prompt: ({ input }) => createPrompt(input),
     request: (context) => googleApproval(context),
+    response: approvalResponse,
   },
   label: { start: ({ summary }) => `Create “${summary}” in Google Calendar` },
   async execute(input, ctx) {

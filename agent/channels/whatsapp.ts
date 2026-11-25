@@ -19,8 +19,13 @@ import {
 import { SessionNotActiveError } from "eve/client";
 import type { SessionAuthContext } from "eve/context";
 import {
+  APPROVE_OPTION_ID,
+  DENY_OPTION_ID,
+  emptySessionView,
+  foldEvents,
   openInteractions,
   type Interaction,
+  type ReceivedEvent,
   type SessionView,
 } from "eve/events";
 import { z } from "zod";
@@ -50,7 +55,9 @@ import {
   whatsappOwnerOf,
 } from "@db/services/whatsapp-numbers";
 import { ensureScope } from "@db/services/scope";
+import { whatsappApprovalAttribute } from "@agent/lib/approval-response";
 import { bigqueryAccess } from "@agent/lib/bigquery/access";
+import { googleConnected } from "@agent/lib/google/tools";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { internalRouteAuth } from "@agent/lib/schedules/request";
 import { settledToolResult } from "@agent/lib/settled-tool-result";
@@ -70,9 +77,10 @@ import { applicationOrigin } from "@shared/environment/origin";
 // whose number reaches them, listed by the operator in
 // ASSIST_WHATSAPP_NUMBERS or linked by the member with a code from the
 // Workspace page, and who can sign in gets full access, the "whatsapp-full" mode
-// (agent/lib/mode.ts): the browser, vault links, Personal Info and saved
-// notes. /lock, or Lock on the Workspace page, turns it off: a locked member
-// keeps today's narrow "whatsapp" chat.
+// (agent/lib/mode.ts): the browser, vault links, Personal Info, saved notes
+// and the member's own Google account, whose approvals the member answers
+// with a numbered reply. /lock, or Lock on the Workspace page, turns it off:
+// a locked member keeps today's narrow "whatsapp" chat.
 // Twilio posts every incoming message to POST /eve/v1/whatsapp/messages, and
 // eve checks its signature against the public URL. Every message of a full
 // chat must also match Twilio's own record of it. Without
@@ -102,6 +110,14 @@ const failedTurnReply =
   "Something went wrong with that message. Try again, or reply /new to start over.";
 const failedSessionReply =
   "This chat stopped. Your next message starts a new one.";
+// An approval in a full chat: its whole prompt, then this line. It waits at
+// most 30 minutes for the reply.
+const approvalReplyLine = "Reply 1 to approve or 2 to decline.";
+const approvalLimitMs = 30 * 60_000;
+// What the model reads, quoted as the member's note, when a reply of 1
+// could not approve.
+const lateApprovalNote =
+  "Replied 1 too late: on WhatsApp an approval declines after 30 minutes, or once the chat's access changed. Nothing ran; ask again if it is still wanted.";
 
 function lockReply() {
   return `Full access is off on WhatsApp. Turn it back on in assist: ${workspaceUrl()}`;
@@ -134,15 +150,25 @@ const linkServerReply =
 
 // The one fixed line a full chat opens with, from the channel, never the
 // model: what is on, and how to turn it off. BigQuery is named only for a
-// member the BigQuery tools are listed for.
+// member the BigQuery tools are listed for, and Google only for a member who
+// connected an account that Google still accepts.
 async function announcement(principal: SessionAuthContext) {
-  const bigquery = await bigqueryAccess({
+  const context = {
     session: { auth: { current: principal, initiator: principal } },
-  });
-  const on = bigquery
-    ? "the browser, vault links, Personal Info, saved notes and the company's BigQuery data, read only"
-    : "the browser, vault links, Personal Info and saved notes";
-  return `Full access is on in this chat: ${on}. Reply /lock to turn it off.`;
+  };
+  const [bigquery, google] = await Promise.all([
+    bigqueryAccess(context),
+    googleConnected(context),
+  ]);
+  const on = [
+    "the browser",
+    "vault links",
+    "Personal Info",
+    "saved notes",
+    ...(google ? ["your Google account"] : []),
+    ...(bigquery ? ["the company's BigQuery data, read only"] : []),
+  ];
+  return `Full access is on in this chat: ${on.slice(0, -1).join(", ")} and ${on.at(-1) ?? ""}. Reply /lock to turn it off.`;
 }
 
 const events = {
@@ -172,9 +198,9 @@ const events = {
   // oxlint-disable-next-line eslint/no-empty-function -- Overriding the built-in handler suppresses automatic reply posting.
   async "content.completed"() {},
   // eve posts a sign-in's challenge here, and its end below. WhatsApp shows
-  // none: the access hook cancels every sign-in and approval
-  // (agent/hooks/whatsapp-access.ts), and a question reaches the member
-  // through `committed`, below.
+  // none: the access hook cancels every sign-in, and a narrow chat's
+  // approval (agent/hooks/whatsapp-access.ts). A question, and a full chat's
+  // approval, reach the member through `committed`, below.
   // oxlint-disable-next-line eslint/no-empty-function -- Overriding the built-in handler posts no sign-in.
   async "interaction.opened"() {},
   // oxlint-disable-next-line eslint/no-empty-function -- Overriding the built-in handler posts no sign-in.
@@ -202,11 +228,14 @@ const events = {
   },
 } satisfies TwilioChannelEvents;
 
-// The question or budget prompt a typed reply answers now, posted through
-// the same gate as replies. eve's own prompt queue for text channels does the
-// same, ungated; this replaces it. A typed reply answers eve's first open
-// request, so the prompt shown must be that one: a budget prompt first, then
-// the oldest, skipping sign-ins and any already answered.
+// The question, budget prompt or approval a typed reply answers now, posted
+// through the same gate as replies. eve's own prompt queue for text channels
+// does the same, ungated; this replaces it. A typed reply answers eve's first
+// open request, so the prompt shown must be that one: a budget prompt first,
+// then the oldest, skipping sign-ins and any already answered. An approval
+// is drawn only in a full chat, and not for a turn typed in the web app,
+// which shows its approval there: eve takes an approval's answer only from
+// the person whose turn asked.
 const committed: ChannelCommitHandler<TwilioEventContext> = async (
   _line,
   ctx
@@ -223,15 +252,68 @@ const committed: ChannelCommitHandler<TwilioEventContext> = async (
   ) {
     return;
   }
+  const approval = head.request.kind === "approval";
+  const caller = ctx.session.auth.current;
   try {
+    if (
+      approval &&
+      caller !== null &&
+      whatsappSessionOf(caller)?.level !== "full"
+    ) {
+      return;
+    }
     const member = await replyGate(twilio, ctx.session.auth.initiator);
     if (!member || !(await windowOpen(member.number))) return;
-    await send(twilio, { Body: promptText(head.request) });
+    if (approval) {
+      if (member.level !== "full") return;
+      for (const Body of approvalParts(head.request.prompt)) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- The parts must arrive in order.
+        await send(twilio, { Body });
+      }
+      noteDrawnApproval(head.interactionId, ctx.session.id);
+    } else {
+      await send(twilio, { Body: promptText(head.request) });
+    }
     Object.assign(state, { shownPromptId: head.interactionId });
   } catch (error) {
-    warnByName("a question could not be sent", error);
+    warnByName(
+      approval
+        ? "an approval could not be sent"
+        : "a question could not be sent",
+      error
+    );
   }
 };
+
+// An approval's whole prompt, split as a reply is, then how to answer it.
+function approvalParts(prompt: string) {
+  return messageParts(`${prompt.trim()}\n\n${approvalReplyLine}`);
+}
+
+// The approvals drawn in full chats, by interaction id, with their chat and
+// whether a reply already answered them. A reply of 1 approves only an
+// approval drawn here, so one the member never saw in full declines, and so
+// does every approval open across a restart, which empties the list; a chat
+// that ends takes its approvals off it.
+const drawnApprovals = new Map<
+  string,
+  { answered: boolean; readonly sessionId: string }
+>();
+const maxDrawnApprovals = 200;
+
+function noteDrawnApproval(interactionId: string, sessionId: string) {
+  drawnApprovals.set(interactionId, { answered: false, sessionId });
+  for (const oldest of drawnApprovals.keys()) {
+    if (drawnApprovals.size <= maxDrawnApprovals) break;
+    drawnApprovals.delete(oldest);
+  }
+}
+
+function forgetDrawnApprovals(sessionId: string) {
+  for (const [interactionId, drawn] of drawnApprovals) {
+    if (drawn.sessionId === sessionId) drawnApprovals.delete(interactionId);
+  }
+}
 
 // The channel state eve's own prompt queue keeps, so a prompt it already
 // showed in a session started before this channel took over is not repeated.
@@ -921,11 +1003,18 @@ function chatSessions(
           return ended;
         }
         await endOtherLevel(args, address, sendOptions.auth);
-        if (await idleTooLong(args, chat)) {
-          await endChat(source, "The chat was idle for 8 hours.");
-        }
+        const idle = await idleTooLong(args, chat);
+        if (idle) await endChat(source, "The chat was idle for 8 hours.");
         if (admitted) await sendHeldReplies(admitted);
-        const delivery = await source.send(message, sendOptions);
+        const answered =
+          admitted?.level === "full" && !idle
+            ? await answerApproval(args, chat, message, sendOptions, admitted)
+            : undefined;
+        if (answered?.kind === "unread") return answered.delivery;
+        const delivery =
+          answered?.kind === "answered"
+            ? answered.delivery
+            : await source.send(message, sendOptions);
         if (admitted?.level === "full") {
           await openFullChat(admitted, delivery.sessionId, sendOptions);
         }
@@ -972,6 +1061,136 @@ async function admittedNow(
         level: "narrow",
       }),
     },
+  };
+}
+
+type Delivery = Awaited<ReturnType<ChannelSource<TwilioChannelState>["send"]>>;
+
+// A message to a full chat whose turn waits on an approval: eve would itself
+// read "1", "approve", "01" or "1.0" as an approve, so while an approval is
+// the request a reply answers, the message never reaches eve's own reading.
+// Only a reply of exactly 1, to an approval drawn here in full, within 30
+// minutes of its opening, while the number still reaches the member with
+// full access and with the 24-hour window open until this reply, approves
+// it. 2 declines it, and so does a 1 that cannot approve. Any other message
+// declines it and then reaches the chat as a new message. The chat's
+// recorded lines decide whether an approval is open, so a restart hides
+// none; when they cannot be read, the message is not passed on and the
+// member is told to try again.
+async function answerApproval(
+  args: RouteHandlerArgs<TwilioChannelState>,
+  chat: string,
+  message: Parameters<ChannelSource<TwilioChannelState>["send"]>[0],
+  options: SendOptions,
+  admitted: Extract<Admitted, { command: "new" | undefined }>
+): Promise<
+  | { readonly delivery: Delivery; readonly kind: "answered" | "unread" }
+  | undefined
+> {
+  let open: Awaited<ReturnType<typeof openApprovalOf>>;
+  try {
+    open = await openApprovalOf(args, chat);
+  } catch (error) {
+    warnByName("the chat's approvals could not be read; not passed on", error);
+    await sendQuietly(admitted.twilio, failedTurnReply, "failure notice");
+    return {
+      delivery: noDelivery(
+        new Error("The chat's approvals could not be read.")
+      ),
+      kind: "unread",
+    };
+  }
+  if (open === undefined) return undefined;
+  const { interactionId } = open;
+  const drawn = drawnApprovals.get(interactionId);
+  // An earlier reply answered it already; eve has yet to record that.
+  if (drawn?.answered === true) return undefined;
+  if (drawn) drawn.answered = true;
+  const source = args.from(chat);
+  // A message with media is never a bare 1 or 2.
+  const text = z.string().safeParse(message).data?.trim();
+  if (text === "1" && drawn && (await approvable(open, options, admitted))) {
+    const auth = options.auth && {
+      ...options.auth,
+      attributes: {
+        ...options.auth.attributes,
+        [whatsappApprovalAttribute]: interactionId,
+      },
+    };
+    return {
+      delivery: await source.respond(
+        [{ interactionId, optionId: APPROVE_OPTION_ID }],
+        { auth, state: options.state }
+      ),
+      kind: "answered",
+    };
+  }
+  const respondOptions = { auth: options.auth, state: options.state };
+  if (text === "1") {
+    return {
+      delivery: await source.respond(
+        [{ interactionId, optionId: DENY_OPTION_ID, text: lateApprovalNote }],
+        respondOptions
+      ),
+      kind: "answered",
+    };
+  }
+  const declined = await source.respond(
+    [{ interactionId, optionId: DENY_OPTION_ID }],
+    respondOptions
+  );
+  return text === "2" ? { delivery: declined, kind: "answered" } : undefined;
+}
+
+// Whether a reply of 1 may still approve: the approval opened at most 30
+// minutes ago, the reply gate still passes for the chat's member, and the
+// member had written within the 24-hour window before this reply, so it never
+// closed since the approval was drawn.
+async function approvable(
+  open: NonNullable<Awaited<ReturnType<typeof openApprovalOf>>>,
+  options: SendOptions,
+  admitted: Extract<Admitted, { command: "new" | undefined }>
+) {
+  if (!(Date.now() - open.openedAt <= approvalLimitMs)) return false;
+  if ((await replyGate(admitted.twilio, options.auth))?.level !== "full") {
+    return false;
+  }
+  return whatsappWrittenWithin(
+    admitted.sender,
+    replyWindowMs,
+    options.state?.lastMessageSid ?? undefined
+  );
+}
+
+const openedSchema = z.object({ interactionId: z.string() });
+
+// The approval a reply to this chat answers now, read from the chat's
+// recorded lines: eve's first open request, when it is an approval, and the
+// time it opened.
+async function openApprovalOf(
+  args: RouteHandlerArgs<TwilioChannelState>,
+  address: string
+) {
+  const session = await args.resolveSession(address);
+  if (!session) return undefined;
+  const recorded: ReceivedEvent[] = [];
+  for await (const event of session.stream({
+    follow: false,
+    signal: AbortSignal.timeout(10_000),
+  })) {
+    recorded.push(event);
+  }
+  const head = promptHead(foldEvents(emptySessionView(), recorded));
+  if (head?.request.kind !== "approval") return undefined;
+  const opened = recorded.find(
+    (event) =>
+      event.type === "interaction.opened" &&
+      openedSchema.safeParse(event.data).data?.interactionId ===
+        head.interactionId
+  );
+  return {
+    interactionId: head.interactionId,
+    openedAt: opened ? Date.parse(opened.meta.at) : Number.NaN,
   };
 }
 
@@ -1158,6 +1377,7 @@ function noDelivery(
 // database failure here is: eve logs a thrown error whole, and a failed
 // query's message names its values, numbers and reply text among them.
 async function recordChatEnd(sessionId: string) {
+  forgetDrawnApprovals(sessionId);
   try {
     await endWhatsappChat(sessionId);
   } catch (error) {

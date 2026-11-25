@@ -18,6 +18,7 @@ import type {
   TwilioHandle,
 } from "eve/channels/twilio";
 import { SessionNotActiveError } from "eve/client";
+import type { SessionAuthContext } from "eve/context";
 import type { CallSettled, Fact } from "eve/events";
 import {
   afterAll,
@@ -33,11 +34,13 @@ import {
 import * as Database from "@db";
 import * as schema from "@db/schema";
 import type { enrolledTeamMemberId } from "@db/services/auth/allowlist";
+import type { googleAccountOf } from "@db/services/connectors/google";
 import {
   admitWhatsappMessage,
   claimWhatsappMessage,
   lockWhatsapp,
   recordWhatsappChat,
+  unlockWhatsapp,
   whatsappLockOf,
 } from "@db/services/whatsapp";
 import {
@@ -46,6 +49,8 @@ import {
   whatsappLinkOf,
 } from "@db/services/whatsapp-links";
 import { noteWhatsappCancel } from "@agent/lib/whatsapp-access";
+import { approvalResponse } from "@agent/lib/approval-response";
+import { googleRequestedScopes } from "@shared/connectors/google/scopes";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { viewOf } from "@tests/helpers/session-view";
 
@@ -67,6 +72,7 @@ interface TestConfig {
   bigqueryEmails: string[];
   authToken: string | undefined;
   from: string | undefined;
+  google: boolean;
   numbers: string;
 }
 
@@ -77,11 +83,13 @@ const mocks = vi.hoisted(() => {
     bigqueryEmails: [],
     authToken: undefined,
     from: undefined,
+    google: false,
     numbers: "",
   };
   return {
     config,
     enrolledTeamMemberId: vi.fn<typeof enrolledTeamMemberId>(),
+    googleAccountOf: vi.fn<typeof googleAccountOf>(),
     // SAFETY: The mocked channel factory replaces this value during module loading.
     twilioConfig: undefined as TwilioChannelConfig | undefined,
   };
@@ -106,6 +114,15 @@ vi.mock("@shared/environment", () => ({
     get TWILIO_WHATSAPP_FROM() {
       return mocks.config.from;
     },
+    // Whether Google is set up; the client is a fake.
+    get GOOGLE_CLIENT_ID() {
+      return mocks.config.google
+        ? "client.apps.googleusercontent.com"
+        : undefined;
+    },
+    get GOOGLE_CLIENT_SECRET() {
+      return mocks.config.google ? "client-secret" : undefined;
+    },
   },
   // Only whether BigQuery is configured, and for whom, reaches the channel.
   bigqueryConfig: () => (mocks.config.bigquery ? {} : undefined),
@@ -125,6 +142,11 @@ const teamEmails = new Set([
 vi.mock("@db/services/auth/allowlist", () => ({
   enrolledTeamMemberId: mocks.enrolledTeamMemberId,
   isAllowedEmail: (email: string) => teamEmails.has(email.trim().toLowerCase()),
+}));
+// The member's connected Google account, as the fixed line reads it.
+vi.mock(import("@db/services/connectors/google"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  googleAccountOf: mocks.googleAccountOf,
 }));
 vi.mock(import("eve/channels/twilio"), async (importOriginal) => {
   const original = await importOriginal();
@@ -197,8 +219,10 @@ beforeEach(async () => {
     bigqueryEmails: ["member@example.test"],
     authToken,
     from: companyNumber,
+    google: false,
     numbers: `${memberNumber}=Member@Example.test, +15550000009=other@example.test`,
   });
+  mocks.googleAccountOf.mockResolvedValue(undefined);
   mocks.enrolledTeamMemberId.mockImplementation(async (email) =>
     email === "member@example.test"
       ? "user-1"
@@ -391,7 +415,9 @@ function routeHarness(session?: ChatSession) {
     end: vi.fn<ChannelSource<TwilioChannelState>["end"]>(async () =>
       fakeDelivery()
     ),
-    respond: vi.fn<ChannelSource<TwilioChannelState>["respond"]>(),
+    respond: vi.fn<ChannelSource<TwilioChannelState>["respond"]>(async () =>
+      fakeDelivery()
+    ),
     send: vi.fn<ChannelSource<TwilioChannelState>["send"]>(async () =>
       fakeDelivery()
     ),
@@ -577,6 +603,39 @@ describe("WhatsApp webhook", () => {
 
     expect(sentTexts()).toEqual([
       "Full access is on in this chat: the browser, vault links, Personal Info, saved notes and the company's BigQuery data, read only. Reply /lock to turn it off.",
+    ]);
+  });
+
+  it("names the member's own Google account in the fixed line once they connected it, and leaves it out before that and while Google needs them to reconnect", async () => {
+    const account = {
+      connectedAt: "2026-11-25T08:00:00.000Z",
+      email: "member@example.test",
+      needsReconnect: false,
+      scopes: [...googleRequestedScopes],
+    };
+    const lineFor = async (connected: typeof account | undefined) => {
+      await client.exec("TRUNCATE whatsapp_chats CASCADE");
+      twilioCalls.length = 0;
+      mocks.googleAccountOf.mockResolvedValue(connected);
+      await routeHarness().post(webhook(messageParams()));
+      return sentTexts();
+    };
+    mocks.config.google = true;
+
+    expect(await lineFor(account)).toEqual([
+      "Full access is on in this chat: the browser, vault links, Personal Info, saved notes and your Google account. Reply /lock to turn it off.",
+    ]);
+    expect(mocks.googleAccountOf).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:user-1")
+    );
+    mocks.config.bigquery = true;
+    expect(await lineFor(account)).toEqual([
+      "Full access is on in this chat: the browser, vault links, Personal Info, saved notes, your Google account and the company's BigQuery data, read only. Reply /lock to turn it off.",
+    ]);
+    mocks.config.bigquery = false;
+    expect(await lineFor(undefined)).toEqual([announcement]);
+    expect(await lineFor({ ...account, needsReconnect: true })).toEqual([
+      announcement,
     ]);
   });
 
@@ -1851,7 +1910,11 @@ describe("WhatsApp replies", () => {
 describe("WhatsApp prompts and notices", () => {
   function promptContext(
     facts: readonly Fact[],
-    initiator: typeof memberPrincipal | null = memberPrincipal
+    initiator:
+      | typeof memberPrincipal
+      | typeof narrowPrincipal
+      | null = memberPrincipal,
+    current: SessionAuthContext | null = null
   ) {
     const request = vi.fn<TwilioHandle["request"]>(async () => ({
       body: { sid: "SM-sent" },
@@ -1880,7 +1943,7 @@ describe("WhatsApp prompts and notices", () => {
       },
       position: { index: 0, line: 3 },
       session: {
-        auth: { current: null, initiator },
+        auth: { current, initiator },
         id: "session-1",
         turn: { id: "turn-1", sequence: 0 },
       },
@@ -2002,6 +2065,370 @@ describe("WhatsApp prompts and notices", () => {
     expect(context.channel.twilio.sendMessage).not.toHaveBeenCalled();
   });
 
+  describe("approvals in a full chat", () => {
+    const approvalLine = "Reply 1 to approve or 2 to decline.";
+    const lateNote =
+      "Replied 1 too late: on WhatsApp an approval declines after 30 minutes, or once the chat's access changed. Nothing ran; ask again if it is still wanted.";
+    const sendPrompt =
+      "Send this email?\n\nTo: ana@example.test\nSubject: The March invoice\n\nHello Ana, the invoice is attached.";
+    let nextApproval = 0;
+
+    // A fresh approval id per case: the channel remembers what it drew for
+    // as long as the process runs.
+    function approvalOpened(prompt = sendPrompt) {
+      nextApproval += 1;
+      const id = `approval-${String(nextApproval)}`;
+      const fact = opened(id, {
+        allowFreeform: false,
+        display: "confirmation",
+        kind: "approval",
+        options: [
+          { id: "approve", label: "Approve" },
+          { id: "deny", label: "Deny" },
+        ],
+        prompt,
+      });
+      return { fact, id };
+    }
+
+    // The member's open full chat, its last line the approval that opened
+    // `minutesAgo` minutes ago.
+    function waitingOn(fact: Fact, minutesAgo = 1): ChatSession {
+      const at = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+      return {
+        ...sessionLastActiveAt(at),
+        async *stream() {
+          yield {
+            ...fact,
+            meta: { at, endOfLine: true, position: { index: 0, line: 0 } },
+          };
+        },
+      };
+    }
+
+    // Draws the approval as the turn the member sent from WhatsApp commits
+    // it, and returns what was posted.
+    async function draw(fact: Fact) {
+      await wroteRecently();
+      const { context, request } = promptContext(
+        [fact],
+        memberPrincipal,
+        memberPrincipal
+      );
+      await committed()({ facts: [], position: 3 }, context);
+      return request.mock.calls.map(([, body]) => body.Body);
+    }
+
+    async function reply(
+      harness: ReturnType<typeof routeHarness>,
+      body: string
+    ) {
+      await harness.post(webhook(messageParams({ Body: body })));
+    }
+
+    function approvedBy(id: string) {
+      return {
+        ...memberPrincipal,
+        attributes: { ...memberPrincipal.attributes, whatsappApproval: id },
+      };
+    }
+
+    it("draws the whole prompt over as many messages as it needs, in order and with nothing cut, then how to answer it, once", async () => {
+      const paragraph = `${"The supplier asks us to confirm the order. ".repeat(19)}End.`;
+      const prompt = `Send this email?\n\nTo: ana@example.test\n\n${[paragraph, paragraph, paragraph].join("\n\n")}`;
+      const { fact } = approvalOpened(prompt);
+      await wroteRecently();
+      const { context, request } = promptContext(
+        [fact],
+        memberPrincipal,
+        memberPrincipal
+      );
+
+      await committed()({ facts: [], position: 3 }, context);
+      await committed()({ facts: [], position: 3 }, context);
+
+      const bodies = request.mock.calls.map(([, body]) => String(body.Body));
+      expect(bodies.length).toBeGreaterThan(1);
+      expect(bodies.every((body) => body.length <= 1600)).toBe(true);
+      expect(bodies.at(-1)?.endsWith(`\n\n${approvalLine}`)).toBe(true);
+      expect(wordsOf(bodies.join("\n"))).toEqual(
+        wordsOf(`${prompt}\n\n${approvalLine}`)
+      );
+      expect(bodies.join("")).not.toMatch(/1\. Approve|2\. Deny/u);
+    });
+
+    it("draws an approval only for a full chat's own WhatsApp turn, through the reply gate", async () => {
+      const line = { facts: [], position: 3 };
+      const { fact } = approvalOpened();
+      await wroteRecently();
+
+      const narrow = promptContext([fact], narrowPrincipal, narrowPrincipal);
+      await committed()(line, narrow.context);
+      const fromWeb = promptContext([fact], memberPrincipal, {
+        attributes: { conversationChannel: "eve", workspaceId },
+        authenticator: "authjs",
+        principalId: "better-auth:user-1",
+        principalType: "user",
+      });
+      await committed()(line, fromWeb.context);
+      await lockWhatsapp("user-1", "web");
+      const locked = promptContext([fact], memberPrincipal, memberPrincipal);
+      await committed()(line, locked.context);
+
+      expect(narrow.request).not.toHaveBeenCalled();
+      expect(fromWeb.request).not.toHaveBeenCalled();
+      expect(locked.request).not.toHaveBeenCalled();
+    });
+
+    it("approves on a reply of exactly 1, with an answer that names the approval, which the tools' response policy takes and eve's own reading of a 1 does not", async () => {
+      const { fact, id } = approvalOpened();
+      expect(await draw(fact)).toEqual([`${sendPrompt}\n\n${approvalLine}`]);
+      const harness = routeHarness(waitingOn(fact, 29));
+
+      await reply(harness, "1");
+
+      expect(harness.source.send).not.toHaveBeenCalled();
+      expect(harness.source.respond).toHaveBeenCalledExactlyOnceWith(
+        [{ interactionId: id, optionId: "approve" }],
+        expect.objectContaining({ auth: approvedBy(id) })
+      );
+      const asked = {
+        callId: "call-send",
+        interactionId: id,
+        principal: memberPrincipal,
+        toolName: "gmail_send",
+      };
+      expect(
+        approvalResponse({
+          request: asked,
+          response: { decision: "approve", principal: approvedBy(id) },
+        })
+      ).toEqual({ status: "allowed" });
+      expect(
+        approvalResponse({
+          request: asked,
+          response: { decision: "approve", principal: memberPrincipal },
+        })
+      ).toMatchObject({ status: "rejected" });
+    });
+
+    it("declines on a reply of 2 and passes nothing on", async () => {
+      const { fact, id } = approvalOpened();
+      await draw(fact);
+      const harness = routeHarness(waitingOn(fact));
+
+      await reply(harness, "2");
+
+      expect(harness.source.send).not.toHaveBeenCalled();
+      expect(harness.source.respond).toHaveBeenCalledExactlyOnceWith(
+        [{ interactionId: id, optionId: "deny" }],
+        expect.objectContaining({ auth: memberPrincipal })
+      );
+    });
+
+    it.each(["approve", "Approve", "01", "1.0", "+1", "Yes, send it"])(
+      "declines on %s, then passes it on as a new message",
+      async (body) => {
+        const { fact, id } = approvalOpened();
+        await draw(fact);
+        const harness = routeHarness(waitingOn(fact));
+
+        await reply(harness, body);
+
+        expect(harness.source.respond).toHaveBeenCalledExactlyOnceWith(
+          [{ interactionId: id, optionId: "deny" }],
+          expect.objectContaining({ auth: memberPrincipal })
+        );
+        expect(harness.source.send).toHaveBeenCalledExactlyOnceWith(
+          body,
+          expect.objectContaining({ auth: memberPrincipal })
+        );
+        expect(harness.source.respond.mock.invocationCallOrder[0]).toBeLessThan(
+          harness.source.send.mock.invocationCallOrder[0] ?? 0
+        );
+      }
+    );
+
+    it("declines on a 1 sent with a photo, then passes the photo on", async () => {
+      const { fact, id } = approvalOpened();
+      await draw(fact);
+      const harness = routeHarness(waitingOn(fact));
+      const imageSid = `ME${"c".repeat(32)}`;
+      const base = messageParams({ Body: "1" });
+      const params = {
+        ...base,
+        MediaContentType0: "image/jpeg",
+        MediaUrl0: mediaUrl(base.MessageSid, imageSid),
+        NumMedia: "1",
+      };
+      twilioRecords.set(base.MessageSid, recordOf(params));
+      twilioMediaLists.set(
+        base.MessageSid,
+        mediaListOf(base.MessageSid, [imageSid])
+      );
+
+      await harness.post(webhook(params));
+
+      expect(harness.source.respond).toHaveBeenCalledExactlyOnceWith(
+        [{ interactionId: id, optionId: "deny" }],
+        expect.anything()
+      );
+      expect(harness.source.send).toHaveBeenCalledOnce();
+    });
+
+    it("declines a 1 that comes more than 30 minutes after the approval opened, telling the model why", async () => {
+      const { fact, id } = approvalOpened();
+      await draw(fact);
+      const harness = routeHarness(waitingOn(fact, 31));
+
+      await reply(harness, "1");
+
+      expect(harness.source.send).not.toHaveBeenCalled();
+      expect(harness.source.respond).toHaveBeenCalledExactlyOnceWith(
+        [{ interactionId: id, optionId: "deny", text: lateNote }],
+        expect.objectContaining({ auth: memberPrincipal })
+      );
+    });
+
+    it("declines a 1 to an approval it never drew, or drew before a restart", async () => {
+      const { fact, id } = approvalOpened();
+      await wroteRecently();
+      const harness = routeHarness(waitingOn(fact));
+
+      await reply(harness, "1");
+
+      expect(harness.source.send).not.toHaveBeenCalled();
+      expect(harness.source.respond).toHaveBeenCalledExactlyOnceWith(
+        [{ interactionId: id, optionId: "deny", text: lateNote }],
+        expect.anything()
+      );
+    });
+
+    it.each([
+      [
+        "a lock, turned off again",
+        async () => {
+          await lockWhatsapp("user-1", "web");
+          return { member: "better-auth:user-1" };
+        },
+      ],
+      [
+        "a disconnect of the number",
+        async () => ({ member: "better-auth:user-1", phone: memberNumber }),
+      ],
+    ])(
+      "declines a 1 once %s ended the chat between drawing and answering",
+      async (_case, change) => {
+        const { fact, id } = approvalOpened();
+        expect(await draw(fact)).toEqual([`${sendPrompt}\n\n${approvalLine}`]);
+        await client.exec(
+          `INSERT INTO workspaces (id) VALUES ('${workspaceId}') ON CONFLICT DO NOTHING`
+        );
+        await recordWhatsappChat({
+          email: "member@example.test",
+          messageAt: new Date(),
+          messageSid: `SM${"9".repeat(32)}`,
+          phone: memberNumber,
+          sessionId: "session-1",
+          userId: "better-auth:user-1",
+          workspaceId,
+        });
+        const harness = routeHarness(waitingOn(fact));
+        const ended = await harness.post(
+          new Request(`${loopbackOrigin}/internal/whatsapp/end`, {
+            body: JSON.stringify(await change()),
+            headers: {
+              authorization: `Bearer ${loopbackSecret}`,
+              "content-type": "application/json",
+            },
+            method: "POST",
+          }),
+          "/internal/whatsapp/end"
+        );
+        expect(ended.status).toBe(204);
+        expect(harness.attached).toEqual(["session-1"]);
+        await unlockWhatsapp("user-1");
+
+        await reply(harness, "1");
+
+        expect(harness.source.respond).toHaveBeenCalledExactlyOnceWith(
+          [{ interactionId: id, optionId: "deny", text: lateNote }],
+          expect.anything()
+        );
+      }
+    );
+
+    it("declines a 1 that comes after the 24-hour window closed, though the 1 itself opens it again", async () => {
+      const { fact, id } = approvalOpened();
+      expect(await draw(fact)).toEqual([`${sendPrompt}\n\n${approvalLine}`]);
+      // The member's last message before the 1 falls out of the window.
+      await client.exec(
+        "UPDATE whatsapp_messages SET received_at = now() - interval '1 day'"
+      );
+      const harness = routeHarness(waitingOn(fact));
+
+      await reply(harness, "1");
+
+      expect(harness.source.respond).toHaveBeenCalledExactlyOnceWith(
+        [{ interactionId: id, optionId: "deny", text: lateNote }],
+        expect.anything()
+      );
+    });
+
+    it("answers nothing of the member's approval from their number once it reaches someone else", async () => {
+      const { fact } = approvalOpened();
+      expect(await draw(fact)).toEqual([`${sendPrompt}\n\n${approvalLine}`]);
+      mocks.config.numbers = `${memberNumber}=other@example.test`;
+      const harness = routeHarness(waitingOn(fact));
+
+      await reply(harness, "1");
+
+      expect(harness.source.respond).not.toHaveBeenCalled();
+      expect(harness.source.send).not.toHaveBeenCalled();
+    });
+
+    it("passes a second reply to an approval it already answered on as a new message", async () => {
+      const { fact, id } = approvalOpened();
+      await draw(fact);
+      const harness = routeHarness(waitingOn(fact));
+
+      await reply(harness, "1");
+      await reply(harness, "1");
+
+      expect(harness.source.respond).toHaveBeenCalledExactlyOnceWith(
+        [{ interactionId: id, optionId: "approve" }],
+        expect.anything()
+      );
+      expect(harness.source.send).toHaveBeenCalledExactlyOnceWith(
+        "1",
+        expect.anything()
+      );
+    });
+
+    it("passes nothing on, and asks the member to try again, when the chat's lines cannot be read", async () => {
+      await wroteRecently();
+      const unreadable: ChatSession = {
+        ...sessionLastActiveAt(new Date().toISOString()),
+        async *stream() {
+          yield* [];
+          throw new FailedQuery(
+            `Failed query: select params: ${memberNumber},member@example.test`
+          );
+        },
+      };
+      const harness = routeHarness(unreadable);
+
+      await reply(harness, "1");
+
+      expect(harness.source.send).not.toHaveBeenCalled();
+      expect(harness.source.respond).not.toHaveBeenCalled();
+      expect(sentTexts()).toContain(
+        "Something went wrong with that message. Try again, or reply /new to start over."
+      );
+      expect(loggedValues()).toEqual([]);
+    });
+  });
+
   it("tells the member a turn failed, or why the access hook stopped it, through the gate", async () => {
     await wroteRecently();
     const settled = channelEvents()["turn.settled"];
@@ -2049,6 +2476,11 @@ describe("WhatsApp prompts and notices", () => {
     expect(unlisted.request).not.toHaveBeenCalled();
   });
 });
+
+// A text's words, whatever whitespace splits them.
+function wordsOf(text: string) {
+  return text.split(/\s+/u).filter(Boolean);
+}
 
 function opened(
   interactionId: string,

@@ -703,9 +703,11 @@ connects their own number from the Workspace page (see
 full access in a mode made for a phone: the same general assistant as the web
 chat, which replies, asks a question with numbered options, searches the web,
 runs browser tasks, sends vault links and uses the member's Personal Info and
-saved notes, and, for a member who has [BigQuery](#bigquery), reads the
-company's BigQuery. It has no schedules, no reactions, no approvals and no
-connector sign-ins on WhatsApp, and it keeps to the company's business work.
+saved notes, for a member who has [BigQuery](#bigquery) reads the company's
+BigQuery, and for a member who connected [Google](#google-workspace) uses
+their own Gmail, Calendar and Drive. Its approvals arrive as numbered
+messages. It has no schedules, no reactions and no connector sign-ins on
+WhatsApp, and it keeps to the company's business work.
 It has no Accounting yet: TEEMIQ is not reachable from WhatsApp, and
 Accounting stays in TEEMIQ's own Assist panel.
 Replies are short text for a phone, split at Twilio's 1,600 characters per
@@ -866,10 +868,31 @@ BigQuery data, read only" too.
   chat, and the member's 24-hour window open.
 - The $10 usage limit's continue prompt is answered once per chat; a second
   one stops the turn and the member is told to reply `/new`.
-- An approval or a connector sign-in stops the turn: WhatsApp cannot show
-  one. Schedules are not offered on WhatsApp yet, nor in the WhatsApp chat's
-  own page on the web, which keeps the chat's tools; the agent sends the link
-  to a new chat in assist's web app, `/chat`, instead.
+- An approval in a full chat reaches the member as messages: its whole
+  prompt, split at 1,600 characters like a reply, in order and with nothing
+  cut, then "Reply 1 to approve or 2 to decline." The channel draws it
+  through the same check as a question, and only for a turn the member sent
+  from WhatsApp; a turn typed in the chat's page on the web shows its
+  approval there, since eve takes an answer only from the person whose turn
+  asked. Only a reply of exactly 1 approves, and only while the approval is
+  at most 30 minutes old, the number still reaches the member with full
+  access, and the 24-hour window stayed open until that reply. A 2 declines,
+  and so does a 1 that comes too late; any other message, a photo included,
+  declines the approval and is then read as a new message. A lock, a
+  disconnect or a new number ends the chat, and its approvals with it. The
+  channel answers the approval itself: eve's own reading would also take
+  `approve`, `01` or `1.0`, even sent before the approval was shown, and each
+  approval's response policy (`agent/lib/approval-response.ts`) refuses an
+  approve from WhatsApp that the channel did not give. Memory holds which
+  approvals were drawn, so one open across a restart declines.
+- A narrow chat's approval stops the turn, and so does a connector sign-in
+  in any WhatsApp chat: WhatsApp cannot show one. When Google stops accepting
+  a member's grant, the agent sends the Workspace page instead, bare on its
+  own line, and says to press **Reconnect** under **Connectors**; a grant that
+  dies during a turn stops it with a line that says the same.
+- Schedules are not offered on WhatsApp yet, nor in the WhatsApp chat's own
+  page on the web, which keeps the chat's tools; the agent sends the link to
+  a new chat in assist's web app, `/chat`, instead.
 - A one-time code is never typed on WhatsApp. The agent sends the chat's link
   in assist's web app, `/chat/{sessionId}`, and the member types the code
   there for the same parked browser worker. Passwords go only into the vault
@@ -1003,12 +1026,14 @@ chat, also that a figure in a reply is stored by WhatsApp and Twilio.
 Each member connects their own Google account in assist's web app, on the
 Workspace page under **Connectors**: **Connect Google**, then Google's consent
 screen. The section then shows the account's address, what Google granted, and
-**Disconnect**. Only that member's own web chats can use the account:
+**Disconnect**. Only that member's own web chats and full WhatsApp chats can
+use the account:
 
 - Gmail: search, read a conversation, save a draft, and send. Every send waits
-  for the member's **Approve** in the chat, which shows all that is sent:
-  every recipient first, copies and blind copies included, then the subject
-  and the whole text. A send takes at most 4,000 characters of text, with no
+  for the member's **Approve** in the chat (on WhatsApp, a reply of 1; see
+  [What a WhatsApp chat can do](#what-a-whatsapp-chat-can-do)), which shows
+  all that is sent: every recipient first, copies and blind copies included,
+  then the subject and the whole text. A send takes at most 4,000 characters of text, with no
   character that shows nothing; longer mail is saved as a draft.
 - Calendar: list events, see when people are free, and create an event. Every
   new event, and the invitations it sends, waits for the member's **Approve**,
@@ -1021,11 +1046,22 @@ screen. The section then shows the account's address, what Google granted, and
   for the member's **Approve** too, which shows the whole assignment, so text
   in a mail or a file cannot send what assist read to a website unseen.
 
-Site chats (TEEMIQ's Assist), site tasks, WhatsApp and scheduled runs never get
-Google tools; the list of modes that do is `googleModes` in
-`agent/lib/google/offer.ts`. With either variable below unset, there are no
-Google tools at all, and the Connectors section says that an administrator has
-not set Google up. Labels, Contacts and Tasks are not part of this connector.
+Site chats (TEEMIQ's Assist), site tasks, a narrow WhatsApp chat (a locked
+member's) and scheduled runs never get Google tools; the list of modes that do
+is `googleModes` in `agent/lib/google/offer.ts`: the web chat and a full
+WhatsApp chat. With either variable below unset, there are no Google tools at
+all, and the Connectors section says that an administrator has not set Google
+up. Labels, Contacts and Tasks are not part of this connector.
+
+On WhatsApp the tools, their instructions and the full chat's fixed line
+follow the member's own account: a member who connected Google, and whose
+grant Google still accepts, sees "your Google account" in that line. Each
+approval arrives as a numbered message, a reply of 1 approves it, and
+anything else declines it. Mail, events and files are untrusted text there
+as on the web, never instructions, and what the agent quotes from them is
+stored by WhatsApp and Twilio. Google's own sign-in cannot be shown on
+WhatsApp, so there the agent sends the Workspace page for **Reconnect**
+instead of calling a Google tool.
 
 | Variable               | Secret | Value                                                 |
 | ---------------------- | ------ | ----------------------------------------------------- |
@@ -1091,10 +1127,11 @@ The tokens are sealed with AES-256-GCM in `encrypted_secrets` (namespace
 turn can open another's. They never reach a log, a tool result, the model's
 instructions or eve's records. An access token is refreshed a minute before it
 expires. When Google refuses the grant, assist drops the tokens, the section
-shows **Reconnect needed**, and the next Google tool call shows **Connect
-Google** in the chat. **Disconnect** revokes the grant at Google and deletes
-the tokens; when Google cannot confirm the revoke, the tokens are deleted
-anyway and the page says to remove assist at myaccount.google.com/permissions.
+shows **Reconnect needed**, and the next Google tool call in a web chat shows
+**Connect Google** in the chat. **Disconnect** revokes the grant at Google and
+deletes the tokens; when Google cannot confirm the revoke, the tokens are
+deleted anyway and the page says to remove assist at
+myaccount.google.com/permissions.
 
 ## Local development
 

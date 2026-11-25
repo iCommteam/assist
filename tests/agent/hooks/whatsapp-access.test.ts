@@ -42,6 +42,9 @@ vi.mock("@shared/environment", () => ({
   env: {},
   whatsappNumbersVariable: () => mocks.numbers,
 }));
+vi.mock("@shared/environment/origin", () => ({
+  applicationOrigin: () => "https://assist.example.test",
+}));
 
 import rootHook from "@agent/hooks/whatsapp-access";
 import { takeWhatsappCancelNotice } from "@agent/lib/whatsapp-access";
@@ -328,18 +331,48 @@ describe("what a WhatsApp chat can be asked", () => {
     );
   });
 
-  it.each([
-    ["an approval", { kind: "approval", prompt: "Create this schedule?" }],
-    ["a sign-in", { kind: "sign-in", prompt: "Connect your account." }],
-  ] as const)(
-    "stops at %s, which WhatsApp cannot show",
-    async (_case, request) => {
-      expect(await fire(opened("i-1", request), full)).toHaveBeenCalledOnce();
-      expect(takeWhatsappCancelNotice("session-1", "turn-1")).toBe(
-        "That step can't be done on WhatsApp. Continue in assist's web app."
-      );
-    }
-  );
+  it("lets a full chat's approval through, for the channel to draw as a numbered message, and still stops a narrow chat's", async () => {
+    const approval = opened("i-1", {
+      kind: "approval",
+      options: [
+        { id: "approve", label: "Approve" },
+        { id: "deny", label: "Deny" },
+      ],
+      prompt: "Send this email?",
+    });
+    expect(await fire(approval, full)).not.toHaveBeenCalled();
+    expect(takeWhatsappCancelNotice("session-1", "turn-1")).toBeUndefined();
+
+    expect(await fire(approval, narrow)).toHaveBeenCalledOnce();
+    expect(takeWhatsappCancelNotice("session-1", "turn-1")).toBe(
+      "That step can't be done on WhatsApp. Continue in assist's web app."
+    );
+  });
+
+  it("stops at a sign-in, which WhatsApp cannot show, and sends a full chat's member to the Workspace page to reconnect Google", async () => {
+    const google = opened("i-1", {
+      kind: "sign-in",
+      prompt: "Connect Google to continue.",
+      signIn: { displayName: "Google", name: "google" },
+    });
+    expect(await fire(google, full)).toHaveBeenCalledOnce();
+    expect(takeWhatsappCancelNotice("session-1", "turn-1")).toBe(
+      "Google needs you to connect it again. Press Reconnect under Connectors on assist's Workspace page:\nhttps://assist.example.test/"
+    );
+
+    const other = opened("i-2", {
+      kind: "sign-in",
+      prompt: "Connect your account.",
+    });
+    expect(await fire(other, full)).toHaveBeenCalledOnce();
+    expect(takeWhatsappCancelNotice("session-1", "turn-1")).toBe(
+      "That step can't be done on WhatsApp. Continue in assist's web app."
+    );
+    expect(await fire(google, narrow)).toHaveBeenCalledOnce();
+    expect(takeWhatsappCancelNotice("session-1", "turn-1")).toBe(
+      "That step can't be done on WhatsApp. Continue in assist's web app."
+    );
+  });
 
   it("leaves the site chats' and the web's requests to their own rules", async () => {
     const approval = opened("i-1", { kind: "approval", prompt: "Approve?" });

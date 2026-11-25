@@ -38,3 +38,24 @@ export async function googleToolsFor(
   );
   return offered.length > 0 ? Object.fromEntries(offered) : null;
 }
+
+// Whether a full WhatsApp chat's fixed line names the member's Google
+// account: the session may use it, the member connected one, and Google
+// still accepts its grant for at least one ability.
+export async function googleConnected(
+  context: Parameters<typeof googleScopeOfSession>[0]
+) {
+  const scope = googleScopeOfSession(context);
+  if (!scope) return false;
+  try {
+    const account = await googleAccountOf(scope);
+    return (
+      account !== undefined &&
+      !account.needsReconnect &&
+      grantedGoogleAbilities(account.scopes).length > 0
+    );
+  } catch {
+    console.warn("[google] the connected account could not be read");
+    return false;
+  }
+}

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
+import { approvalResponse } from "@agent/lib/approval-response";
 import {
   googleApproval,
   shownLine,
@@ -183,6 +184,7 @@ const gmailSend = defineTool({
   approval: {
     prompt: ({ input }) => sendPrompt(input),
     request: (context) => googleApproval(context),
+    response: approvalResponse,
   },
   label: { start: ({ subject }) => `Send “${subject}” from Gmail` },
   async execute(input, ctx) {
