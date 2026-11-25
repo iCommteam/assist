@@ -341,6 +341,21 @@ describe("Connect WhatsApp", () => {
     expect(WhatsappLinks.whatsappLinkOf).toHaveBeenCalledWith("user-1");
   });
 
+  it("reads a link ASSIST_WHATSAPP_NUMBERS overrides as no link, as the page does", async () => {
+    vi.mocked(WhatsappLinks.whatsappLinkOf).mockResolvedValue(linkOf("user-1"));
+    vi.spyOn(WhatsappEnvironment, "whatsappListingOf").mockReturnValue({
+      email: "other@example.test",
+    });
+
+    await expect(whatsapp().linkStatus()).resolves.toEqual({
+      codeLive: true,
+      linkedId: null,
+    });
+    expect(WhatsappEnvironment.whatsappListingOf).toHaveBeenCalledWith(
+      "+15550000001"
+    );
+  });
+
   it("disconnects the member's own number and ends its chats on that number only", async () => {
     vi.mocked(WhatsappLinks.whatsappLinkById).mockResolvedValue(
       linkOf("user-1")

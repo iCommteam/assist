@@ -33,7 +33,10 @@ import {
   whatsappLinkOf,
 } from "@db/services/whatsapp-links";
 import { postWhatsappLoopback } from "@shared/environment/loopback";
-import { whatsappChannelConfigured } from "@shared/environment/whatsapp";
+import {
+  whatsappChannelConfigured,
+  whatsappListingOf,
+} from "@shared/environment/whatsapp";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { deleteLoginProfile } from "@web/browser/login-profile";
 import { createTRPCRouter, protectedProcedure } from "./init";
@@ -101,7 +104,9 @@ export const appRouter = createTRPCRouter({
         whatsappLinkCodeLive(userId),
         whatsappLinkOf(userId),
       ]);
-      return { codeLive, linkedId: link?.id ?? null };
+      // A link ASSIST_WHATSAPP_NUMBERS overrides is none, as the page shows it.
+      const linked = link && !whatsappListingOf(link.phone) ? link : undefined;
+      return { codeLive, linkedId: linked?.id ?? null };
     }),
     disconnect: protectedProcedure
       .input(z.object({ id: z.uuid() }))
