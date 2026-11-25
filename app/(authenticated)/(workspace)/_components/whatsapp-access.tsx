@@ -23,9 +23,10 @@ type Section = NonNullable<Awaited<ReturnType<typeof whatsappSection>>>;
 
 // The member's WhatsApp: Connect WhatsApp while no number reaches them, and
 // once one does, each number with whether full access is on and one press to
-// lock it or turn it back on. A number the member linked can be
-// disconnected; one ASSIST_WHATSAPP_NUMBERS sets cannot. An administrator
-// also sees every connected number and can lock everyone.
+// lock it or turn it back on; a lock shows before any number is connected
+// too, so the page never promises what is off. A number the member linked
+// can be disconnected; one ASSIST_WHATSAPP_NUMBERS sets cannot. An
+// administrator also sees every connected number and can lock everyone.
 export function WhatsappAccess({
   admin,
   connected,
@@ -42,8 +43,9 @@ export function WhatsappAccess({
       {numbers.length === 0 ? (
         <div className="space-y-3">
           <p className="type-supporting-body text-muted-foreground">
-            Message assist from your phone and it works for you, with the
-            browser, vault links and your saved notes.
+            {on
+              ? "Message assist from your phone and it works for you, with the browser, vault links and your saved notes."
+              : "Message assist from your phone."}
           </p>
           <WhatsappLink
             label="Connect WhatsApp"
@@ -51,6 +53,15 @@ export function WhatsappAccess({
             prominent
             sender={sender}
           />
+          {lockedSelf ? (
+            <LockControls lockedEveryone={lockedEveryone} lockedSelf />
+          ) : (
+            lockedEveryone && (
+              <p className="type-caption text-muted-foreground">
+                {lockCaption(true, false)}
+              </p>
+            )
+          )}
         </div>
       ) : (
         <div className="space-y-3">
@@ -160,15 +171,19 @@ function LockControls({
         </Button>
       )}
       <p className="type-caption text-muted-foreground">
-        {lockedEveryone
-          ? "An administrator locked WhatsApp for everyone: chats there are narrow until an administrator turns it back on."
-          : lockedSelf
-            ? "Your WhatsApp chats are narrow: no browser, vault, Personal Info or saved notes. Turning it back on takes effect with your next message."
-            : "Full access works in your WhatsApp chats. Lock ends those chats at once; you can also reply /lock on WhatsApp."}
+        {lockCaption(lockedEveryone, lockedSelf)}
       </p>
       {failed && <FailedLine />}
     </div>
   );
+}
+
+function lockCaption(lockedEveryone: boolean, lockedSelf: boolean) {
+  return lockedEveryone
+    ? "An administrator locked WhatsApp for everyone: chats there are narrow until an administrator turns it back on."
+    : lockedSelf
+      ? "Your WhatsApp chats are narrow: no browser, vault, Personal Info or saved notes. Turning it back on takes effect with your next message."
+      : "Full access works in your WhatsApp chats. Lock ends those chats at once; you can also reply /lock on WhatsApp.";
 }
 
 // An administrator's view: every connected number, partly hidden, and the
@@ -215,6 +230,12 @@ function EveryoneNumbers({
           </Button>
         )}
       </div>
+      {lockedEveryone && (
+        <p className="type-caption text-muted-foreground">
+          Everyone&apos;s WhatsApp is locked: chats there are narrow until you
+          turn everyone back on.
+        </p>
+      )}
       {failed && <FailedLine />}
       {connected.length === 0 ? (
         <p className="type-caption text-muted-foreground">
@@ -231,7 +252,7 @@ function EveryoneNumbers({
                   {" · "}
                   {entry.id === null
                     ? "Set by the server"
-                    : `Linked ${entry.since ?? ""}`}
+                    : `Connected since ${entry.since ?? ""}`}
                 </p>
               </div>
               {entry.id !== null && (
@@ -262,6 +283,13 @@ function DisconnectButton({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const disconnect = api.whatsapp.disconnect.useMutation({
+    // Disconnected elsewhere, or connected again since the page loaded: the
+    // page is out of date, and pressing again cannot help.
+    onError: (error) => {
+      if (error.data?.code !== "NOT_FOUND") return;
+      setOpen(false);
+      router.refresh();
+    },
     onSuccess: () => {
       setOpen(false);
       router.refresh();
@@ -269,7 +297,13 @@ function DisconnectButton({
   });
 
   return (
-    <Dialog onOpenChange={setOpen} open={open}>
+    <Dialog
+      onOpenChange={(next) => {
+        if (next) disconnect.reset();
+        setOpen(next);
+      }}
+      open={open}
+    >
       <DialogTrigger
         render={<Button aria-label={label} size="sm" variant="ghost" />}
       >

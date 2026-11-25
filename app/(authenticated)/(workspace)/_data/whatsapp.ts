@@ -67,18 +67,22 @@ export function displayNumber(number: string) {
   return number;
 }
 
-// Another member's number with only its country and last four digits shown.
+// Another member's number with only its last four digits shown, after its
+// country code when it is one of the countries above: a guessed prefix could
+// show a digit of the number itself.
 export function maskedNumber(number: string) {
   const prefix =
     numberGroups.find((country) => number.startsWith(country.prefix))?.prefix ??
-    number.slice(0, 3);
+    "+";
   return `${prefix} ••• ${number.slice(-4)}`;
 }
 
+// In the team's own zone, whatever zone the server runs in.
 function dateLabel(date: Date) {
   return new Intl.DateTimeFormat("en", {
     day: "numeric",
     month: "short",
+    timeZone: "Asia/Jerusalem",
     year: "numeric",
   }).format(date);
 }

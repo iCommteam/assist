@@ -751,7 +751,9 @@ WhatsApp section to every signed-in member while the channel is configured:
    Both open a WhatsApp message to the company's number with `link <code>` in
    it; the code can also be typed there by hand.
 2. Send that message. The page checks every few seconds, and when the page
-   regains focus, and shows the number as connected once it is. WhatsApp
+   regains focus, and shows the number as connected once it is. A code that
+   a message used without connecting the number shows as used, not expired,
+   and WhatsApp's reply says why. WhatsApp
    answers with one line naming the assist email the number is now connected
    to, that full access is on, and that `/lock` turns it off; for a member
    who had locked WhatsApp, that it is off, with the link to turn it back on.

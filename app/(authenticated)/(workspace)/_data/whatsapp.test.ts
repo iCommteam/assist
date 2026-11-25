@@ -135,6 +135,29 @@ describe("WhatsApp numbers as people read them", () => {
   it("hides all but the country and the last four digits", () => {
     expect(maskedNumber("+972535642199")).toBe("+972 ••• 2199");
     expect(maskedNumber("+14155238886")).toBe("+1 ••• 8886");
-    expect(maskedNumber("+447700900123")).toBe("+44 ••• 0123");
+  });
+
+  it("shows only the last four digits of a number from any other country, never a guessed prefix", () => {
+    expect(maskedNumber("+447700900123")).toBe("+ ••• 0123");
+    expect(maskedNumber("+353861234567")).toBe("+ ••• 4567");
+    expect(maskedNumber("+79161234567")).toBe("+ ••• 4567");
+  });
+});
+
+describe("WhatsApp dates", () => {
+  it("shows since when in the team's own zone, whatever zone the server runs in", async () => {
+    mocks.whatsappNumbersOf.mockResolvedValue([
+      {
+        id: "00000000-0000-4000-8000-000000000001",
+        // 01:30 on Nov 26 in Israel.
+        linkedAt: new Date("2026-11-25T23:30:00.000Z"),
+        number: "+972535642199",
+        source: "linked",
+      },
+    ]);
+
+    const section = await whatsappSection();
+
+    expect(section?.numbers[0]?.since).toBe("Nov 26, 2026");
   });
 });
