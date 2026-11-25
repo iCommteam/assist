@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { z } from "zod";
 import { Button } from "@web/components/ui/button";
@@ -14,21 +15,45 @@ import {
   DialogTrigger,
 } from "@web/components/ui/dialog";
 import { Spinner } from "@web/components/ui/spinner";
+import { postToConnector } from "./post";
 
 const disconnectAnswerSchema = z.object({
   outcome: z.enum(["disconnected", "unrevoked"]),
 });
 
 // Disconnect asks once, then Google is told to revoke assist's access and
-// assist deletes the account's tokens. The page reloads to say how it went.
+// assist deletes the account's tokens. The dialog closes, the section reloads
+// in place and says how it went. A failure shows only for the attempt that
+// failed: each opening starts clean.
 export function GoogleDisconnect({ email }: { readonly email: string }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
   const [state, setState] = useState<"failed" | "idle" | "working">("idle");
   const confirm = async () => {
     setState("working");
-    if (!(await disconnect())) setState("failed");
+    const outcome = await disconnect();
+    if (outcome === "signed-out") {
+      // The proxy sends the reload to the sign-in page, and back here after.
+      window.location.reload();
+      return;
+    }
+    if (outcome === "failed") {
+      setState("failed");
+      return;
+    }
+    setOpen(false);
+    setState("idle");
+    router.replace(`/?google=${outcome}#connectors`, { scroll: false });
+    router.refresh();
   };
   return (
-    <Dialog>
+    <Dialog
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) setState("idle");
+      }}
+      open={open}
+    >
       <DialogTrigger render={<Button size="sm" variant="outline" />}>
         Disconnect
       </DialogTrigger>
@@ -69,14 +94,12 @@ export function GoogleDisconnect({ email }: { readonly email: string }) {
 
 async function disconnect() {
   try {
-    const response = await fetch("/api/connectors/google/disconnect", {
-      method: "POST",
-    });
-    const answer = disconnectAnswerSchema.safeParse(await response.json());
-    if (!response.ok || !answer.success) return false;
-    window.location.assign(`/?google=${answer.data.outcome}#connectors`);
-    return true;
+    const answer = await postToConnector("/api/connectors/google/disconnect");
+    if (answer.signedOut) return "signed-out";
+    const parsed = disconnectAnswerSchema.safeParse(answer.body);
+    if (answer.status !== 200 || !parsed.success) return "failed";
+    return parsed.data.outcome;
   } catch {
-    return false;
+    return "failed";
   }
 }

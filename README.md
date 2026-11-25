@@ -753,12 +753,20 @@ screen. The section then shows the account's address, what Google granted, and
 **Disconnect**. Only that member's own web chats can use the account:
 
 - Gmail: search, read a conversation, save a draft, and send. Every send waits
-  for the member's **Approve** in the chat, which names the recipients and the
-  subject.
+  for the member's **Approve** in the chat, which shows all that is sent:
+  every recipient first, copies and blind copies included, then the subject
+  and the whole text. A send takes at most 4,000 characters of text, with no
+  character that shows nothing; longer mail is saved as a draft.
 - Calendar: list events, see when people are free, and create an event. Every
-  new event, and the invitations it sends, waits for the member's **Approve**.
-- Drive: search, and read a Doc, a Sheet (its first 10 tabs, 200 rows each),
-  Slides or a plain text file. PDFs and images are listed, not read.
+  new event, and the invitations it sends, waits for the member's **Approve**,
+  which shows the calendar, every guest, the time, the title, the location and
+  the whole description (at most 2,000 characters).
+- Drive: search, and read a Doc, a Sheet (its first 10 tabs, and in each rows
+  1 to 200 and columns A to Z; the answer names any tab holding more), Slides
+  or a plain text file. PDFs and images are listed, not read.
+- Once a Google tool has run in a chat, each browser task in that chat waits
+  for the member's **Approve** too, which shows the whole assignment, so text
+  in a mail or a file cannot send what assist read to a website unseen.
 
 Site chats (TEEMIQ's Assist), site tasks, WhatsApp and scheduled runs never get
 Google tools; the list of modes that do is `googleModes` in
@@ -820,7 +828,9 @@ All are asked for in one consent, with `access_type=offline`,
 `prompt=consent`, `include_granted_scopes=true`, PKCE (S256) and a single-use
 state that expires after 10 minutes and belongs to the signed-in member. A
 member may untick some on Google's screen: each tool is offered only while
-Google granted its scope, and the Connectors section shows what is missing.
+Google granted its scope, and the Connectors section shows **Limited access**,
+marks what is missing, and offers **Reconnect** to allow it. A connect that
+allows none of it is revoked at once, and nothing is kept.
 
 The tokens are sealed with AES-256-GCM in `encrypted_secrets` (namespace
 `connector`, migration `0021`), under a key derived from

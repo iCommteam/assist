@@ -1,12 +1,14 @@
 import { CheckIcon, MinusIcon, PlugIcon } from "lucide-react";
 import { Suspense } from "react";
-import { googleAccountOf } from "@db/services/connectors/google";
+import {
+  googleAccountOf,
+  type GoogleAccountSummary,
+} from "@db/services/connectors/google";
 import { googleOAuthClient } from "@shared/connectors/google/oauth";
 import { googleAbilities } from "@shared/connectors/google/scopes";
 import { Badge } from "@web/components/ui/badge";
 import { requireRequestScope } from "@web/auth/request-scope";
-import { GoogleConnect } from "./connect";
-import { GoogleDisconnect } from "./disconnect";
+import { GoogleActions } from "./actions";
 import { ConnectorOutcome } from "./outcome";
 
 // The Workspace page's Connectors: each member connects their own accounts
@@ -15,6 +17,12 @@ export async function ConnectorsSection() {
   const scope = await requireRequestScope();
   const configured = googleOAuthClient() !== undefined;
   const account = configured ? await googleAccountOf(scope) : undefined;
+  const missing =
+    account === undefined
+      ? []
+      : googleAbilities.filter(
+          (ability) => !account.scopes.includes(ability.scope)
+        );
 
   return (
     <section
@@ -29,51 +37,96 @@ export async function ConnectorsSection() {
         <ConnectorOutcome />
       </Suspense>
       <div className="border-y border-border/50">
+        {/* The text keeps at least 12rem, so on a narrow screen the buttons
+            move under it instead of squeezing it. */}
         <div className="flex flex-wrap items-center gap-3 py-4">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted/50 text-muted-foreground">
             <PlugIcon />
           </div>
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 grow basis-48">
             <p className="flex flex-wrap items-center gap-2 type-label">
               Google Workspace
               {account ? (
-                account.needsReconnect ? (
-                  <Badge variant="warning">Reconnect needed</Badge>
-                ) : (
-                  <Badge variant="success">Connected</Badge>
-                )
+                <AccountBadge account={account} missing={missing.length > 0} />
               ) : null}
             </p>
-            <p className="truncate type-caption text-muted-foreground">
-              {!configured
-                ? "An administrator has not set up Google for assist yet."
-                : account
-                  ? account.email
-                  : "Gmail, Calendar and Drive, for your own chats."}
-            </p>
+            {account ? (
+              <p
+                className="truncate type-caption text-muted-foreground"
+                title={account.email}
+              >
+                {account.email}
+              </p>
+            ) : (
+              <p className="type-caption text-muted-foreground">
+                {configured
+                  ? "Gmail, Calendar and Drive, for your own chats."
+                  : "An administrator has not set up Google for assist yet."}
+              </p>
+            )}
           </div>
           {configured ? (
-            <div className="flex shrink-0 items-start gap-2">
-              {!account || account.needsReconnect ? (
-                <GoogleConnect
-                  label={account ? "Reconnect" : "Connect Google"}
-                />
-              ) : null}
-              {account ? <GoogleDisconnect email={account.email} /> : null}
-            </div>
+            <GoogleActions
+              connectLabel={
+                account === undefined
+                  ? "Connect Google"
+                  : account.needsReconnect || missing.length > 0
+                    ? "Reconnect"
+                    : undefined
+              }
+              email={account?.email}
+            />
           ) : (
             <Badge variant="outline">Not set up</Badge>
           )}
         </div>
-        {account ? <GoogleAbilities scopes={account.scopes} /> : null}
+        {account ? (
+          <GoogleAbilities
+            needsReconnect={account.needsReconnect}
+            scopes={account.scopes}
+          />
+        ) : null}
       </div>
     </section>
   );
 }
 
+function AccountBadge({
+  account,
+  missing,
+}: {
+  readonly account: GoogleAccountSummary;
+  readonly missing: boolean;
+}) {
+  if (account.needsReconnect) {
+    return <Badge variant="warning">Reconnect needed</Badge>;
+  }
+  return missing ? (
+    <Badge variant="outline">Limited access</Badge>
+  ) : (
+    <Badge variant="success">Connected</Badge>
+  );
+}
+
 // What the connected account lets assist do, as Google granted it. An
 // ability the member unticked on Google's consent screen shows as missing.
-function GoogleAbilities({ scopes }: { readonly scopes: readonly string[] }) {
+// Once Google stopped accepting the grant, assist can do none of it, so the
+// list gives way to that.
+function GoogleAbilities({
+  needsReconnect,
+  scopes,
+}: {
+  readonly needsReconnect: boolean;
+  readonly scopes: readonly string[];
+}) {
+  if (needsReconnect) {
+    return (
+      <p className="pb-4 pl-12 type-caption text-muted-foreground">
+        Google stopped accepting assist&apos;s access, so assist can use none of
+        this account until you reconnect.
+      </p>
+    );
+  }
   const granted = new Set(scopes);
   const missing = googleAbilities.some(
     (ability) => !granted.has(ability.scope)
@@ -102,8 +155,8 @@ function GoogleAbilities({ scopes }: { readonly scopes: readonly string[] }) {
       </ul>
       {missing ? (
         <p className="type-caption text-muted-foreground">
-          To allow what is missing, disconnect and connect again, and tick it on
-          Google&apos;s screen.
+          To allow what is missing, press Reconnect and tick it on Google&apos;s
+          screen.
         </p>
       ) : null}
     </div>

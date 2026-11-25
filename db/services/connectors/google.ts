@@ -18,6 +18,10 @@ import {
   refreshGoogleToken,
   revokeGoogleToken,
 } from "@shared/connectors/google/oauth";
+import {
+  googleAbilities,
+  grantedGoogleAbilities,
+} from "@shared/connectors/google/scopes";
 import { db, encryptedSecrets } from "@db";
 import { getInstallationSecrets } from "@db/services/installation-secrets";
 import { ensureScope } from "@db/services/scope";
@@ -115,7 +119,9 @@ export async function startGoogleConnect(
 
 // Finishes a connect from Google's redirect, for the signed-in member only:
 // another member's flow is not found under their workspace. The flow is
-// spent on the first attempt, whatever its outcome.
+// spent on the first attempt, whatever its outcome. A grant that allows
+// nothing assist asked for is revoked and not kept; one that allows only
+// some of it is kept, and the answer names what is missing.
 export async function finishGoogleConnect(
   scope: AccessScope,
   callback: {
@@ -125,8 +131,8 @@ export async function finishGoogleConnect(
   }
 ) {
   const client = googleOAuthClient();
-  if (!client || !callback.state)
-    return { ok: false, reason: "failed" } as const;
+  if (!client) return { ok: false, reason: "unavailable" } as const;
+  if (!callback.state) return { ok: false, reason: "failed" } as const;
   const id = flowId(callback.state);
   const flow = flowSchema.safeParse(await readSealed(scope, id));
   await deleteRow(scope, id);
@@ -154,6 +160,11 @@ export async function finishGoogleConnect(
     }
     throw error;
   }
+  const allowed = new Set(grantedGoogleAbilities(granted.scopes));
+  if (allowed.size === 0) {
+    await revokeGoogleToken(granted.refreshToken);
+    return { ok: false, reason: "nothing-allowed", returnTo } as const;
+  }
   await ensureScope(scope);
   await writeSealed(scope, accountId, {
     accessToken: granted.accessToken,
@@ -164,7 +175,14 @@ export async function finishGoogleConnect(
     scopes: granted.scopes,
     subject: granted.subject,
   });
-  return { email: granted.email, ok: true, returnTo } as const;
+  return {
+    email: granted.email,
+    missing: googleAbilities
+      .filter((ability) => !allowed.has(ability.id))
+      .map((ability) => ability.id),
+    ok: true,
+    returnTo,
+  } as const;
 }
 
 // A live access token for this member's own account, refreshed when it is

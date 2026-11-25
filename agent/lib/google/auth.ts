@@ -67,12 +67,13 @@ export const googleAuth = defineInteractiveAuthorization<{
   async completeAuthorization({ callback, principal, resume }) {
     const { error, state } = callback.params;
     if (error !== undefined || !resume || state !== resume.state) {
+      // Denied on Google's screen, or every ability unticked there.
+      const denied = error === "denied" || error === "nothing-allowed";
       throw new ConnectionAuthorizationFailedError(connection, {
-        message:
-          error === "denied"
-            ? "Google access was not granted."
-            : "The Google sign-in did not complete.",
-        reason: error === "denied" ? "access_denied" : "sign_in_failed",
+        message: denied
+          ? "Google access was not granted."
+          : "The Google sign-in did not complete.",
+        reason: denied ? "access_denied" : "sign_in_failed",
         retryable: false,
       });
     }

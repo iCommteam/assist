@@ -37,5 +37,7 @@ export async function GET(request: Request) {
     if (!result.ok) url.searchParams.set("error", result.reason);
     return seeOther(url.toString());
   }
-  return connectorsPage(result.ok ? "connected" : result.reason);
+  if (!result.ok) return connectorsPage(result.reason);
+  // A grant that left something out says so, and the page marks what.
+  return connectorsPage(result.missing.length > 0 ? "partial" : "connected");
 }

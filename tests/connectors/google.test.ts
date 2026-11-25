@@ -16,6 +16,7 @@ import * as Database from "@db";
 import * as schema from "@db/schema";
 import { encryptedSecrets } from "@db/schema";
 import { z } from "zod";
+import * as OAuth from "@shared/connectors/google/oauth";
 import { googleRequestedScopes } from "@shared/connectors/google/scopes";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
@@ -53,14 +54,23 @@ vi.mock("@db/services/auth/session", () => ({
   },
 }));
 
-// What the fake Google saw and how it answers.
+// What the fake Google saw and how it answers. A connect grants every scope
+// assist asks for unless `granted` names fewer, as when the member unticks
+// some on Google's screen.
 interface FakeGoogle {
+  granted: readonly string[];
   refresh: "down" | "invalid_grant" | "ok";
   revoke: "down" | "ok";
   readonly revoked: string[];
   readonly tokenRequests: URLSearchParams[];
 }
+const everyScope = [
+  "openid",
+  "https://www.googleapis.com/auth/userinfo.email",
+  ...googleRequestedScopes.slice(2),
+];
 const google: FakeGoogle = {
+  granted: everyScope,
   refresh: "ok",
   revoke: "ok",
   revoked: [],
@@ -104,6 +114,7 @@ beforeAll(async () => {
 }, 30_000);
 
 beforeEach(async () => {
+  google.granted = everyScope;
   google.refresh = "ok";
   google.revoke = "ok";
   google.revoked.length = 0;
@@ -224,6 +235,48 @@ describe("connecting from the Workspace page", () => {
     );
     expect(google.tokenRequests).toEqual([]);
     await expect(connectors.googleAccountOf(memberA)).resolves.toBeUndefined();
+  });
+
+  it("says when Google allowed only part of what assist asked for, and keeps nothing when it allowed none", async () => {
+    google.granted = everyScope.filter(
+      (scope) => !scope.endsWith("drive.readonly")
+    );
+    await expect(connect("user-a")).resolves.toBe(
+      "https://example.com/?google=partial#connectors"
+    );
+    expect((await connectors.googleAccountOf(memberA))?.scopes).toEqual(
+      google.granted
+    );
+
+    await database.delete(encryptedSecrets);
+    google.granted = [
+      "openid",
+      "https://www.googleapis.com/auth/userinfo.email",
+    ];
+    await expect(connect("user-a")).resolves.toBe(
+      "https://example.com/?google=nothing-allowed#connectors"
+    );
+    await expect(connectors.googleAccountOf(memberA)).resolves.toBeUndefined();
+    // The grant that allowed nothing is not left at Google either.
+    expect(google.revoked).toEqual([refreshToken]);
+  });
+
+  it("says Google is not set up when its client was removed during a connect", async () => {
+    const state =
+      new URL(await startedFrom("user-a")).searchParams.get("state") ?? "";
+    const unset = vi
+      .spyOn(OAuth, "googleOAuthClient")
+      .mockReturnValue(undefined);
+    const back = await googleRedirect("user-a", {
+      code: authorizationCode,
+      state,
+    });
+    unset.mockRestore();
+
+    expect(back.headers.get("location")).toBe(
+      "https://example.com/?google=unavailable#connectors"
+    );
+    expect(google.tokenRequests).toEqual([]);
   });
 });
 
@@ -364,6 +417,40 @@ describe("connecting from a chat's sign-in", () => {
       reason: "access_denied",
       retryable: false,
     });
+
+    // Every box unticked on Google's screen ends the sign-in the same way.
+    const unticked = await googleAuth.startAuthorization({
+      callbackUrl: `http://127.0.0.1:4274${eveCallback}`,
+      connection: { url: "" },
+      principal: principalA,
+    });
+    google.granted = [
+      "openid",
+      "https://www.googleapis.com/auth/userinfo.email",
+    ];
+    const none = new URL(
+      (
+        await googleRedirect("user-a", {
+          code: authorizationCode,
+          state:
+            new URL(unticked.challenge.url ?? "").searchParams.get("state") ??
+            "",
+        })
+      ).headers.get("location") ?? ""
+    );
+    expect(none.searchParams.get("error")).toBe("nothing-allowed");
+    await expect(
+      googleAuth.completeAuthorization({
+        callback: {
+          method: "GET",
+          params: Object.fromEntries(none.searchParams),
+        },
+        callbackUrl: `http://127.0.0.1:4274${eveCallback}`,
+        connection: { url: "" },
+        principal: principalA,
+        resume: unticked.resume,
+      })
+    ).rejects.toMatchObject({ reason: "access_denied" });
   });
 
   it("refuses a callback eve did not mint for a sign-in", async () => {
@@ -506,10 +593,12 @@ function googleRedirect(
   return callback(request("GET", url.pathname + url.search, user));
 }
 
+// A whole connect from the Workspace page; where Google's redirect lands.
 async function connect(user: string) {
   const state =
     new URL(await startedFrom(user)).searchParams.get("state") ?? "";
-  await googleRedirect(user, { code: authorizationCode, state });
+  const back = await googleRedirect(user, { code: authorizationCode, state });
+  return back.headers.get("location");
 }
 
 // Google's token and revoke endpoints, as their documentation describes them.
@@ -540,11 +629,7 @@ async function fakeGoogle(input: string | URL | Request, init?: RequestInit) {
       expires_in: 3599,
       id_token: idToken("user-a"),
       refresh_token: refreshToken,
-      scope: [
-        "openid",
-        "https://www.googleapis.com/auth/userinfo.email",
-        ...googleRequestedScopes.slice(2),
-      ].join(" "),
+      scope: google.granted.join(" "),
       token_type: "Bearer",
     });
   }
