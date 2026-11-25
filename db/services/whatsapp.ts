@@ -201,15 +201,18 @@ export async function whatsappChatOfSession(sessionId: string) {
   return chat;
 }
 
-// A member's chats that have not ended, or everyone's; for a lock to end.
-export async function openWhatsappChats(userId?: string) {
+// A member's chats that have not ended, or everyone's, for a lock to end; or
+// those on one of the member's numbers, for a number that stops reaching
+// them.
+export async function openWhatsappChats(userId?: string, phone?: string) {
   return db
     .select(chatColumns)
     .from(whatsappChats)
     .where(
       and(
         isNull(whatsappChats.endedAt),
-        userId === undefined ? undefined : eq(whatsappChats.userId, userId)
+        userId === undefined ? undefined : eq(whatsappChats.userId, userId),
+        phone === undefined ? undefined : eq(whatsappChats.phone, phone)
       )
     );
 }

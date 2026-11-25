@@ -40,6 +40,11 @@ import {
   whatsappLockOf,
   whatsappWrittenWithin,
 } from "@db/services/whatsapp";
+import { linkWhatsappNumber } from "@db/services/whatsapp-links";
+import {
+  whatsappEmailOf,
+  whatsappOwnerOf,
+} from "@db/services/whatsapp-numbers";
 import { ensureScope } from "@db/services/scope";
 import { bigqueryAccess } from "@agent/lib/bigquery/access";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -55,11 +60,12 @@ import {
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
-import { memberEmailOf } from "@shared/environment/whatsapp";
 
 // assist on WhatsApp, through Twilio. The team's members write to the
-// company's WhatsApp number and assist answers each as themselves. A listed
-// member who can sign in gets full access, the "whatsapp-full" mode
+// company's WhatsApp number and assist answers each as themselves. A member
+// whose number reaches them, listed by the operator in
+// ASSIST_WHATSAPP_NUMBERS or linked by the member with a code from the
+// Workspace page, and who can sign in gets full access, the "whatsapp-full" mode
 // (agent/lib/mode.ts): the browser, vault links, Personal Info and saved
 // notes. /lock, or Lock on the Workspace page, turns it off: a locked member
 // keeps today's narrow "whatsapp" chat.
@@ -94,8 +100,29 @@ const failedSessionReply =
   "This chat stopped. Your next message starts a new one.";
 
 function lockReply() {
-  return `Full access is off on WhatsApp. Turn it back on in assist: ${new URL("/", applicationOrigin()).toString()}`;
+  return `Full access is off on WhatsApp. Turn it back on in assist: ${workspaceUrl()}`;
 }
+
+function workspaceUrl() {
+  return new URL("/", applicationOrigin()).toString();
+}
+
+// The lines a link attempt gets. Every failure gets the same one, which names
+// nothing.
+function linkFailedReply() {
+  return `That code did not work. Get a new one on assist's Workspace page: ${workspaceUrl()}`;
+}
+
+function linkedReply(email: string, locked: boolean) {
+  return locked
+    ? `This number is now connected to ${email}. Full access is off; turn it back on in assist: ${workspaceUrl()}`
+    : `This number is now connected to ${email}. Full access is on; reply /lock to turn it off.`;
+}
+
+const linkTakenReply =
+  "This number is connected to another assist account. Disconnect it there first.";
+const linkServerReply =
+  "This number is set by the server for another assist account. Only an administrator can change it.";
 
 // The one fixed line a full chat opens with, from the channel, never the
 // model: what is on, and how to turn it off. BigQuery is named only for a
@@ -246,8 +273,8 @@ const channelEvents: TwilioChannelEvents & {
 } = { ...events, committed };
 
 const channel = twilioChannel({
-  // Every verified sender reaches onText, which answers listed members only:
-  // anyone else gets an empty reply and reaches nothing.
+  // Every verified sender reaches onText, which answers members' numbers and
+  // link attempts only: anyone else gets an empty reply and reaches nothing.
   allowFrom: "*",
   credentials: {
     accountSid: () => required(env.TWILIO_ACCOUNT_SID, "TWILIO_ACCOUNT_SID"),
@@ -265,9 +292,14 @@ const channel = twilioChannel({
 
 // Loopback callbacks from this machine's Next server, with
 // SCHEDULED_RUN_SECRET as the bearer: a lock pressed on the Workspace page
-// ends the member's full chats, or everyone's.
+// ends the member's full chats, or everyone's, and a number disconnected
+// there ends the member's full chats on that number.
 const endInputSchema = z.strictObject({
   member: z.union([z.literal("*"), z.string().min(1).max(200)]),
+  phone: z
+    .string()
+    .regex(/^\+[1-9]\d{6,14}$/u)
+    .optional(),
 });
 
 const internalRoutes = [
@@ -277,13 +309,15 @@ const internalRoutes = [
     const input = endInputSchema.safeParse(await request.json());
     if (!input.success) return new Response(null, { status: 400 });
     const chats = await openWhatsappChats(
-      input.data.member === "*" ? undefined : input.data.member
+      input.data.member === "*" ? undefined : input.data.member,
+      input.data.phone
     );
-    await Promise.all(
-      chats.map(async ({ sessionId }) => {
-        await endSession(attachSession(sessionId), "WhatsApp was locked.");
-        await recordChatEnd(sessionId);
-      })
+    await endRecordedChats(
+      attachSession,
+      chats,
+      input.data.phone === undefined
+        ? "WhatsApp was locked."
+        : "The number was disconnected."
     );
     return new Response(null, { status: 204 });
   }),
@@ -340,20 +374,20 @@ function publicWebhookUrl(request: Request) {
 const messageSidPattern = /^[A-Z]{2}[0-9a-f]{32}$/u;
 
 // Decides whether a verified message reaches the agent, and as whom. Only a
-// WhatsApp message to the configured number from a listed member does, once
-// per message id, while the member can still sign in to assist, and within
-// their limits. A member who has not locked WhatsApp gets full access, and
-// each of their messages must match Twilio's own record of it; /lock locks it
-// without that check, since it only ever turns access off. Only a listed
-// member who can sign in is recorded, counted, or ever told of the limit.
+// WhatsApp message to the configured number from a number that reaches a
+// member, listed or linked, does, once per message id, while the member can
+// still sign in to assist, and within their limits. A member who has not
+// locked WhatsApp gets full access, and each of their messages must match
+// Twilio's own record of it; /lock locks it without that check, since it only
+// ever turns access off. Only a member who can sign in is recorded, counted,
+// or ever told of the limit. A message that is only "link <code>" is a link
+// attempt instead, from any number (linkAttempt, below).
 async function admit(
   twilio: TwilioHandle,
   message: TwilioTextMessage
 ): Promise<TwilioInboundResult> {
   const sender = whatsappNumberOf(message.from);
   if (!sender || message.to !== env.TWILIO_WHATSAPP_FROM) return null;
-  const email = memberEmailOf(sender);
-  if (!email) return null;
   const sid = message.messageSid;
   if (!sid || !messageSidPattern.test(sid)) return null;
   // Taken before the first await, so the sender's messages keep the order in
@@ -361,9 +395,28 @@ async function admit(
   const turn = takeTurn(sender);
   let handedOn = false;
   try {
+    const owner = await whatsappOwnerOf(sender);
+    // Listed for two emails: it reaches nobody, and is never linked.
+    if (owner && owner.email === undefined) return null;
+    const code = linkCodeOf(message);
+    if (code !== undefined) {
+      const linked = await linkAttempt(twilio, message, {
+        code,
+        listing:
+          owner?.source === "server" ? { email: owner.email } : undefined,
+        sender,
+        sid,
+      });
+      if (!linked) return null;
+      handOn(sid, { ...linked, turn });
+      handedOn = true;
+      return { auth: null };
+    }
+    const email = owner?.email;
+    if (!email) return null;
     const userId = await enrolledTeamMemberId(email);
     if (!userId) {
-      console.warn("[whatsapp] a listed member cannot sign in; ignoring");
+      console.warn("[whatsapp] a member's number cannot sign in; ignoring");
       return null;
     }
     if (!(await claimWhatsappMessage(sid, sender))) return null;
@@ -420,6 +473,85 @@ async function admit(
   } finally {
     if (!handedOn) turn.release();
   }
+}
+
+// "link" and a code of 8 letters and digits, in any case, with any spaces
+// around them and at most one space or dash in the middle.
+const linkCommandPattern = /^link\s+([a-z0-9]{4})[\s-]?([a-z0-9]{4})$/iu;
+
+function linkCodeOf(message: TwilioTextMessage) {
+  if ((message.media ?? []).length > 0) return undefined;
+  const [, head, tail] = linkCommandPattern.exec(message.body.trim()) ?? [];
+  if (head === undefined || tail === undefined) return undefined;
+  return `${head}${tail}`.toUpperCase();
+}
+
+// "link <code>": the member connects the sending number to their assist
+// account with a code from the Workspace page
+// (db/services/whatsapp-links.ts). Whoever sends it, it is checked as a full
+// chat's message is, once per message id and against Twilio's own record of
+// it, so a forged or replayed webhook links nothing. Every outcome is one
+// fixed line from the channel, except an attempt over the limit on failures,
+// which gets none. A member who linked this number in place of another is
+// handed on, so the other number's full chats end.
+async function linkAttempt(
+  twilio: TwilioHandle,
+  message: TwilioTextMessage,
+  attempt: {
+    readonly code: string;
+    readonly listing: { readonly email: string | undefined } | undefined;
+    readonly sender: string;
+    readonly sid: string;
+  }
+) {
+  if (!(await claimWhatsappMessage(attempt.sid, attempt.sender))) {
+    return undefined;
+  }
+  const record = await twilioRecordCheck(message, attempt.sender, attempt.sid);
+  if (record === "unreachable") {
+    await sendQuietly(twilio, unreachableReply, "unreachable notice");
+    return undefined;
+  }
+  if (record === "differs") {
+    console.warn(
+      "[whatsapp] a link message does not match Twilio's record of it; dropped"
+    );
+    return undefined;
+  }
+  await admitWhatsappMessage(attempt.sid);
+  const result = await linkWhatsappNumber({
+    code: attempt.code,
+    listing: attempt.listing,
+    phone: attempt.sender,
+    sid: attempt.sid,
+  });
+  if (result.outcome === "limited") {
+    console.warn("[whatsapp] a link attempt is over the limit; ignored");
+    return undefined;
+  }
+  if (result.outcome !== "linked") {
+    await send(twilio, {
+      Body:
+        result.outcome === "already"
+          ? `This number is already connected to ${result.email}.`
+          : result.outcome === "taken"
+            ? linkTakenReply
+            : result.outcome === "server"
+              ? linkServerReply
+              : linkFailedReply(),
+    });
+    return undefined;
+  }
+  const lock = await whatsappLockOf(result.userId);
+  await send(twilio, {
+    Body: linkedReply(result.email, lock.self || lock.everyone),
+  });
+  if (result.previousPhone === undefined) return undefined;
+  return {
+    command: "link" as const,
+    previousPhone: result.previousPhone,
+    userId: result.userId,
+  };
 }
 
 function commandOf(message: TwilioTextMessage) {
@@ -620,14 +752,18 @@ async function sendQuietly(twilio: TwilioHandle, text: string, what: string) {
 // order. Each message takes its turn there, before any await, and waits for
 // the turn before it to settle, so a message right after /new or a long
 // silence cannot reach the chat being ended, or end the new one. The service
-// runs one replica, so memory holds the queue: its last turn for each listed
-// number, since only those take one.
+// runs one replica, so memory holds the queue: the last turn of each number
+// whose turns have not all settled, which then leaves it.
 const senderQueues = new Map<string, Promise<unknown>>();
 
 function takeTurn(sender: string) {
   const previous = senderQueues.get(sender) ?? Promise.resolve();
   const settled = Promise.withResolvers<undefined>();
-  senderQueues.set(sender, Promise.all([previous, settled.promise]));
+  const queued = Promise.all([previous, settled.promise]);
+  senderQueues.set(sender, queued);
+  void queued.finally(() => {
+    if (senderQueues.get(sender) === queued) senderQueues.delete(sender);
+  });
   return {
     previous,
     release: () => {
@@ -637,6 +773,12 @@ function takeTurn(sender: string) {
 }
 
 type Admitted =
+  | {
+      readonly command: "link";
+      readonly previousPhone: string;
+      readonly turn: ReturnType<typeof takeTurn>;
+      readonly userId: string;
+    }
   | {
       readonly command: "lock";
       readonly reply: boolean;
@@ -698,6 +840,9 @@ function chatSessions(
       try {
         if (claimed?.command === "lock") {
           return await lockChats(args, address, options.auth, claimed);
+        }
+        if (claimed?.command === "link") {
+          return await endPreviousNumber(args, claimed);
         }
         const now = claimed ? await admittedNow(claimed, options) : undefined;
         if (claimed && !now) {
@@ -773,7 +918,7 @@ async function admittedNow(
 }
 
 // The chat's address joins the member to the number, and a full chat's also
-// names its level: a number later listed for someone else starts a chat of
+// names its level: a number that later reaches someone else starts a chat of
 // theirs and never reaches the earlier member's, and a locked member's
 // narrow chat keeps the address every chat had before full access.
 function memberChat(address: string, auth: SessionAuthContext | null) {
@@ -828,14 +973,10 @@ async function lockChats(
   } catch (error) {
     warnByName("the member's full chats could not be read", error);
   }
-  await Promise.all(
-    chats.map(async ({ sessionId }) => {
-      await endSession(
-        args.attachSession(sessionId),
-        "The member locked WhatsApp."
-      );
-      await recordChatEnd(sessionId);
-    })
+  await endRecordedChats(
+    args.attachSession,
+    chats,
+    "The member locked WhatsApp."
   );
   const ended = await endChat(
     args.from(`${address}|${auth?.principalId ?? principalId}|full`),
@@ -843,6 +984,43 @@ async function lockChats(
   );
   if (admitted.reply) await send(admitted.twilio, { Body: lockReply() });
   return ended;
+}
+
+// A member who linked a number in place of another: every full chat of
+// theirs on the other number ends, as a lock ends them. The link message
+// reaches no chat.
+async function endPreviousNumber(
+  args: RouteHandlerArgs<TwilioChannelState>,
+  admitted: Extract<Admitted, { command: "link" }>
+) {
+  let chats: Awaited<ReturnType<typeof openWhatsappChats>> = [];
+  try {
+    chats = await openWhatsappChats(
+      `better-auth:${admitted.userId}`,
+      admitted.previousPhone
+    );
+  } catch (error) {
+    warnByName("the earlier number's chats could not be read", error);
+  }
+  await endRecordedChats(
+    args.attachSession,
+    chats,
+    "The member linked another number."
+  );
+  return noDelivery(new Error("A link message reaches no chat."));
+}
+
+async function endRecordedChats(
+  attachSession: AttachSessionFn,
+  chats: Awaited<ReturnType<typeof openWhatsappChats>>,
+  reason: string
+) {
+  await Promise.all(
+    chats.map(async ({ sessionId }) => {
+      await endSession(attachSession(sessionId), reason);
+      await recordChatEnd(sessionId);
+    })
+  );
 }
 
 // Records the full chat the message reached and, the first time, sends the
@@ -977,10 +1155,10 @@ async function idleTooLong(
 }
 
 // Whether the chat may still post to its number, and as which member: the
-// number must still be listed for the chat's member, so a number given to
-// someone else never receives the earlier member's replies, even from a turn
-// sent on the web; a full chat's member must still have full access, on the
-// chat's own number.
+// number must still reach the chat's member, listed or linked, so a number
+// given to someone else never receives the earlier member's replies, even
+// from a turn sent on the web; a full chat's member must still have full
+// access, on the chat's own number.
 async function replyGate(
   twilio: TwilioHandle,
   initiator: SessionAuthContext | null
@@ -988,7 +1166,7 @@ async function replyGate(
   const number = whatsappNumberOf(twilio.from);
   const member = whatsappSessionOf(initiator);
   if (number === undefined || !member) return undefined;
-  if (memberEmailOf(number) !== member.email) return undefined;
+  if ((await whatsappEmailOf(number)) !== member.email) return undefined;
   if (member.level === "full") {
     if (member.number !== number) return undefined;
     if ((await whatsappAccessOf(member)) !== "full") return undefined;

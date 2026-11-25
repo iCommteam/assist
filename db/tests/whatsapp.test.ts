@@ -222,6 +222,21 @@ describe("WhatsApp chats", () => {
     );
     await expect(whatsappChatOfSession("session-c")).resolves.toBeUndefined();
   });
+
+  it("lists a member's open chats on one number only", async () => {
+    await recordWhatsappChat(chat("session-a"));
+    await recordWhatsappChat({
+      ...chat("session-b"),
+      phone: "+15550000002",
+    });
+
+    await expect(
+      openWhatsappChats(member.userId, "+15550000002")
+    ).resolves.toMatchObject([{ sessionId: "session-b" }]);
+    await expect(openWhatsappChats(member.userId, phone)).resolves.toHaveLength(
+      1
+    );
+  });
 });
 
 describe("held WhatsApp replies", () => {

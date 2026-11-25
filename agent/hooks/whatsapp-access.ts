@@ -8,9 +8,10 @@ import {
 import { claimWhatsappBrowserTask } from "@db/services/whatsapp";
 
 // The kill switch of a WhatsApp chat, read again before every turn, model
-// call and tool call: a full chat stops as soon as its member's number is
-// unlisted, they can no longer sign in, or WhatsApp is locked for them or for
-// everyone; a narrow chat stops only when its member's number is unlisted.
+// call and tool call: a full chat stops as soon as its member's number no
+// longer reaches them, listed or linked, they can no longer sign in, or
+// WhatsApp is locked for them or for everyone; a narrow chat stops only when
+// no number reaches its member.
 // The browser worker runs the same check in its own hook, since this one
 // never fires for its turns. A cancel reaches the current turn only; a lock
 // also ends the member's full chats

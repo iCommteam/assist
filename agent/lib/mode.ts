@@ -42,9 +42,9 @@ function sessionAgentMode(
     return "site-chat";
   }
   // Only the WhatsApp channel's principal sets whatsappAccess, and only for
-  // a listed member who has not locked it (agent/channels/whatsapp.ts). Any
-  // other value, or none, is the narrow chat, as every chat started before
-  // full access existed is.
+  // a member whose number reaches them, listed or linked, and who has not
+  // locked it (agent/channels/whatsapp.ts). Any other value, or none, is the
+  // narrow chat, as every chat started before full access existed is.
   if (auth.initiator?.authenticator === "assist-whatsapp") {
     return auth.initiator.attributes.whatsappAccess === "full"
       ? "whatsapp-full"

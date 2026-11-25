@@ -50,6 +50,7 @@ describe("database migrations", () => {
     await applyMigration(database, "0019_chemical_paper_doll.sql");
     await applyMigration(database, "0020_calm_toro.sql");
     await applyMigration(database, "0021_next_ben_grimm.sql");
+    await applyMigration(database, "0022_mute_mattie_franklin.sql");
 
     const tables = await database.query<{ count: number }>(
       `SELECT count(*)::int AS count
@@ -80,6 +81,9 @@ describe("database migrations", () => {
            'whatsapp_chats',
            'whatsapp_held_replies',
            'whatsapp_browser_tasks',
+           'whatsapp_links',
+           'whatsapp_link_codes',
+           'whatsapp_link_failures',
            'user',
            'session',
            'account',
@@ -89,7 +93,7 @@ describe("database migrations", () => {
     );
     const pendingConstraints = await pendingConstraintCount(database);
 
-    expect(tables.rows[0]?.count).toBe(29);
+    expect(tables.rows[0]?.count).toBe(32);
     expect(pendingConstraints).toBe(0);
     await expect(
       database.query("SELECT id FROM vault_items WHERE id = 'contact-1'")

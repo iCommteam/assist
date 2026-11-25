@@ -27,6 +27,9 @@ import {
   whatsappBrowserTasks,
   whatsappChats,
   whatsappHeldReplies,
+  whatsappLinkCodes,
+  whatsappLinkFailures,
+  whatsappLinks,
   whatsappLocks,
   whatsappMessages,
   workspaceMemberships,
@@ -59,6 +62,9 @@ describe("database schema", () => {
         whatsappChats,
         whatsappHeldReplies,
         whatsappBrowserTasks,
+        whatsappLinks,
+        whatsappLinkCodes,
+        whatsappLinkFailures,
         user,
         session,
         account,
@@ -88,6 +94,9 @@ describe("database schema", () => {
       "whatsapp_chats",
       "whatsapp_held_replies",
       "whatsapp_browser_tasks",
+      "whatsapp_links",
+      "whatsapp_link_codes",
+      "whatsapp_link_failures",
       "user",
       "session",
       "account",
@@ -121,6 +130,25 @@ describe("database schema", () => {
     ).toEqual(["cascade"]);
   });
 
+  it("keeps one linked WhatsApp number per member, one member per number, and goes with the member", () => {
+    const links = getTableConfig(whatsappLinks);
+    expect(
+      links.columns
+        .filter((column) => column.isUnique)
+        .map(({ name }) => name)
+        .toSorted()
+    ).toEqual(["phone", "user_id"]);
+    expect(links.foreignKeys.map((key) => key.onDelete)).toEqual(["cascade"]);
+    expect(
+      getTableConfig(whatsappLinkCodes)
+        .columns.map(({ name }) => name)
+        .toSorted()
+    ).toEqual(["code_hash", "created_at", "expires_at", "user_id"]);
+    expect(
+      getTableConfig(whatsappLinkCodes).foreignKeys.map((key) => key.onDelete)
+    ).toEqual(["cascade"]);
+  });
+
   it("uses native PostgreSQL types for structured application values", () => {
     for (const column of [
       agentSessions.createdAt,
@@ -137,6 +165,9 @@ describe("database schema", () => {
       vaultItems.createdAt,
       vaultItems.updatedAt,
       whatsappChats.lastSidAt,
+      whatsappLinkCodes.expiresAt,
+      whatsappLinkFailures.failedAt,
+      whatsappLinks.linkedAt,
       whatsappMessages.receivedAt,
       workspaceMemberships.createdAt,
       workspaces.createdAt,

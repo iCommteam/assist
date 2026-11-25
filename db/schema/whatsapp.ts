@@ -10,6 +10,7 @@ import {
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
+import { user } from "./auth";
 import { workspaces } from "./workspaces";
 
 function at(name: string) {
@@ -139,6 +140,69 @@ export const whatsappBrowserTasks = pgTable(
       table.userId,
       table.startedAt.desc()
     ),
+  ]
+);
+
+// The numbers members connected themselves from the Workspace page, one per
+// member and one member per number. Unlike the chats' `user_id`, this one is
+// the Better Auth user id without the principal prefix, so a link goes with
+// its user's row. A number on ASSIST_WHATSAPP_NUMBERS is never linked, and a
+// link for one is ignored.
+export const whatsappLinks = pgTable(
+  "whatsapp_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id").notNull().unique(),
+    phone: text("phone").notNull().unique(),
+    // The message that linked it, which passed Twilio's record check.
+    messageSid: text("message_sid").notNull(),
+    linkedAt: at("linked_at").defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "whatsapp_links_user_id_fkey",
+      columns: [table.userId],
+      foreignColumns: [user.id],
+    }).onDelete("cascade"),
+  ]
+);
+
+// The one live link code of a member, by Better Auth user id: an HMAC of the
+// code, never the code itself. A new code replaces the old one, and a code
+// is deleted once it is used.
+export const whatsappLinkCodes = pgTable(
+  "whatsapp_link_codes",
+  {
+    userId: text("user_id").primaryKey(),
+    codeHash: text("code_hash").notNull().unique(),
+    expiresAt: at("expires_at").notNull(),
+    createdAt: at("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "whatsapp_link_codes_user_id_fkey",
+      columns: [table.userId],
+      foreignColumns: [user.id],
+    }).onDelete("cascade"),
+  ]
+);
+
+// The link attempts that failed, by Twilio's message id and the number that
+// sent it, for the limits on guessing a code. Rows older than a day are
+// deleted as new attempts arrive.
+export const whatsappLinkFailures = pgTable(
+  "whatsapp_link_failures",
+  {
+    sid: text("sid").primaryKey(),
+    phone: text("phone").notNull(),
+    failedAt: at("failed_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("whatsapp_link_failures_phone_idx").on(
+      table.phone,
+      table.failedAt.desc()
+    ),
+    index("whatsapp_link_failures_failed_idx").on(table.failedAt),
   ]
 );
 

@@ -2,9 +2,10 @@ import { z } from "zod";
 import { whatsappNumbersVariable } from "@shared/environment";
 
 // ASSIST_WHATSAPP_NUMBERS maps each member's number to their assist email:
-// "+15551234567=member@example.com,...". The WhatsApp channel and its hooks
-// read it on every message, reply, turn and model call, and the Workspace
-// page on every view. An entry that does not parse is skipped, and a number
+// "+15551234567=member@example.com,...". It is the operator's override of the
+// numbers members connect themselves (db/services/whatsapp-numbers.ts), read
+// on every message, reply, turn and model call, and on every view of the
+// Workspace page. An entry that does not parse is skipped, and a number
 // listed for two emails reaches nobody; each problem is logged once, values
 // never.
 const numberEntrySchema = z
@@ -36,31 +37,41 @@ function listedNumbers() {
   return entries;
 }
 
-// The assist email a number is listed for, or undefined.
-export function memberEmailOf(number: string) {
+// Whether the list names this number at all, and the assist email it reaches:
+// none for a number listed for two emails. Undefined for a number the list
+// does not name.
+export function whatsappListingOf(number: string) {
   const emails = new Set(
     listedNumbers()
       .filter(([listed]) => listed === number)
       .map(([, email]) => email)
   );
+  if (emails.size === 0) return undefined;
   if (emails.size > 1) {
     reportOnce(
       "ASSIST_WHATSAPP_NUMBERS lists a number for two emails; it reaches nobody."
     );
-    return undefined;
+    return { email: undefined };
   }
-  return [...emails][0];
+  return { email: [...emails][0] };
 }
 
-// The numbers that reach this email.
+// Every listed number that reaches someone, once, with that email.
+export function listedWhatsappMembers() {
+  const members = new Map<string, string>();
+  for (const [number] of listedNumbers()) {
+    const email = whatsappListingOf(number)?.email;
+    if (email !== undefined) members.set(number, email);
+  }
+  return [...members].map(([number, email]) => ({ email, number }));
+}
+
+// The listed numbers that reach this email.
 export function numbersOfMember(email: string) {
   const normalized = email.trim().toLowerCase();
-  return listedNumbers()
-    .filter(
-      ([number, listed]) =>
-        listed === normalized && memberEmailOf(number) === normalized
-    )
-    .map(([number]) => number);
+  return listedWhatsappMembers()
+    .filter((member) => member.email === normalized)
+    .map(({ number }) => number);
 }
 
 const reportedProblems = new Set<string>();

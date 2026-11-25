@@ -155,6 +155,13 @@
       "when": 1795619833761,
       "tag": "0021_next_ben_grimm",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1795629269384,
+      "tag": "0022_mute_mattie_franklin",
+      "breakpoints": true
     }
   ]
 }

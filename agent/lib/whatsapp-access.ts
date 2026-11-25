@@ -2,13 +2,17 @@ import type { SessionAuthContext } from "eve/context";
 import { z } from "zod";
 import { enrolledTeamMemberId } from "@db/services/auth/allowlist";
 import { whatsappChatOfSession, whatsappLockOf } from "@db/services/whatsapp";
-import { memberEmailOf, numbersOfMember } from "@shared/environment/whatsapp";
+import {
+  whatsappEmailOf,
+  whatsappNumbersOf,
+} from "@db/services/whatsapp-numbers";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
 // Who may use assist on WhatsApp, and how much of it, read again wherever it
 // matters: the channel on every message and reply, and the hooks of the root
 // agent and the browser worker before every turn, model call and tool call.
-// A listed member who can sign in gets full access until they lock it; a
+// A member whose number reaches them, listed by the operator or linked by
+// themselves, and who can sign in gets full access until they lock it; a
 // locked member keeps the narrow chat.
 
 // The authenticator of a WhatsApp session's principal, which decides its
@@ -23,11 +27,11 @@ export function whatsappNumberOf(address: string) {
 }
 
 // Whether any number still reaches this email.
-function emailIsListed(email: string) {
-  return numbersOfMember(email).length > 0;
+async function emailHasNumber(email: string) {
+  return (await whatsappNumbersOf(email)).length > 0;
 }
 
-// The principal a listed member's WhatsApp messages run as. The narrow chat's
+// The principal a member's WhatsApp messages run as. The narrow chat's
 // is exactly the one every chat had before full access, so a locked member's
 // chats carry on; the full chat's names its access and its number.
 export function whatsappPrincipal(
@@ -80,7 +84,7 @@ export function whatsappSessionOf(initiator: SessionAuthContext | null) {
 }
 
 // What the member may have on WhatsApp right now: "full" while their number
-// is listed for them, they can sign in and nobody locked it; "narrow" when it
+// reaches them, they can sign in and nobody locked it; "narrow" when it
 // is locked; "none" when the number, or for a chat that names none any
 // number, no longer reaches them, or they can no longer sign in.
 export async function whatsappAccessOf(member: {
@@ -88,11 +92,11 @@ export async function whatsappAccessOf(member: {
   readonly number?: string;
   readonly principalId: string;
 }) {
-  const listed =
+  const reached =
     member.number === undefined
-      ? emailIsListed(member.email)
-      : memberEmailOf(member.number) === member.email;
-  if (!listed) return "none" as const;
+      ? await emailHasNumber(member.email)
+      : (await whatsappEmailOf(member.number)) === member.email;
+  if (!reached) return "none" as const;
   const userId = member.principalId.slice("better-auth:".length);
   if ((await enrolledTeamMemberId(member.email)) !== userId) {
     return "none" as const;

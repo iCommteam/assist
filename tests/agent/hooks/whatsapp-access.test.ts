@@ -7,6 +7,10 @@ import type {
   whatsappChatOfSession,
   whatsappLockOf,
 } from "@db/services/whatsapp";
+import type {
+  linkedWhatsappMemberOf,
+  linkedWhatsappNumberOf,
+} from "@db/services/whatsapp-links";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { hookContextFor } from "@tests/helpers/hook-context";
 import { viewOf } from "@tests/helpers/session-view";
@@ -14,6 +18,8 @@ import { viewOf } from "@tests/helpers/session-view";
 const mocks = vi.hoisted(() => ({
   claimWhatsappBrowserTask: vi.fn<typeof claimWhatsappBrowserTask>(),
   enrolledTeamMemberId: vi.fn<typeof enrolledTeamMemberId>(),
+  linkedWhatsappMemberOf: vi.fn<typeof linkedWhatsappMemberOf>(),
+  linkedWhatsappNumberOf: vi.fn<typeof linkedWhatsappNumberOf>(),
   numbers: "",
   whatsappChatOfSession: vi.fn<typeof whatsappChatOfSession>(),
   whatsappLockOf: vi.fn<typeof whatsappLockOf>(),
@@ -26,6 +32,11 @@ vi.mock("@db/services/whatsapp", () => ({
   claimWhatsappBrowserTask: mocks.claimWhatsappBrowserTask,
   whatsappChatOfSession: mocks.whatsappChatOfSession,
   whatsappLockOf: mocks.whatsappLockOf,
+}));
+// The numbers members linked themselves, faked: none unless a case links one.
+vi.mock("@db/services/whatsapp-links", () => ({
+  linkedWhatsappMemberOf: mocks.linkedWhatsappMemberOf,
+  linkedWhatsappNumberOf: mocks.linkedWhatsappNumberOf,
 }));
 vi.mock("@shared/environment", () => ({
   env: {},
@@ -84,8 +95,30 @@ beforeEach(() => {
   mocks.whatsappLockOf.mockResolvedValue({ everyone: false, self: false });
   mocks.claimWhatsappBrowserTask.mockResolvedValue(true);
   mocks.whatsappChatOfSession.mockResolvedValue(undefined);
+  mocks.linkedWhatsappMemberOf.mockResolvedValue(undefined);
+  mocks.linkedWhatsappNumberOf.mockResolvedValue(undefined);
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
 });
+
+// The member linked their number themselves; the list names nobody.
+function linkMemberNumber() {
+  mocks.numbers = "";
+  mocks.linkedWhatsappMemberOf.mockImplementation(async (phone) =>
+    phone === memberNumber
+      ? { email: "Member@Example.test", userId: "user-1" }
+      : undefined
+  );
+  mocks.linkedWhatsappNumberOf.mockImplementation(async (email) =>
+    email === "member@example.test"
+      ? {
+          id: "00000000-0000-4000-8000-000000000001",
+          linkedAt: new Date(),
+          phone: memberNumber,
+          userId: "user-1",
+        }
+      : undefined
+  );
+}
 
 function context(
   initiator: typeof full | typeof narrow | typeof web | null,
@@ -203,6 +236,42 @@ describe("the root agent's WhatsApp kill switch", () => {
 
     mocks.numbers = "";
     expect(await fireRootTurn(narrow)).toHaveBeenCalledOnce();
+  });
+
+  it("gives a number the member linked exactly the access of a listed one", async () => {
+    linkMemberNumber();
+    expect(await fireRootTurn(full)).not.toHaveBeenCalled();
+    expect(await fireRootTurn(narrow)).not.toHaveBeenCalled();
+
+    mocks.whatsappLockOf.mockResolvedValue({ everyone: false, self: true });
+    expect(await fireRootTurn(full)).toHaveBeenCalledOnce();
+    expect(await fireRootTurn(narrow)).not.toHaveBeenCalled();
+
+    mocks.whatsappLockOf.mockResolvedValue({ everyone: false, self: false });
+    mocks.enrolledTeamMemberId.mockResolvedValue(undefined);
+    expect(await fireRootTurn(full)).toHaveBeenCalledOnce();
+  });
+
+  it("stops a linked number's chats once the link is gone, or the list sets the number for someone else", async () => {
+    linkMemberNumber();
+    mocks.numbers = `${memberNumber}=other@example.test`;
+    expect(await fireRootTurn(full)).toHaveBeenCalledOnce();
+
+    mocks.numbers = "";
+    mocks.linkedWhatsappMemberOf.mockResolvedValue(undefined);
+    mocks.linkedWhatsappNumberOf.mockResolvedValue(undefined);
+    expect(await fireRootTurn(full)).toHaveBeenCalledOnce();
+    expect(await fireRootTurn(narrow)).toHaveBeenCalledOnce();
+  });
+
+  it("stops a full chat when its linked number cannot be read", async () => {
+    linkMemberNumber();
+    mocks.linkedWhatsappMemberOf.mockRejectedValue(new Error("database down"));
+    expect(await fireRootTurn(full)).toHaveBeenCalledOnce();
+    expect(console.warn).toHaveBeenCalledWith(
+      "[whatsapp] access could not be read",
+      { error: "Error" }
+    );
   });
 
   it("leaves every other session alone", async () => {
@@ -340,6 +409,15 @@ describe("the browser worker's WhatsApp kill switch", () => {
     expect(await fireWorker(web)).toHaveBeenCalledOnce();
     expect(await fireWorker(full)).toHaveBeenCalledOnce();
     expect(mocks.whatsappChatOfSession).toHaveBeenCalledWith("root-session");
+  });
+
+  it("keeps a worker of a linked number's full chat going until the link is gone", async () => {
+    linkMemberNumber();
+    mocks.whatsappChatOfSession.mockResolvedValue(chat);
+    expect(await fireWorker(web)).not.toHaveBeenCalled();
+
+    mocks.linkedWhatsappMemberOf.mockResolvedValue(undefined);
+    expect(await fireWorker(web)).toHaveBeenCalledOnce();
   });
 
   it("stops a worker of an ended full chat", async () => {

@@ -40,6 +40,11 @@ import {
   recordWhatsappChat,
   whatsappLockOf,
 } from "@db/services/whatsapp";
+import {
+  createWhatsappLinkCode,
+  whatsappLinkCodeLive,
+  whatsappLinkOf,
+} from "@db/services/whatsapp-links";
 import { noteWhatsappCancel } from "@agent/lib/whatsapp-access";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { viewOf } from "@tests/helpers/session-view";
@@ -83,7 +88,12 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("@shared/environment", () => ({
+  assertProductionEnvironment: () => undefined,
   env: {
+    // Test fixtures only: the installation secrets link codes are hashed
+    // with.
+    BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
+    SECRET_ENCRYPTION_KEY: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
     get SCHEDULED_RUN_SECRET() {
       return loopbackSecret;
     },
@@ -105,8 +115,16 @@ vi.mock("@shared/environment", () => ({
 vi.mock("@shared/environment/origin", () => ({
   applicationOrigin: () => publicOrigin,
 }));
+// The team list, as the link check reads it.
+const teamEmails = new Set([
+  "member@example.test",
+  "other@example.test",
+  "linked@example.test",
+  "nofactor@example.test",
+]);
 vi.mock("@db/services/auth/allowlist", () => ({
   enrolledTeamMemberId: mocks.enrolledTeamMemberId,
+  isAllowedEmail: (email: string) => teamEmails.has(email.trim().toLowerCase()),
 }));
 vi.mock(import("eve/channels/twilio"), async (importOriginal) => {
   const original = await importOriginal();
@@ -124,6 +142,15 @@ const database = drizzle(client, { schema });
 
 beforeAll(async () => {
   await migrate(database, { migrationsFolder: "db/migrations" });
+  // The members a link code can be made for: user-5 has no authenticator,
+  // and user-6 is not on the team list.
+  await client.exec(`
+    INSERT INTO "user" (id, name, email, "emailVerified", "twoFactorEnabled") VALUES
+      ('user-1', 'Member', 'member@example.test', true, true),
+      ('user-4', 'Linked', 'Linked@Example.test', true, true),
+      ('user-5', 'No factor', 'nofactor@example.test', true, false),
+      ('user-6', 'Outsider', 'outsider@example.test', true, true);
+  `);
 }, 30_000);
 
 afterAll(async () => {
@@ -162,7 +189,7 @@ beforeEach(async () => {
     database as never
   );
   await client.exec(
-    "TRUNCATE whatsapp_messages, whatsapp_locks, whatsapp_chats, whatsapp_held_replies, whatsapp_browser_tasks CASCADE"
+    "TRUNCATE whatsapp_messages, whatsapp_locks, whatsapp_chats, whatsapp_held_replies, whatsapp_browser_tasks, whatsapp_links, whatsapp_link_codes, whatsapp_link_failures CASCADE"
   );
   Object.assign(mocks.config, {
     accountSid,
@@ -173,7 +200,11 @@ beforeEach(async () => {
     numbers: `${memberNumber}=Member@Example.test, +15550000009=other@example.test`,
   });
   mocks.enrolledTeamMemberId.mockImplementation(async (email) =>
-    email === "member@example.test" ? "user-1" : undefined
+    email === "member@example.test"
+      ? "user-1"
+      : email === "linked@example.test"
+        ? "user-4"
+        : undefined
   );
   // Twilio's API, faked: nothing reaches the network.
   vi.stubGlobal(
@@ -1662,6 +1693,23 @@ describe("WhatsApp replies", () => {
     expect(notWhatsapp.request).not.toHaveBeenCalled();
   });
 
+  it("sends a reply to a number its member linked, and stops once the link is gone", async () => {
+    const reply = settledReply({ kind: "message", text: "Your pay list." });
+    mocks.config.numbers = "";
+    await client.exec(
+      `INSERT INTO whatsapp_links (user_id, phone, message_sid) VALUES ('user-1', '${memberNumber}', 'SM${"9".repeat(32)}')`
+    );
+
+    const linked = conversation();
+    await handlers().callSettled(reply, linked.context);
+    expect(linked.request).toHaveBeenCalledOnce();
+
+    await client.exec("DELETE FROM whatsapp_links");
+    const unlinked = conversation();
+    await handlers().callSettled(reply, unlinked.context);
+    expect(unlinked.request).not.toHaveBeenCalled();
+  });
+
   it("sends a full chat's reply only while full access is on, and a narrow chat's either way", async () => {
     const reply = settledReply({ kind: "message", text: "Your pay list." });
     await lockWhatsapp("user-1", "whatsapp");
@@ -2020,3 +2068,414 @@ function settledReply(output: CallSettled["data"]["output"]): CallSettled {
     type: "call.settled",
   };
 }
+
+describe("Connecting a number with a link code", () => {
+  const stranger = "+15550000020";
+  const secondNumber = "+15550000021";
+  const linkedChat = (number: string) =>
+    `whatsapp:${number}:${companyNumber}|better-auth:user-4|full`;
+  const linkedWorkspace = accessScopeForUser("better-auth:user-4").workspaceId;
+  const failedLine = `That code did not work. Get a new one on assist's Workspace page: ${publicOrigin}/`;
+  const linkedLine =
+    "This number is now connected to linked@example.test. Full access is on; reply /lock to turn it off.";
+
+  function linkMessage(code: string, from = stranger) {
+    return messageParams({ Body: `link ${code}`, From: `whatsapp:${from}` });
+  }
+
+  async function linkRows() {
+    const rows = await client.query<{ phone: string; user_id: string }>(
+      "SELECT user_id, phone FROM whatsapp_links ORDER BY phone"
+    );
+    return rows.rows;
+  }
+
+  async function linkedNumber(userId: string, phone: string) {
+    const { code } = await createWhatsappLinkCode(userId);
+    await routeHarness().post(webhook(linkMessage(code, phone)));
+    twilioCalls.length = 0;
+  }
+
+  it("links a stranger's number, says so, and gives its next message full access as that member", async () => {
+    const { code } = await createWhatsappLinkCode("user-4");
+    const harness = routeHarness();
+    const params = messageParams({
+      Body: `  LINK   ${code.slice(0, 4).toLowerCase()}-${code.slice(4)}  `,
+      From: `whatsapp:${stranger}`,
+    });
+
+    const response = await harness.post(webhook(params));
+
+    expect(response.status).toBe(200);
+    expect(harness.source.send).not.toHaveBeenCalled();
+    expect(recordReads().map(({ url }) => url)).toEqual([
+      `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages/${params.MessageSid}.json`,
+    ]);
+    expect(sentBodies()).toEqual([
+      {
+        Body: linkedLine,
+        From: companyNumber,
+        MediaUrl: null,
+        To: `whatsapp:${stranger}`,
+      },
+    ]);
+    await expect(linkRows()).resolves.toEqual([
+      { phone: stranger, user_id: "user-4" },
+    ]);
+    await expect(whatsappLinkCodeLive("user-4")).resolves.toBe(false);
+
+    await harness.post(
+      webhook(messageParams({ Body: "Hello", From: `whatsapp:${stranger}` }))
+    );
+
+    expect(harness.operations).toEqual([
+      { address: linkedChat(stranger), operation: "send" },
+    ]);
+    expect(harness.source.send).toHaveBeenCalledWith(
+      "Hello",
+      expect.objectContaining({
+        auth: {
+          attributes: {
+            conversationChannel: "whatsapp",
+            email: "linked@example.test",
+            whatsappAccess: "full",
+            whatsappNumber: stranger,
+            workspaceId: linkedWorkspace,
+          },
+          authenticator: "assist-whatsapp",
+          principalId: "better-auth:user-4",
+          principalType: "user",
+        },
+      })
+    );
+    expect(sentTexts().at(-1)).toBe(announcement);
+    expect(recordReads()).toHaveLength(2);
+  });
+
+  it("never links from a forged webhook, one Twilio has no record of, or one that differs from it", async () => {
+    const { code } = await createWhatsappLinkCode("user-4");
+    const harness = routeHarness();
+
+    const forged = await harness.post(
+      webhook(linkMessage(code), { token: "another-token-0123456789abcdef" })
+    );
+    const unrecorded = linkMessage(code);
+    twilioRecords.delete(unrecorded.MessageSid);
+    await harness.post(webhook(unrecorded));
+    const differs = linkMessage(code);
+    twilioRecords.set(differs.MessageSid, {
+      ...recordOf(differs),
+      body: "link 22222222",
+    });
+    await harness.post(webhook(differs));
+    const otherSender = linkMessage(code);
+    twilioRecords.set(otherSender.MessageSid, {
+      ...recordOf(otherSender),
+      from: "whatsapp:+15550000099",
+    });
+    await harness.post(webhook(otherSender));
+
+    expect(forged.status).toBe(401);
+    expect(sentBodies()).toEqual([]);
+    await expect(linkRows()).resolves.toEqual([]);
+    await expect(whatsappLinkCodeLive("user-4")).resolves.toBe(true);
+    expect(console.warn).toHaveBeenCalledWith(
+      "[whatsapp] a link message does not match Twilio's record of it; dropped"
+    );
+  });
+
+  it("links once for a webhook Twilio posts twice", async () => {
+    const { code } = await createWhatsappLinkCode("user-4");
+    const harness = routeHarness();
+    const params = linkMessage(code);
+
+    await harness.post(webhook(params));
+    await harness.post(webhook(params));
+
+    expect(sentTexts()).toEqual([linkedLine]);
+    expect(recordReads()).toHaveLength(1);
+  });
+
+  it("answers a wrong, expired or used code, and a member who cannot use WhatsApp, with one line that names nothing", async () => {
+    const harness = routeHarness();
+    const used = await createWhatsappLinkCode("user-4");
+    await harness.post(webhook(linkMessage(used.code, "+15550000030")));
+    twilioCalls.length = 0;
+    const expired = await createWhatsappLinkCode("user-1");
+    await client.exec(
+      "UPDATE whatsapp_link_codes SET expires_at = now() - interval '1 second'"
+    );
+    const noFactor = await createWhatsappLinkCode("user-5");
+    const outsider = await createWhatsappLinkCode("user-6");
+
+    for (const [index, code] of [
+      "ZZZZZZZZ",
+      expired.code,
+      used.code,
+      noFactor.code,
+      outsider.code,
+    ].entries()) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each attempt comes from its own number, one after another.
+      await harness.post(
+        webhook(linkMessage(code, `+1555000004${String(index)}`))
+      );
+    }
+
+    expect(sentTexts()).toEqual(Array.from({ length: 5 }, () => failedLine));
+    expect(failedLine).not.toMatch(/@|\+\d/u);
+    await expect(linkRows()).resolves.toEqual([
+      { phone: "+15550000030", user_id: "user-4" },
+    ]);
+  });
+
+  it("goes silent after 5 failed attempts from a number in an hour, and then links nothing", async () => {
+    const harness = routeHarness();
+    for (let tried = 0; tried < 5; tried += 1) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The attempts arrive one after another.
+      await harness.post(webhook(linkMessage("ZZZZZZZZ")));
+    }
+    const { code } = await createWhatsappLinkCode("user-4");
+
+    await harness.post(webhook(linkMessage(code)));
+
+    expect(sentTexts()).toEqual(Array.from({ length: 5 }, () => failedLine));
+    await expect(linkRows()).resolves.toEqual([]);
+    await expect(whatsappLinkCodeLive("user-4")).resolves.toBe(true);
+  });
+
+  it("still ignores every other message from a number that reaches nobody", async () => {
+    const harness = routeHarness();
+    await createWhatsappLinkCode("user-4");
+
+    for (const Body of ["Hello", "link", "link ABC", "link ABCD2345 now"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The messages arrive one after another.
+      await harness.post(
+        webhook(messageParams({ Body, From: `whatsapp:${stranger}` }))
+      );
+    }
+
+    expect(twilioCalls).toEqual([]);
+    expect(harness.from).not.toHaveBeenCalled();
+    const rows = await client.query("SELECT sid FROM whatsapp_messages");
+    expect(rows.rows).toEqual([]);
+  });
+
+  it("never links a number ASSIST_WHATSAPP_NUMBERS lists, and tells its own member it is already connected", async () => {
+    const harness = routeHarness();
+    const own = await createWhatsappLinkCode("user-1");
+    await harness.post(webhook(linkMessage(own.code, memberNumber)));
+    const another = await createWhatsappLinkCode("user-4");
+    await harness.post(webhook(linkMessage(another.code, memberNumber)));
+
+    expect(sentTexts()).toEqual([
+      "This number is already connected to member@example.test.",
+      "This number is set by the server for another assist account. Only an administrator can change it.",
+    ]);
+    expect(harness.source.send).not.toHaveBeenCalled();
+    await expect(linkRows()).resolves.toEqual([]);
+  });
+
+  it("lets ASSIST_WHATSAPP_NUMBERS override a link made before the number was listed", async () => {
+    await linkedNumber("user-4", stranger);
+    mocks.config.numbers = `${stranger}=member@example.test`;
+    const harness = routeHarness();
+
+    await harness.post(
+      webhook(messageParams({ Body: "Hello", From: `whatsapp:${stranger}` }))
+    );
+
+    expect(harness.operations).toEqual([
+      {
+        address: `whatsapp:${stranger}:${companyNumber}|better-auth:user-1|full`,
+        operation: "send",
+      },
+    ]);
+  });
+
+  it("refuses a number linked to someone else, and tells its own member it is already connected", async () => {
+    await linkedNumber("user-4", stranger);
+    const harness = routeHarness();
+
+    const another = await createWhatsappLinkCode("user-1");
+    await harness.post(webhook(linkMessage(another.code)));
+    const own = await createWhatsappLinkCode("user-4");
+    await harness.post(webhook(linkMessage(own.code)));
+
+    expect(sentTexts()).toEqual([
+      "This number is connected to another assist account. Disconnect it there first.",
+      "This number is already connected to linked@example.test.",
+    ]);
+    await expect(whatsappLinkOf("user-1")).resolves.toBeUndefined();
+    await expect(linkRows()).resolves.toEqual([
+      { phone: stranger, user_id: "user-4" },
+    ]);
+  });
+
+  it("moves a member's link to their new number and ends the old number's full chats", async () => {
+    await linkedNumber("user-4", stranger);
+    await client.exec(
+      `INSERT INTO workspaces (id) VALUES ('${linkedWorkspace}') ON CONFLICT DO NOTHING`
+    );
+    for (const [sessionId, phone] of [
+      ["session-old-number", stranger],
+      ["session-other-number", "+15550000029"],
+    ] as const) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each chat is recorded in turn.
+      await recordWhatsappChat({
+        email: "linked@example.test",
+        messageAt: new Date(),
+        messageSid: `SM${"a".repeat(30)}${phone.slice(-2)}`,
+        phone,
+        sessionId,
+        userId: "better-auth:user-4",
+        workspaceId: linkedWorkspace,
+      });
+    }
+    const harness = routeHarness();
+    const { code } = await createWhatsappLinkCode("user-4");
+
+    await harness.post(webhook(linkMessage(code, secondNumber)));
+
+    expect(sentTexts()).toEqual([
+      "This number is now connected to linked@example.test. Full access is on; reply /lock to turn it off.",
+    ]);
+    expect(harness.attached).toEqual(["session-old-number"]);
+    expect(harness.source.send).not.toHaveBeenCalled();
+    await expect(linkRows()).resolves.toEqual([
+      { phone: secondNumber, user_id: "user-4" },
+    ]);
+    const chats = await client.query<{ ended: boolean; session_id: string }>(
+      "SELECT session_id, ended_at IS NOT NULL AS ended FROM whatsapp_chats ORDER BY session_id"
+    );
+    expect(chats.rows).toEqual([
+      { ended: true, session_id: "session-old-number" },
+      { ended: false, session_id: "session-other-number" },
+    ]);
+
+    // The old number now reaches nobody.
+    twilioCalls.length = 0;
+    await harness.post(
+      webhook(messageParams({ Body: "Hello", From: `whatsapp:${stranger}` }))
+    );
+    expect(twilioCalls).toEqual([]);
+    expect(harness.source.send).not.toHaveBeenCalled();
+  });
+
+  it("says full access is off when the member who links had locked WhatsApp", async () => {
+    await lockWhatsapp("user-4", "web");
+    const { code } = await createWhatsappLinkCode("user-4");
+
+    await routeHarness().post(webhook(linkMessage(code)));
+
+    expect(sentTexts()).toEqual([
+      `This number is now connected to linked@example.test. Full access is off; turn it back on in assist: ${publicOrigin}/`,
+    ]);
+  });
+
+  it("gives a linked member /lock and BigQuery exactly as a listed one", async () => {
+    await linkedNumber("user-4", stranger);
+    Object.assign(mocks.config, {
+      bigquery: true,
+      bigqueryEmails: ["linked@example.test"],
+    });
+    const harness = routeHarness();
+
+    await harness.post(
+      webhook(messageParams({ Body: "Hello", From: `whatsapp:${stranger}` }))
+    );
+    const lock = messageParams({ Body: "/lock", From: `whatsapp:${stranger}` });
+    twilioRecords.delete(lock.MessageSid);
+    await harness.post(webhook(lock));
+
+    expect(sentTexts()).toEqual([
+      "Full access is on in this chat: the browser, vault links, Personal Info, saved notes and the company's BigQuery data, read only. Reply /lock to turn it off.",
+      `Full access is off on WhatsApp. Turn it back on in assist: ${publicOrigin}/`,
+    ]);
+    await expect(whatsappLockOf("user-4")).resolves.toEqual({
+      everyone: false,
+      self: true,
+    });
+  });
+
+  it("passes a linked number's messages on in the order they arrived, when a later one is admitted first", async () => {
+    await linkedNumber("user-4", stranger);
+    const lookups: ((userId: string | undefined) => void)[] = [];
+    mocks.enrolledTeamMemberId.mockImplementation(
+      async () =>
+        new Promise((resolve) => {
+          lookups.push(resolve);
+        })
+    );
+    const harness = routeHarness(sessionLastActiveAt(new Date().toISOString()));
+    const fromLinked = (Body: string) =>
+      harness.post(
+        webhook(messageParams({ Body, From: `whatsapp:${stranger}` }))
+      );
+
+    const newChat = fromLinked("/new");
+    await vi.waitFor(() => {
+      expect(lookups).toHaveLength(1);
+    });
+    const payList = fromLinked("Pay list for March");
+    await vi.waitFor(() => {
+      expect(lookups).toHaveLength(2);
+    });
+    lookups[1]?.("user-4");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(harness.operations).toEqual([]);
+
+    lookups[0]?.("user-4");
+    mocks.enrolledTeamMemberId.mockResolvedValue("user-4");
+    await Promise.all([newChat, payList]);
+
+    expect(harness.operations.map(({ operation }) => operation)).toEqual([
+      "end",
+      "send",
+    ]);
+  });
+
+  it("ends a disconnected number's full chats on loopback, and no other", async () => {
+    await client.exec(
+      `INSERT INTO workspaces (id) VALUES ('${linkedWorkspace}') ON CONFLICT DO NOTHING`
+    );
+    await recordWhatsappChat({
+      email: "linked@example.test",
+      messageAt: new Date(),
+      messageSid: `SM${"e".repeat(32)}`,
+      phone: stranger,
+      sessionId: "session-disconnected",
+      userId: "better-auth:user-4",
+      workspaceId: linkedWorkspace,
+    });
+    await recordWhatsappChat({
+      email: "linked@example.test",
+      messageAt: new Date(),
+      messageSid: `SM${"f".repeat(32)}`,
+      phone: secondNumber,
+      sessionId: "session-kept",
+      userId: "better-auth:user-4",
+      workspaceId: linkedWorkspace,
+    });
+    const harness = routeHarness();
+
+    const ended = await harness.post(
+      new Request(`${loopbackOrigin}/internal/whatsapp/end`, {
+        body: JSON.stringify({
+          member: "better-auth:user-4",
+          phone: stranger,
+        }),
+        headers: {
+          authorization: `Bearer ${loopbackSecret}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+      }),
+      "/internal/whatsapp/end"
+    );
+
+    expect(ended.status).toBe(204);
+    expect(harness.attached).toEqual(["session-disconnected"]);
+    expect(twilioCalls).toEqual([]);
+  });
+});
