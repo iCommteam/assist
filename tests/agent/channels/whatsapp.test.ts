@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { inspect } from "node:util";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -445,6 +446,33 @@ function recordReads() {
   return twilioCalls.filter(({ method }) => method === "GET");
 }
 
+// What a failed query throws: like drizzle's, its message names the query's
+// values, here the member's number, email and a reply's text.
+class FailedQuery extends Error {
+  override name = "DrizzleQueryError";
+}
+
+const failedValues = [memberNumber, "member@example.test", "1 Main St"];
+
+function failDatabase() {
+  vi.spyOn(Database, "db", "get").mockImplementation(() => {
+    throw new FailedQuery(
+      `Failed query: insert into "whatsapp_held_replies" params: Your saved address is 1 Main St,full,${memberNumber},member@example.test,better-auth:user-1`
+    );
+  });
+}
+
+// The failed query's values found in anything logged, inspected as eve's
+// logger inspects an error: none, every time.
+function loggedValues() {
+  const logged = [console.warn, console.error, console.info]
+    .map((log) =>
+      vi.isMockFunction(log) ? inspect(log.mock.calls, { depth: 10 }) : ""
+    )
+    .join("\n");
+  return failedValues.filter((value) => logged.includes(value));
+}
+
 const announcement =
   "Full access is on in this chat: the browser, vault links, Personal Info and saved notes. Reply /lock to turn it off.";
 
@@ -592,6 +620,22 @@ describe("WhatsApp webhook", () => {
     await harness.post(webhook(messageParams()));
 
     expect(harness.source.send).toHaveBeenCalledOnce();
+  });
+
+  it("drops a message when the database fails, and logs the failure by its name alone", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    failDatabase();
+    const harness = routeHarness();
+
+    await harness.post(webhook(messageParams()));
+
+    expect(harness.source.send).not.toHaveBeenCalled();
+    expect(sentBodies()).toEqual([]);
+    expect(console.warn).toHaveBeenCalledWith(
+      "[whatsapp] a message could not be admitted and is dropped",
+      { error: "DrizzleQueryError" }
+    );
+    expect(loggedValues()).toEqual([]);
   });
 
   it("passes each message id to the agent once", async () => {
@@ -1314,6 +1358,25 @@ describe("/lock", () => {
     });
   });
 
+  it("sends no fixed line for a full chat that a lock overtook as it opened", async () => {
+    const harness = routeHarness();
+    harness.source.send.mockImplementation(async () => {
+      await lockWhatsapp("user-1", "web");
+      return fakeDelivery();
+    });
+
+    await harness.post(webhook(messageParams()));
+
+    expect(harness.operations).toEqual([
+      { address: fullChat, operation: "send" },
+    ]);
+    expect(sentTexts()).toEqual([]);
+    const chats = await client.query<{ announced: boolean }>(
+      "SELECT announced_at IS NOT NULL AS announced FROM whatsapp_chats"
+    );
+    expect(chats.rows).toEqual([{ announced: false }]);
+  });
+
   it("locks over the limit too, without a reply", async () => {
     const harness = routeHarness();
     await client.exec(
@@ -1516,7 +1579,7 @@ describe("WhatsApp replies", () => {
     ]);
   });
 
-  it("fails the delivery when Twilio refuses a message", async () => {
+  it("logs a reply Twilio refuses by the error's name alone", async () => {
     const { context, request } = conversation();
     request.mockResolvedValue({
       body: { code: 63_016 },
@@ -1524,12 +1587,36 @@ describe("WhatsApp replies", () => {
       status: 400,
     });
 
-    await expect(
-      handlers().callSettled(
-        settledReply({ kind: "message", text: "Hi" }),
-        context
-      )
-    ).rejects.toThrow("Twilio refused a WhatsApp message with HTTP 400.");
+    await handlers().callSettled(
+      settledReply({ kind: "message", text: "Hi" }),
+      context
+    );
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(console.warn).toHaveBeenCalledWith(
+      "[whatsapp] a reply could not be sent",
+      { error: "Error" }
+    );
+  });
+
+  it("logs a database failure while sending or holding a reply by its name alone", async () => {
+    const { context, request } = conversation();
+    failDatabase();
+
+    await handlers().callSettled(
+      settledReply({
+        kind: "message",
+        text: "Your saved address is 1 Main St",
+      }),
+      context
+    );
+
+    expect(request).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "[whatsapp] a reply could not be sent",
+      { error: "DrizzleQueryError" }
+    );
+    expect(loggedValues()).toEqual([]);
   });
 
   it("sends a chat's reply only while its number is listed for the chat's member", async () => {
@@ -1624,6 +1711,73 @@ describe("WhatsApp replies", () => {
     await routeHarness().post(webhook(messageParams({ Body: "Hi" })));
 
     expect(sentTexts()).toEqual([]);
+  });
+
+  it("sends no full chat's held reply, and opens no full chat, for a message a lock overtook during Twilio's record check", async () => {
+    await client.exec("TRUNCATE whatsapp_messages");
+    await memberWrote(25 * 60);
+    const { context } = conversation();
+    await handlers().callSettled(
+      settledReply({ kind: "message", text: "Your saved address is…" }),
+      context
+    );
+    // The lock lands while Twilio's record of the message is read.
+    const readTwilio = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if ((init?.method ?? "GET") === "GET") {
+        await lockWhatsapp("user-1", "web");
+      }
+      if (!readTwilio) throw new Error("Twilio's API must be faked.");
+      return readTwilio(input, init);
+    });
+    const harness = routeHarness();
+
+    await harness.post(webhook(messageParams({ Body: "ok" })));
+
+    expect(recordReads()).toHaveLength(1);
+    expect(sentTexts()).toEqual([]);
+    expect(harness.operations).toEqual([
+      { address: narrowChat, operation: "send" },
+    ]);
+    expect(harness.source.send).toHaveBeenCalledExactlyOnceWith(
+      "ok",
+      expect.objectContaining({ auth: narrowPrincipal })
+    );
+    const held = await client.query("SELECT id FROM whatsapp_held_replies");
+    expect(held.rows).toEqual([]);
+    const chats = await client.query("SELECT id FROM whatsapp_chats");
+    expect(chats.rows).toEqual([]);
+  });
+
+  it("sends the held replies before /new ends the chat, and none reaches the new one", async () => {
+    await client.exec("TRUNCATE whatsapp_messages");
+    await memberWrote(24 * 60 - 5);
+    const { context } = conversation();
+    await handlers().callSettled(
+      settledReply({ kind: "message", text: "Your pay list is ready." }),
+      context
+    );
+    const harness = routeHarness(sessionLastActiveAt(new Date().toISOString()));
+
+    await harness.post(webhook(messageParams({ Body: "/new" })));
+
+    expect(sentTexts()).toEqual([
+      "Your pay list is ready.",
+      "Started a new chat. What can I help with?",
+    ]);
+    expect(harness.operations).toEqual([
+      { address: fullChat, operation: "end" },
+    ]);
+    const held = await client.query("SELECT id FROM whatsapp_held_replies");
+    expect(held.rows).toEqual([]);
+
+    await harness.post(webhook(messageParams({ Body: "Hi" })));
+
+    expect(sentTexts()).toEqual([
+      "Your pay list is ready.",
+      "Started a new chat. What can I help with?",
+      announcement,
+    ]);
   });
 });
 
@@ -1742,6 +1896,20 @@ describe("WhatsApp prompts and notices", () => {
     const locked = promptContext([question]);
     await committed()(line, locked.context);
     expect(locked.request).not.toHaveBeenCalled();
+  });
+
+  it("logs a database failure while drawing a question by its name alone", async () => {
+    const { context, request } = promptContext([question]);
+    failDatabase();
+
+    await committed()({ facts: [], position: 3 }, context);
+
+    expect(request).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "[whatsapp] a question could not be sent",
+      { error: "DrizzleQueryError" }
+    );
+    expect(loggedValues()).toEqual([]);
   });
 
   it("posts no sign-in challenge", async () => {

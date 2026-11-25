@@ -111,17 +111,21 @@ const events = {
       settledToolResult(event, ctx.view)
     );
     if (!message.success) return;
-    const member = await replyGate(
-      ctx.channel.twilio,
-      ctx.session.auth.initiator
-    );
-    if (!member) {
-      console.warn(
-        "[whatsapp] the chat may no longer reach its number; the reply is not sent"
+    try {
+      const member = await replyGate(
+        ctx.channel.twilio,
+        ctx.session.auth.initiator
       );
-      return;
+      if (!member) {
+        console.warn(
+          "[whatsapp] the chat may no longer reach its number; the reply is not sent"
+        );
+        return;
+      }
+      await deliver(ctx.channel.twilio, member, message.data.output);
+    } catch (error) {
+      warnByName("a reply could not be sent", error);
     }
-    await deliver(ctx.channel.twilio, member, message.data.output);
   },
   // A reply reaches WhatsApp only through send_message, so the model's own
   // text is never posted.
@@ -148,13 +152,7 @@ const events = {
     await postNotice(ctx.channel.twilio, ctx.session.auth.initiator, notice);
   },
   async "session.ended"(event, ctx) {
-    try {
-      await endWhatsappChat(ctx.session.id);
-    } catch (error) {
-      console.warn("[whatsapp] the chat's end could not be recorded", {
-        error: error instanceof Error ? error.name : "unknown",
-      });
-    }
+    await recordChatEnd(ctx.session.id);
     if (event.data.outcome !== "failed") return;
     await postNotice(
       ctx.channel.twilio,
@@ -185,10 +183,14 @@ const committed: ChannelCommitHandler<TwilioEventContext> = async (
   ) {
     return;
   }
-  const member = await replyGate(twilio, ctx.session.auth.initiator);
-  if (!member || !(await windowOpen(member.number))) return;
-  await send(twilio, { Body: promptText(head.request) });
-  Object.assign(state, { shownPromptId: head.interactionId });
+  try {
+    const member = await replyGate(twilio, ctx.session.auth.initiator);
+    if (!member || !(await windowOpen(member.number))) return;
+    await send(twilio, { Body: promptText(head.request) });
+    Object.assign(state, { shownPromptId: head.interactionId });
+  } catch (error) {
+    warnByName("a question could not be sent", error);
+  }
 };
 
 // The channel state eve's own prompt queue keeps, so a prompt it already
@@ -275,7 +277,7 @@ const internalRoutes = [
     await Promise.all(
       chats.map(async ({ sessionId }) => {
         await endSession(attachSession(sessionId), "WhatsApp was locked.");
-        await endWhatsappChat(sessionId);
+        await recordChatEnd(sessionId);
       })
     );
     return new Response(null, { status: 204 });
@@ -407,6 +409,9 @@ async function admit(
         level === "full" ? { level, number: sender } : { level }
       ),
     };
+  } catch (error) {
+    warnByName("a message could not be admitted and is dropped", error);
+    return null;
   } finally {
     if (!handedOn) turn.release();
   }
@@ -683,34 +688,83 @@ function chatSessions(
   return (address) => ({
     ...args.from(address),
     async send(message, options) {
-      const admitted = claimAdmitted(options.state?.lastMessageSid);
-      await admitted?.turn.previous;
+      const claimed = claimAdmitted(options.state?.lastMessageSid);
+      await claimed?.turn.previous;
       try {
-        if (admitted?.command === "lock") {
-          return await lockChats(args, address, options.auth, admitted);
+        if (claimed?.command === "lock") {
+          return await lockChats(args, address, options.auth, claimed);
         }
-        const chat = memberChat(address, options.auth);
+        const now = claimed ? await admittedNow(claimed, options) : undefined;
+        if (claimed && !now) {
+          return noDelivery(
+            new Error(
+              "The member's WhatsApp access ended as the message arrived."
+            )
+          );
+        }
+        const admitted = now?.admitted;
+        const sendOptions = now?.options ?? options;
+        const chat = memberChat(address, sendOptions.auth);
         const source = args.from(chat);
         if (admitted?.command === "new") {
+          await sendHeldReplies(admitted);
           const ended = await endChat(source, "The member started a new chat.");
           await send(admitted.twilio, { Body: newChatReply });
           return ended;
         }
-        await endOtherLevel(args, address, options.auth);
+        await endOtherLevel(args, address, sendOptions.auth);
         if (await idleTooLong(args, chat)) {
           await endChat(source, "The chat was idle for 8 hours.");
         }
         if (admitted) await sendHeldReplies(admitted);
-        const delivery = await source.send(message, options);
+        const delivery = await source.send(message, sendOptions);
         if (admitted?.level === "full") {
-          await openFullChat(admitted, delivery.sessionId, options);
+          await openFullChat(admitted, delivery.sessionId, sendOptions);
         }
         return delivery;
       } finally {
-        admitted?.turn.release();
+        claimed?.turn.release();
       }
     },
   });
+}
+
+type SendOptions = Parameters<ChannelSource<TwilioChannelState>["send"]>[1];
+
+// admit read the member's access before Twilio's record check and before the
+// sender's earlier message reached its chat, so a lock may have landed since,
+// from /lock or the Workspace page. A message admitted with full access is
+// read again as it reaches its chat: still full, it goes on; locked, it goes
+// to the narrow chat, as admit would let it through now, so no full chat
+// opens and no full chat's held reply is sent; with WhatsApp gone
+// altogether, or when the access cannot be read, it is dropped.
+async function admittedNow(
+  admitted: Extract<Admitted, { command: "new" | undefined }>,
+  options: SendOptions
+) {
+  if (admitted.level !== "full") return { admitted, options };
+  let access: Awaited<ReturnType<typeof whatsappAccessOf>>;
+  try {
+    access = await whatsappAccessOf({
+      email: admitted.email,
+      number: admitted.sender,
+      principalId: `better-auth:${admitted.userId}`,
+    });
+  } catch (error) {
+    warnByName("the member's access could not be read; dropped", error);
+    return undefined;
+  }
+  if (access === "full") return { admitted, options };
+  if (access === "none") return undefined;
+  return {
+    admitted: { ...admitted, level: "narrow" as const },
+    options: {
+      ...options,
+      auth: whatsappPrincipal(admitted.userId, admitted.email, {
+        level: "narrow",
+      }),
+    },
+  };
 }
 
 // The chat's address joins the member to the number, and a full chat's also
@@ -751,7 +805,7 @@ async function endOtherLevel(
     args.from(other),
     "The member's WhatsApp access changed."
   );
-  if (ended.sessionId !== "") await endWhatsappChat(ended.sessionId);
+  if (ended.sessionId !== "") await recordChatEnd(ended.sessionId);
 }
 
 // /lock: the lock is already written. Every full chat of the member ends, on
@@ -763,14 +817,19 @@ async function lockChats(
   admitted: Extract<Admitted, { command: "lock" }>
 ) {
   const principalId = `better-auth:${admitted.userId}`;
-  const chats = await openWhatsappChats(principalId);
+  let chats: Awaited<ReturnType<typeof openWhatsappChats>> = [];
+  try {
+    chats = await openWhatsappChats(principalId);
+  } catch (error) {
+    warnByName("the member's full chats could not be read", error);
+  }
   await Promise.all(
     chats.map(async ({ sessionId }) => {
       await endSession(
         args.attachSession(sessionId),
         "The member locked WhatsApp."
       );
-      await endWhatsappChat(sessionId);
+      await recordChatEnd(sessionId);
     })
   );
   const ended = await endChat(
@@ -786,7 +845,7 @@ async function lockChats(
 async function openFullChat(
   admitted: Extract<Admitted, { command: "new" | undefined }>,
   sessionId: string,
-  options: Parameters<ChannelSource<TwilioChannelState>["send"]>[1]
+  options: SendOptions
 ) {
   const messageSid = options.state?.lastMessageSid;
   if (!options.auth || !messageSid || sessionId === "") return;
@@ -804,10 +863,15 @@ async function openFullChat(
       userId: scope.userId,
       workspaceId: scope.workspaceId,
     });
-    if (
-      chat.announcedAt === null &&
-      (await claimWhatsappChatAnnouncement(chat.id))
-    ) {
+    if (chat.announcedAt !== null) return;
+    // A lock that landed as the chat opened: no line says full access is on.
+    const access = await whatsappAccessOf({
+      email: admitted.email,
+      number: admitted.sender,
+      principalId: `better-auth:${admitted.userId}`,
+    });
+    if (access !== "full") return;
+    if (await claimWhatsappChatAnnouncement(chat.id)) {
       await send(admitted.twilio, { Body: announcement() });
     }
   } catch (error) {
@@ -828,17 +892,42 @@ async function endChat(
     return await source.end({ reason });
   } catch (error) {
     if (!SessionNotActiveError.is(error) || error.retryable) throw error;
-    return {
-      deliveryId: "",
-      result: async () => {
-        throw error;
-      },
-      sessionId: "",
-      async *stream() {
-        yield* [];
-      },
-    };
+    return noDelivery(error);
   }
+}
+
+// A receipt that names no session: waiting on it says why.
+function noDelivery(
+  error: Error
+): Awaited<ReturnType<ChannelSource<TwilioChannelState>["end"]>> {
+  return {
+    deliveryId: "",
+    result: async () => {
+      throw error;
+    },
+    sessionId: "",
+    async *stream() {
+      yield* [];
+    },
+  };
+}
+
+// The chat's end in its row. A failure is logged by name only, as every
+// database failure here is: eve logs a thrown error whole, and a failed
+// query's message names its values, numbers and reply text among them.
+async function recordChatEnd(sessionId: string) {
+  try {
+    await endWhatsappChat(sessionId);
+  } catch (error) {
+    warnByName("the chat's end could not be recorded", error);
+  }
+}
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- A caught value is unknown by nature; only its name is read.
+function warnByName(what: string, error: unknown) {
+  console.warn(`[whatsapp] ${what}`, {
+    error: error instanceof Error ? error.name : "unknown",
+  });
 }
 
 async function endSession(
@@ -966,8 +1055,9 @@ async function deliver(
 }
 
 // The replies held for this member on this number, sent in order before
-// their new message reaches the chat. A full chat's held reply goes only
-// while full access is on; one that fails to send stays, with those after it.
+// their new message reaches the chat, or before /new ends it. A full chat's
+// held reply goes only while full access is on; one that fails to send
+// stays, with those after it.
 async function sendHeldReplies(
   admitted: Extract<Admitted, { command: "new" | undefined }>
 ) {

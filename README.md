@@ -771,6 +771,10 @@ Full access stays on until the member turns it off:
   is still running stops at its next step. An emptied
   `ASSIST_WHATSAPP_NUMBERS` takes effect once the deploy that applies it is
   live, then at each chat's next step.
+- A message's access is read again as it reaches its chat, after Twilio's
+  record check and after the sender's earlier message. One that a lock
+  overtook goes to the narrow chat instead: no full chat opens, no fixed line
+  says full access is on, and no full chat's held reply is sent.
 - A locked member keeps the narrow chat every member had before full access:
   replies, numbered questions and web search, at the chat address it always
   had, with no record check. Turn back on, one press on the Workspace page
