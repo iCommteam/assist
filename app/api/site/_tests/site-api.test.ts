@@ -697,6 +697,10 @@ describe("POST /api/site/tasks owner's note", () => {
       `חשבוניות${rightToLeftMark}https://platform.openai.com/billing${rightToLeftMark} ← חיוב`,
     ],
     [
+      "a mark between a word and an address on the fence",
+      `שלב 2.${rightToLeftMark}https://platform.openai.com/billing`,
+    ],
+    [
       "an address on the fence inside another's query",
       "https://openai.com/a?next=https://platform.openai.com/b",
     ],

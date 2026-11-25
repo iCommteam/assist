@@ -175,9 +175,10 @@ async function resolveLoginPin(
 // or parentheses is checked too. An address is a scheme, a colon and two
 // slashes, backslashes counted as slashes as the URL parser counts them. Its
 // scheme must be https, as TEEMIQ requires, and its host on the fence the
-// browser worker keeps for the login, which refuses Amazon before it. An
-// address that does not parse, or carries a user name or password, names no
-// page on it.
+// browser worker keeps for the login, which refuses Amazon before it. A word
+// a removed mark joined to the scheme, such as "2.https", still checks the
+// host. An address that does not parse, or carries a user name or password,
+// names no page on it.
 function isNoteOnFence(
   note: string,
   login: z.infer<typeof siteLoginPinSchema>
@@ -185,10 +186,9 @@ function isNoteOnFence(
   const fence = siteNavigationFence(login.origin, login.alsoHosts);
   const text = noteAsRead(note);
   return [...text.matchAll(/:[/\\]{2}/gu)].every(({ index }) => {
-    const scheme = /[\d+.a-z-]*$/iu.exec(text.slice(0, index))?.[0] ?? "";
-    if (scheme.toLowerCase() !== "https") return false;
+    if (!/https$/iu.test(text.slice(0, index))) return false;
     const address = (
-      /^\S*/u.exec(text.slice(index - scheme.length))?.[0] ?? ""
+      /^\S*/u.exec(text.slice(index - "https".length))?.[0] ?? ""
     ).replace(/[.,;:!?'"’”»)\]}>]+$/u, "");
     if (!URL.canParse(address)) return false;
     const { hostname, password, username } = new URL(address);
