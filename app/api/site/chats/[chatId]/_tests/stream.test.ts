@@ -210,6 +210,69 @@ describe("site chat stream", () => {
     expect(JSON.stringify(lines)).not.toMatch(/secret|not-a-fetch|p-1/u);
   });
 
+  it("names a way a supplier's invoice comes that the agent proposed, by its id and one line of why, and nothing else of the answer", () => {
+    const wayTool = "teemiq__finance_propose_invoice_way";
+    const lines = linesOf([
+      [turnStarted, runRequested],
+      call(
+        "call-way",
+        wayTool,
+        { counterpartyId: "secret-input", note: "secret note input" },
+        {
+          arrives: "site",
+          note: "secret note output",
+          state: "proposed",
+          supplierName: "secret supplier",
+          wayId: "00000000-0000-4000-8000-0000000000f1",
+          why: "You said\nOpenAI's invoices are on\tits billing page.",
+        }
+      ),
+      call(
+        "call-text",
+        wayTool,
+        {},
+        JSON.stringify({
+          wayId: "way-2",
+          why: `Long${rightToLeftOverride} ${"w".repeat(600)}`,
+        })
+      ),
+      call(
+        "call-blank",
+        wayTool,
+        {},
+        { wayId: "way-3", why: ` \n${rightToLeftOverride} ` }
+      ),
+      call("call-no-why", wayTool, {}, { wayId: "way-4" }),
+      call("call-bad-id", wayTool, {}, { wayId: "secret id!", why: "Bad id." }),
+      call(
+        "call-nested",
+        wayTool,
+        {},
+        { way: { wayId: "way-5", why: "Nested." } }
+      ),
+      call("call-text-bad", wayTool, {}, "secret text that is not JSON"),
+      call(
+        "call-other",
+        "teemiq__finance_suppliers",
+        {},
+        { wayId: "way-6", why: "Not a way." }
+      ),
+    ]);
+
+    expect(lines.map(({ cursor: _cursor, ...line }) => line)).toEqual([
+      {
+        type: "way",
+        v: 1,
+        wayId: "00000000-0000-4000-8000-0000000000f1",
+        why: "You said OpenAI's invoices are on its billing page.",
+      },
+      { type: "way", v: 1, wayId: "way-2", why: `Long ${"w".repeat(494)}…` },
+    ]);
+    expect(JSON.stringify(lines)).not.toMatch(
+      /secret|Bad id|Nested|Not a way|way-[3-6]/u
+    );
+  });
+
   it("names the supplier a look or a fetch found no saved account for, with its guessed site, its line and other hosts, and nothing else of the answer", () => {
     const lines = linesOf([
       [turnStarted, runRequested],

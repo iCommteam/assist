@@ -11,9 +11,10 @@ import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 // conversation, folded from eve's events by allow-list. Tool inputs and
 // outputs never leave assist, except the fields a site acts on: the id of a
 // look or fetch it started, the supplier (and its line) a look or a fetch
-// found no saved account for, and a proposed pairing. Every line carries the version, and
-// every line but a heartbeat the eve line it came from, so a reader that lost
-// its connection resumes after the last one it read.
+// found no saved account for, a proposed pairing, and a proposed way a
+// supplier's invoice comes. Every line carries the version, and every line
+// but a heartbeat the eve line it came from, so a reader that lost its
+// connection resumes after the last one it read.
 const chatStreamVersion = 1;
 
 const resultOpen = "<teemiq-result>";
@@ -50,6 +51,7 @@ const fetchTools = new Set([
   "teemiq__finance_site_look",
 ]);
 const proposalTool = "teemiq__finance_propose_pairing";
+const wayTool = "teemiq__finance_propose_invoice_way";
 const idSchema = z
   .string()
   .trim()
@@ -81,6 +83,10 @@ const proposalOutputSchema = z.looseObject({
   txnId: idSchema,
   why: z.string().trim().min(1),
 });
+// How a supplier's invoice comes, as TEEMIQ stored the agent's proposal: the
+// site draws its card from the stored row by this id, never from the
+// model's words, so only the id and the one line of why are read.
+const wayOutputSchema = z.looseObject({ wayId: idSchema, why: z.string() });
 
 const callRequestedSchema = z.object({
   data: z.object({
@@ -154,6 +160,7 @@ type ChatLine =
       readonly type: "proposal";
       readonly why: string;
     }
+  | { readonly type: "way"; readonly wayId: string; readonly why: string }
   | { readonly type: "done" }
   | { readonly code: ChatErrorCode; readonly type: "error" };
 
@@ -302,6 +309,14 @@ function settledLines(
         why: plainLine(why, maxWhyLength),
       },
     ];
+  }
+  if (tool === wayTool) {
+    const way = wayOutputSchema.safeParse(structured(output));
+    if (!way.success) return [];
+    // A why that is empty once made one line says nothing, so it yields no
+    // line.
+    const why = plainLine(way.data.why, maxWhyLength);
+    return why === "" ? [] : [{ type: "way", wayId: way.data.wayId, why }];
   }
   return [];
 }

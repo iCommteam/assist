@@ -603,6 +603,7 @@ then closes: open it again after a short wait.
 | `fetch`     | `fetchId`: a look or a fetch the agent started through TEEMIQ's tools                                          |
 | `account`   | `supplierName`; `guessedSite`, `txnId` and `alsoHosts` when TEEMIQ gave them: no saved account to use          |
 | `proposal`  | `txnId`, `documentId`, `why`: a pairing the agent proposed, for a person to confirm                            |
+| `way`       | `wayId`, `why`: a way a supplier's invoice comes that the agent proposed, for a person to save                 |
 | `done`      | a turn ended                                                                                                   |
 | `error`     | `code`: `usage_limit`, `needs_person` (stopped at an approval or a sign-in), `cancelled`, `failed`, or `ended` |
 | `heartbeat` | none; sent first when the chat has no message yet, and after 15 quiet seconds                                  |
@@ -613,8 +614,15 @@ instead of starting it; the site shows the person its Add an account form,
 for that line when `txnId` is given. The name and the site are each one line
 of plain text, at most 200 and 300 characters; `txnId` is an id, and
 `alsoHosts` at most three bare host names, the other sites the guess said the
-supplier's billing uses, which the form shows before saving. No tool's input
-or output leaves assist beyond those fields.
+supplier's billing uses, which the form shows before saving.
+
+A `way` line comes from TEEMIQ's `finance_propose_invoice_way`, which stores
+a proposal of how an existing supplier's invoice comes and answers
+`{"wayId":"…","why":"…"}`. `wayId` is an id and `why` one line of plain text
+of at most 500 characters; an answer without both, or whose `why` is empty
+once made one line, yields no line. The site draws the proposal's card from
+the way it stored under that id, never from the agent's words. No tool's
+input or output leaves assist beyond those fields.
 
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to
