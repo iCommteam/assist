@@ -910,6 +910,9 @@ describe("POST /api/site/tasks owner's note", () => {
     ["a scheme with one slash", "https:/evil.example/invoices"],
     ["a scheme with one backslash", String.raw`https:\evil.example/invoices`],
     ["plain http with no slashes", "http:evil.example/invoices"],
+    // The scheme's ASCII letters in any case.
+    ["a scheme in capitals with no slashes", "HTTPS:evil.example/billing"],
+    ["plain http in capitals with no slashes", "HTTP:evil.example"],
     [
       "a scheme with one slash inside another's query",
       "https://openai.com/login?next=https:/evil.example",
@@ -930,6 +933,9 @@ describe("POST /api/site/tasks owner's note", () => {
       "a scheme of letters, a colon and slashes that only look like https://",
       "ｈｔｔｐｓ：／／evil.example",
     ],
+    // As read, neither has a scheme or two slashes; folded, each does.
+    ["a scheme with a fullwidth colon", "https：evil.example"],
+    ["two fullwidth slashes with no scheme", "／／evil.example/invoices"],
   ])(
     "refuses a note naming %s with invalid_input, starting nothing and counting nothing",
     async (_case, note) => {
