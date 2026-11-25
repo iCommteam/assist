@@ -392,29 +392,37 @@ export async function runQuery(
   );
   const bytes = checkDryRun(config, dryRun);
 
+  // The job's id is chosen here, so a job whose start or wait fails, times
+  // out or is cancelled can be cancelled by it.
   const jobId = `assist_${randomUUID().replaceAll("-", "")}`;
-  const job = jobSchema.parse(
-    await call(config, {
-      body: {
-        configuration: {
-          jobTimeoutMs: String(queryTimeoutMs),
-          labels: input.labels,
-          query: { ...query, maximumBytesBilled: String(config.maxBytes) },
+  let results: z.infer<typeof resultsSchema>;
+  try {
+    const job = jobSchema.parse(
+      await call(config, {
+        body: {
+          configuration: {
+            jobTimeoutMs: String(queryTimeoutMs),
+            labels: input.labels,
+            query: { ...query, maximumBytesBilled: String(config.maxBytes) },
+          },
+          jobReference: { jobId, location, projectId: config.project },
         },
-        jobReference: { jobId, location, projectId: config.project },
-      },
-      method: "POST",
-      path: "/jobs",
-      signal,
-    })
-  );
-  if (job.status?.errorResult) {
-    throw new BigqueryError(
-      `BigQuery: ${cleaned(job.status.errorResult.message, config, undefined)}`
+        method: "POST",
+        path: "/jobs",
+        signal,
+      })
     );
+    if (job.status?.errorResult) {
+      throw new BigqueryError(
+        `BigQuery: ${cleaned(job.status.errorResult.message, config, undefined)}`
+      );
+    }
+    results = await waitForResults(config, jobId, signal);
+  } catch (error) {
+    await cancelJob(config, jobId);
+    throw error;
   }
 
-  const results = await waitForResults(config, jobId, signal);
   const fields = results.schema?.fields ?? [];
   const rows = (results.rows ?? [])
     .slice(0, maxQueryRows)
@@ -488,40 +496,36 @@ function gibibytes(bytes: number) {
   return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
 }
 
-// The first page of the job's results, waiting at most 60 seconds from the
-// start; a job still running then is cancelled.
+// The first page of the job's results, once BigQuery says the job is
+// complete, waiting at most 60 seconds from the start; the caller cancels a
+// job still running then.
 async function waitForResults(
   config: BigqueryConfig,
   jobId: string,
   signal: AbortSignal
 ) {
   const deadline = Date.now() + queryTimeoutMs;
-  try {
-    for (;;) {
-      const results = resultsSchema.parse(
-        // oxlint-disable-next-line eslint/no-await-in-loop -- Each read waits on BigQuery until the job completes.
-        await call(config, {
-          method: "GET",
-          path: `/queries/${encodeURIComponent(jobId)}`,
-          query: {
-            "formatOptions.useInt64Timestamp": "true",
-            location: config.location,
-            maxResults: String(maxQueryRows),
-            timeoutMs: String(resultsWaitMs),
-          },
-          signal,
-        })
+  for (;;) {
+    const results = resultsSchema.parse(
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each read waits on BigQuery until the job completes.
+      await call(config, {
+        method: "GET",
+        path: `/queries/${encodeURIComponent(jobId)}`,
+        query: {
+          "formatOptions.useInt64Timestamp": "true",
+          location: config.location,
+          maxResults: String(maxQueryRows),
+          timeoutMs: String(resultsWaitMs),
+        },
+        signal,
+      })
+    );
+    if (results.jobComplete === true) return results;
+    if (Date.now() >= deadline) {
+      throw new BigqueryError(
+        `The query ran longer than ${String(queryTimeoutMs / 1000)} seconds and was stopped. Make it smaller.`
       );
-      if (results.jobComplete !== false) return results;
-      if (Date.now() >= deadline) {
-        throw new BigqueryError(
-          `The query ran longer than ${String(queryTimeoutMs / 1000)} seconds and was stopped. Make it smaller.`
-        );
-      }
     }
-  } catch (error) {
-    await cancelJob(config, jobId);
-    throw error;
   }
 }
 
@@ -566,13 +570,18 @@ function cellOf(
   }
   const text = z.string().safeParse(value);
   if (!text.success) return null;
-  if (field.type === "TIMESTAMP") return isoOfMicros(text.data);
+  if (field.type === "TIMESTAMP") return isoOfTimestamp(text.data);
   return bounded(text.data, maxCellLength);
 }
 
-function isoOfMicros(micros: string) {
-  const millis = Number(micros) / 1000;
-  return Number.isFinite(millis) ? new Date(millis).toISOString() : micros;
+// The results are asked for with useInt64Timestamp, so a timestamp is whole
+// microseconds; without it BigQuery writes seconds as a float, such as
+// 1.764E9, which is read as seconds.
+function isoOfTimestamp(value: string) {
+  const millis = /^-?\d+$/u.test(value)
+    ? Number(value) / 1000
+    : Number(value) * 1000;
+  return Number.isFinite(millis) ? new Date(millis).toISOString() : value;
 }
 
 function isoOfMillis(millis: string) {

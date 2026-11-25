@@ -201,6 +201,7 @@ const calls: Call[] = [];
 let dryRun: DryRunAnswer;
 let results: () => Response;
 let refusal: Response | undefined;
+let runAnswer: () => Response;
 
 function allowedDryRun(overrides: DryRunQuery = {}): DryRunAnswer {
   return {
@@ -258,6 +259,7 @@ beforeEach(() => {
   calls.length = 0;
   signIn.failure = undefined;
   refusal = undefined;
+  runAnswer = () => Response.json({ status: { state: "RUNNING" } });
   dryRun = allowedDryRun();
   results = resultsWith(2);
   vi.restoreAllMocks();
@@ -276,7 +278,7 @@ beforeEach(() => {
       const path = url.pathname.replace(`/bigquery/v2/projects/${project}`, "");
       if (method === "POST" && path === "/jobs") {
         if (body.includes('"dryRun":true')) return Response.json(dryRun);
-        return Response.json({ status: { state: "RUNNING" } });
+        return runAnswer();
       }
       if (method === "POST" && path.endsWith("/cancel")) {
         return Response.json({});
@@ -657,6 +659,7 @@ describe("bigquery_query", () => {
               { v: [{ v: "a" }, { v: "b" }] },
             ],
           },
+          { f: [{ v: "1.764E9" }, { v: null }, { v: [] }] },
         ],
         schema: {
           fields: [
@@ -672,11 +675,13 @@ describe("bigquery_query", () => {
             { mode: "REPEATED", name: "tags", type: "STRING" },
           ],
         },
-        totalRows: "1",
+        totalRows: "2",
       });
 
     const output = await run(await tool("bigquery_query"), { sql });
 
+    // The second timestamp is seconds as a float, as BigQuery writes one
+    // when the integer format is not applied.
     expect(output).toMatchObject({
       rows: [
         [
@@ -684,6 +689,7 @@ describe("bigquery_query", () => {
           { asin: "B0TEST0001", parent: null },
           ["a", "b"],
         ],
+        ["2025-11-24T16:00:00.000Z", null, []],
       ],
     });
   });
@@ -702,6 +708,40 @@ describe("bigquery_query", () => {
     const cancel = calls.find(({ url }) => url.pathname.endsWith("/cancel"));
     expect(cancel?.method).toBe("POST");
     expect(cancel?.url.searchParams.get("location")).toBe("europe-central2");
+  });
+
+  it("keeps waiting on a page that does not say the job is complete, and never reads it as an empty result", async () => {
+    let clock = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => {
+      clock += 25_000;
+      return clock;
+    });
+    results = () => Response.json({ rows: [], totalRows: "0" });
+
+    await expect(run(await tool("bigquery_query"), { sql })).rejects.toThrow(
+      "The query ran longer than 60 seconds and was stopped."
+    );
+    expect(
+      calls.filter(({ url }) => url.pathname.includes("/queries/")).length
+    ).toBeGreaterThan(1);
+  });
+
+  it("cancels the job by its own id when its start fails", async () => {
+    runAnswer = () =>
+      Response.json(
+        { error: { code: 503, message: "Backend error." } },
+        { status: 503 }
+      );
+
+    await expect(run(await tool("bigquery_query"), { sql })).rejects.toThrow(
+      "BigQuery: Backend error."
+    );
+    const jobId = jobBodySchema.parse(JSON.parse(runsPosted()[0]?.body ?? "{}"))
+      .jobReference.jobId;
+    const cancel = calls.find(({ url }) => url.pathname.endsWith("/cancel"));
+    expect(cancel?.url.pathname).toBe(
+      `/bigquery/v2/projects/${project}/jobs/${jobId ?? ""}/cancel`
+    );
   });
 });
 
