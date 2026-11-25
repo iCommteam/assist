@@ -479,8 +479,12 @@ letters folded as TEEMIQ folds them (NFKC, with what shows nothing taken out
 before and after), so a fullwidth or small `@` or dot, as in
 `billing＠vendor．example`, hides none.
 
-Every address in the note is checked wherever a URL parser would start one,
-so one inside another's query, path or parentheses is checked too. The note
+Every `http:` or `https:` in the note, and every pair of slashes, is checked
+wherever it stands, so an address inside another's query, path or
+parentheses is checked too. Another scheme written without two slashes
+(`ftp:host`, `wss:/host`) is not looked at here: like a bare host, it is left
+to the browser's fence, which opens only `http` and `https` addresses inside
+the fence and never Amazon. The note
 is checked as it reads, with its direction marks taken out (the note itself
 keeps them), and again with its look-alike letters folded as above, so a
 fullwidth colon or slash hides no address: `ｈｔｔｐｓ：／／host` is checked as
