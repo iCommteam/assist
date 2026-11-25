@@ -717,6 +717,38 @@ describe("bigquery_query", () => {
     expect(jobsPosted()).toEqual([]);
   });
 
+  // Each could end a comment where this check does not, so that an escaped
+  // name after it reads as code to BigQuery and as comment here.
+  it.each([
+    ["a lone carriage return", "\r"],
+    ["a vertical tab", "\v"],
+    ["a form feed", "\f"],
+    ["a next-line character", String.fromCodePoint(0x85)],
+    ["a line separator", String.fromCodePoint(0x20_28)],
+    ["a paragraph separator", String.fromCodePoint(0x20_29)],
+  ])(
+    "refuses a query that breaks a line with %s, and runs nothing",
+    async (_case, lineBreak) => {
+      const text = `SELECT 1 FROM ${listings} -- x${lineBreak} CROSS JOIN \`amzbi-418608.icommsync_amazon_data.INFORMATION\\x5fSCHEMA.TABLES\``;
+
+      await expect(
+        run(await tool("bigquery_query"), { sql: text })
+      ).rejects.toThrow(
+        "Refused: the query breaks a line with something other than a newline."
+      );
+      expect(jobsPosted()).toEqual([]);
+    }
+  );
+
+  it("runs a query written with Windows line breaks", async () => {
+    const text = `SELECT brand -- the brand\r\nFROM ${listings}\r\nLIMIT 10`;
+
+    await expect(
+      run(await tool("bigquery_query"), { sql: text })
+    ).resolves.toMatchObject({ totalRows: 2 });
+    expect(runsPosted()).toHaveLength(1);
+  });
+
   it("runs a query whose words only look like a refused name: a model column, an html alias, a regular expression and comment marks in strings", async () => {
     const text = `SELECT model, html.title, 'a -- b # c' AS note FROM ${listings} AS html WHERE model IS NOT NULL AND REGEXP_CONTAINS(html.sku, r'^B0\\w+') -- the listings
 LIMIT 10`;

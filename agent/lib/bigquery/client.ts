@@ -518,6 +518,14 @@ const refusedNames = [
 ] as const;
 
 function checkText(sql: string) {
+  // A comment runs to the end of its line, so the only line break is a
+  // newline: one BigQuery may read differently, such as a lone carriage
+  // return, could end a comment early and hide code from this check.
+  if (/\r(?!\n)|[\v\f\x85\p{Zl}\p{Zp}]/u.test(sql)) {
+    throw new BigqueryError(
+      "Refused: the query breaks a line with something other than a newline. Write it with plain newlines."
+    );
+  }
   const code = codeOf(sql);
   if (code === undefined) {
     throw new BigqueryError(

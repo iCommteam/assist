@@ -884,7 +884,9 @@ The agent gets three tools:
   `ML.`, `AI.` or `OBJ.` function or a `MODEL`, `GRAPH_TABLE` or
   `SESSION_USER` is refused, read with its comments taken out and its
   backquotes and the spaces around dots dropped, and so is a backquoted name
-  with a backslash, which could spell one of them. A dry run then checks it:
+  with a backslash, which could spell one of them, or a line broken with
+  anything but a newline, which could end a comment early. A dry run then
+  checks it:
   it must be one `SELECT`, it must read at least one table, every table,
   view, property graph and routine it reads must be in an allowed dataset of
   the project, and it must read at most `ASSIST_BIGQUERY_MAX_BYTES`. Every
