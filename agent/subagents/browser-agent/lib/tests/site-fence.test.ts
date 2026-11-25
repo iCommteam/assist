@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { sitePrincipal } from "@agent/lib/site-principal";
 import { accessScopeForUser } from "@shared/identity/access-scope";
-import { amazonUrlBlocklist, stripeInvoiceHosts } from "@shared/browser/hosts";
 import {
-  assertNavigableUrl,
-  browserChromePolicy,
+  amazonUrlBlocklist,
   isInsideFence,
   isOnLoginSite,
   siteNavigationFence,
+  stripeInvoiceHosts,
+} from "@shared/browser/hosts";
+import {
+  assertNavigableUrl,
+  browserChromePolicy,
   workerNavigationFence,
 } from "../policy/hosts";
 

@@ -14,6 +14,11 @@ import type { readSiteLoginPin } from "@db/services/vault";
 import type { closeLeftLoginWriters } from "@web/browser/login-profile";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { verifySiteCredential } from "@shared/identity/site-credential";
+import {
+  isAmazonHost,
+  isInsideFence,
+  siteNavigationFence,
+} from "@shared/browser/hosts";
 import { openSiteCode } from "@shared/identity/site-code/seal";
 import { eventsOf } from "@tests/helpers/session-view";
 
@@ -610,6 +615,213 @@ describe("POST /api/site/tasks login pin", () => {
       "[site] task login could not be read",
       { error: "Error", site: "teemiq" }
     );
+  });
+});
+
+describe("POST /api/site/tasks owner's note", () => {
+  const openai = {
+    alsoHosts: ["chatgpt.com"],
+    id: "login-1",
+    origin: "https://auth.openai.com",
+  };
+  const rightToLeftMark = String.fromCodePoint(0x20_0f);
+
+  beforeEach(() => {
+    services.readSiteLoginPin.mockResolvedValue(openai);
+  });
+
+  function startWithNote(note: NoteInput, fields: { kind?: string } = {}) {
+    return createTask(
+      siteRequest("/tasks", teemiqToken, {
+        ...fields,
+        loginId: "login-1",
+        message: "Fetch the October invoice.",
+        note,
+      })
+    );
+  }
+
+  it("carries the note of a pinned task in its grant, trimmed, for a fetch and a look", async () => {
+    const note =
+      "Billing → Invoice history at https://platform.openai.com/settings/organization/billing; the invoice, not the receipt.";
+
+    const fetch = await startWithNote(`  ${note} `);
+    const fetchGrant = await grantOfLastClient();
+    const look = await startWithNote(note, { kind: "look" });
+
+    expect(fetch.status).toBe(202);
+    expect(fetchGrant).toEqual({
+      login: openai,
+      note,
+      op: "create",
+      site: "teemiq",
+    });
+    expect(look.status).toBe(202);
+    expect(await grantOfLastClient()).toEqual({
+      kind: "look",
+      login: openai,
+      note,
+      op: "create",
+      site: "teemiq",
+    });
+    // The note goes to the instructions, never into the task's message.
+    expect(eve.create).toHaveBeenLastCalledWith({
+      message: "Fetch the October invoice.",
+    });
+  });
+
+  it.each([
+    ["left out", undefined],
+    ["null", null],
+  ])("sends no note when it is %s", async (_case, note) => {
+    const response = await startWithNote(note);
+
+    expect(response.status).toBe(202);
+    expect(await grantOfLastClient()).not.toHaveProperty("note");
+  });
+
+  it.each([
+    ["300 characters", "x".repeat(300)],
+    ["Hebrew with its marks", `חשבוניות${rightToLeftMark} ← הגדרות → חיוב`],
+    ["a word that only looks like an address", "billing @ settings, not ops@"],
+    ["the login's own domain", "https://openai.com"],
+    ["a host under it", "(https://platform.openai.com/account/billing)."],
+    ["a host the login also uses", "https://chatgpt.com/#settings/billing"],
+    ["Stripe's billing portal", "HTTPS://billing.stripe.com/p/login/abc"],
+    ["an address without a scheme", "evil.example/invoices"],
+  ])("starts a task whose note has %s", async (_case, note) => {
+    const response = await startWithNote(note);
+
+    expect(response.status).toBe(202);
+    expect(await grantOfLastClient()).toMatchObject({ note: note.trim() });
+  });
+
+  it.each([
+    ["an empty note", ""],
+    ["a blank note", "   "],
+    ["301 characters", "x".repeat(301)],
+    ["a number", 42],
+    ["an object", { text: "Billing" }],
+    ["a line feed", "Billing\nInvoices"],
+    ["a trailing line feed", "Billing → Invoices\n"],
+    ["a carriage return", "Billing\rInvoices"],
+    ["a tab", "Billing\tInvoices"],
+    ["a NUL", `Billing${String.fromCodePoint(0)}`],
+    ["a C1 control", `Billing${String.fromCodePoint(0x85)}Invoices`],
+    ["a line separator", `Billing${String.fromCodePoint(0x20_28)}Invoices`],
+    ["a right-to-left override", `${String.fromCodePoint(0x20_2e)}Billing`],
+    ["a left-to-right embedding", `${String.fromCodePoint(0x20_2a)}Billing`],
+    ["a left-to-right isolate", `${String.fromCodePoint(0x20_66)}Billing`],
+    ["a pop directional isolate", `Billing${String.fromCodePoint(0x20_69)}`],
+    ["an email address", "Invoices go to billing@vendor.example"],
+    ["a Hebrew email address", "הכתובת: חשבונות@ספק.co.il"],
+  ])(
+    "refuses %s with invalid_input before any lookup, starting nothing",
+    async (_case, note) => {
+      const response = await startWithNote(note);
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: "invalid_input",
+      });
+      expect(services.readSiteLoginPin).not.toHaveBeenCalled();
+      expect(eve.create).not.toHaveBeenCalled();
+      expect(services.closeLeftLoginWriters).not.toHaveBeenCalled();
+    }
+  );
+
+  it("refuses a note on a task with no pin, which has no account for it", async () => {
+    const response = await createTask(
+      siteRequest("/tasks", teemiqToken, {
+        message: "Fetch the October invoice.",
+        note: "Billing → Invoice history",
+      })
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_input" });
+    expect(eve.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["another site", "https://evil.example/invoices"],
+    [
+      "a host that only starts like the login's",
+      "https://openai.com.evil.example/",
+    ],
+    ["user info, even on the login's own host", "https://billing:@openai.com/"],
+    ["backslashes for slashes", String.raw`https:\\evil.example\invoices`],
+    ["an Amazon host", "https://sellercentral.amazon.com/billing"],
+    ["an address that does not parse", "Start at https://[openai.com/billing"],
+    [
+      "one address of two outside",
+      "https://openai.com then https://evil.example",
+    ],
+    ["a subdomain of a host the login also uses", "https://www.chatgpt.com/"],
+  ])(
+    "refuses a note naming %s with invalid_input, starting nothing and counting nothing",
+    async (_case, note) => {
+      const refused = await Promise.all(
+        Array.from({ length: 11 }, () => startWithNote(note))
+      );
+
+      expect(refused.map(({ status }) => status)).toEqual(
+        Array.from({ length: 11 }, () => 400)
+      );
+      await expect(refused[0]?.json()).resolves.toEqual({
+        error: "invalid_input",
+      });
+      expect(eve.create).not.toHaveBeenCalled();
+      expect(services.ensureScope).not.toHaveBeenCalled();
+      expect(services.closeLeftLoginWriters).not.toHaveBeenCalled();
+      expect(services.listSiteTasksOfLogin).not.toHaveBeenCalled();
+      expect((await startWithNote("Billing")).status).toBe(202);
+    }
+  );
+
+  it("takes exactly the hosts the browser worker's fence opens for the login", async () => {
+    const fence = siteNavigationFence(openai.origin, openai.alsoHosts);
+    const hosts = [
+      "auth.openai.com",
+      "OPENAI.COM",
+      "platform.openai.com.",
+      "chatgpt.com",
+      "files.stripe.com",
+      "stripe.com",
+      "dashboard.stripe.com",
+      "www.chatgpt.com",
+      "openai.co",
+      "amazon.com",
+    ];
+
+    const statuses: Record<string, number> = {};
+    /* oxlint-disable eslint/no-await-in-loop -- One start at a time keeps the login's lock out of it. */
+    for (const host of hosts) {
+      statuses[host] = (await startWithNote(`https://${host}/billing`)).status;
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+
+    expect(statuses).toEqual(
+      Object.fromEntries(
+        hosts.map((host) => [
+          host,
+          !isAmazonHost(host) && isInsideFence(host, fence) ? 202 : 400,
+        ])
+      )
+    );
+    expect(
+      Object.values(statuses).filter((status) => status === 202)
+    ).toHaveLength(5);
+  });
+
+  it("starts a note that asks for a forbidden act: what a task may do is the instructions' and the fence's to decide", async () => {
+    const note =
+      "Pay the open invoice, then change the billing email and delete the old receipts.";
+
+    const response = await startWithNote(note);
+
+    expect(response.status).toBe(202);
+    expect(await grantOfLastClient()).toMatchObject({ login: openai, note });
   });
 });
 
@@ -1902,7 +2114,7 @@ function inputRequest(token: string, body: string | undefined, id = taskId) {
 function siteRequest(
   path: string,
   token: string,
-  body?: { kind?: string; loginId?: string; message: string }
+  body?: { kind?: string; loginId?: string; message: string; note?: NoteInput }
 ) {
   return new Request(`https://assist.example/api/site${path}`, {
     ...(body
@@ -1915,6 +2127,9 @@ function siteRequest(
 function params(id: string) {
   return { params: Promise.resolve({ taskId: id }) };
 }
+
+// What a test sends as a task's note, the shapes a site might send included.
+type NoteInput = string | number | null | { text: string } | undefined;
 
 const authSecret = "test-auth-secret-0123456789abcdefghijklmnop";
 

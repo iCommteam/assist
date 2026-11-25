@@ -17,12 +17,13 @@ import {
   withBrowserLoopSessionLock,
 } from "@agent/subagents/browser-agent/lib/semantic-loop";
 import { trackToolTab } from "@agent/subagents/browser-agent/lib/tool-tabs";
+import { amazonPolicyRefusal } from "@agent/subagents/browser-agent/lib/policy/hosts";
 import {
-  amazonPolicyRefusal,
+  isAmazonHost,
   isInsideFence,
   siteNavigationFence,
-} from "@agent/subagents/browser-agent/lib/policy/hosts";
-import { isAmazonHost, stripeInvoiceHosts } from "@shared/browser/hosts";
+  stripeInvoiceHosts,
+} from "@shared/browser/hosts";
 import { assertWorkerNotBlocked } from "@agent/subagents/browser-agent/lib/policy/page-check";
 import {
   siteLoginOfSession,

@@ -7,6 +7,7 @@ import {
   siteOfSession,
   sitePrincipal,
   siteTaskKindOfSession,
+  siteTaskNoteOfSession,
 } from "@agent/lib/site-principal";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
@@ -215,5 +216,46 @@ describe("site principal", () => {
         },
       })
     ).toBeUndefined();
+  });
+
+  it("carries the owner's note of a pinned task on its initiator, and of no other", () => {
+    const note = "Billing → Invoice history; the invoice, not the receipt.";
+    const pinned = sitePrincipal(
+      { login, note, op: "create", site: "teemiq" },
+      "owner@example.test",
+      owner
+    );
+    const unpinned = sitePrincipal(
+      { note, op: "create", site: "teemiq" },
+      "owner@example.test",
+      owner
+    );
+    const without = sitePrincipal(
+      { login, op: "create", site: "teemiq" },
+      "owner@example.test",
+      owner
+    );
+
+    expect(pinned.attributes).toMatchObject({ siteTaskNote: note });
+    expect(siteTaskNoteOfSession(pinned)).toBe(note);
+    expect(Object.keys(unpinned.attributes)).not.toContain("siteTaskNote");
+    expect(siteTaskNoteOfSession(unpinned)).toBeUndefined();
+    expect(Object.keys(without.attributes)).not.toContain("siteTaskNote");
+    expect(siteTaskNoteOfSession(without)).toBeUndefined();
+    expect(siteTaskNoteOfSession(null)).toBeUndefined();
+    for (const initiator of [
+      { ...pinned, authenticator: "authjs" },
+      { ...pinned, authenticator: "assist-site-chat" },
+      {
+        ...pinned,
+        attributes: { ...pinned.attributes, siteTaskNote: "Billing\nPay it" },
+      },
+      {
+        ...pinned,
+        attributes: { ...pinned.attributes, siteTaskNote: ["Billing"] },
+      },
+    ]) {
+      expect(siteTaskNoteOfSession(initiator)).toBeUndefined();
+    }
   });
 });

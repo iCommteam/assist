@@ -7,7 +7,8 @@ import { loginAlsoHostsSchema, loginOriginSchema } from "@shared/vault/schema";
 // server-only BETTER_AUTH_SECRET, so neither a browser nor a site can mint one,
 // and it is bound to one site, one operation and, for a read or a cancel, one
 // session. A create may pin the task to one saved login, whose origin and
-// the hosts its site also uses the API resolved, and make it a look. An answer is bound to one
+// the hosts its site also uses the API resolved, carry the owner's note for
+// that login's account, and make it a look. An answer is bound to one
 // open question of one session. A chat grant names the site's person and the
 // chat as well, and covers only that chat's session.
 const credentialPrefix = "assist-site.v1.";
@@ -20,6 +21,26 @@ export const siteLoginPinSchema = z.strictObject({
   id: z.string().min(1).max(200),
   origin: loginOriginSchema,
 });
+
+// A control character, a line or paragraph separator, or a bidirectional
+// embedding, override or isolate. Marks such as U+200F stay: Hebrew text
+// carries them.
+const noteBreak = /[\p{Cc}\u2028\u2029\u202A-\u202E\u2066-\u2069]/u;
+const emailAddress =
+  /[^\s@<>()[\]{},;:"/\\]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+/u;
+
+// The owner's note for a pinned task's account, as the site's people saved
+// it: where the account keeps its documents and which of them to save. One
+// line of 1 to 300 characters once trimmed, with no email address, so no
+// username rides along. Its shape alone: the site API also checks that every
+// https address in it is on the login's fence.
+export const siteTaskNoteSchema = z
+  .string()
+  .refine((note) => !noteBreak.test(note))
+  .trim()
+  .min(1)
+  .max(300)
+  .refine((note) => !emailAddress.test(note));
 
 // The site's own id for the person a chat belongs to, such as a TEEMIQ user
 // id. It is opaque to assist.
@@ -62,6 +83,7 @@ const siteGrantSchema = z.discriminatedUnion("op", [
     // without a kind fetches.
     kind: z.literal("look").optional(),
     login: siteLoginPinSchema.optional(),
+    note: siteTaskNoteSchema.optional(),
     op: z.literal("create"),
     site: z.string().min(1),
   }),

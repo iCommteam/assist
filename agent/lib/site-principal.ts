@@ -4,6 +4,7 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import {
   isSiteChatGrant,
   siteLoginPinSchema,
+  siteTaskNoteSchema,
   siteUserSchema,
   type SiteGrant,
 } from "@shared/identity/site-credential";
@@ -16,8 +17,9 @@ const siteChatAuthenticator = "assist-site-chat";
 
 // The principal the eve channel gives a verified site credential. A create
 // grant's login pin becomes attributes of the session's initiator: its id, its
-// origin and, when it has any, the hosts its site also uses. A chat grant
-// records the chat and the site's person instead, and never a pin.
+// origin and, when it has any, the hosts its site also uses and the owner's
+// note for its account. A chat grant records the chat and the site's person
+// instead, and never a pin.
 export function sitePrincipal(
   grant: SiteGrant,
   email: string,
@@ -52,11 +54,16 @@ export function sitePrincipal(
       ? { ...pinned, siteLoginAlsoHosts: login.alsoHosts }
       : pinned
     : attributes;
+  // The owner's note belongs to the pinned login's account, so a task with
+  // no pin carries none.
+  const note = pinned && grant.op === "create" ? grant.note : undefined;
+  const withNote =
+    note === undefined ? withHosts : { ...withHosts, siteTaskNote: note };
   return {
     attributes:
       grant.op === "create" && grant.kind === "look"
-        ? { ...withHosts, siteTaskKind: "look" }
-        : withHosts,
+        ? { ...withNote, siteTaskKind: "look" }
+        : withNote,
     authenticator: siteAuthenticator,
     principalId: scope.userId,
     principalType: "user",
@@ -129,4 +136,13 @@ export function siteLoginOfSession(initiator: SessionAuthContext | null) {
   return login.success
     ? { ...login.data, alsoHosts: login.data.alsoHosts ?? [] }
     : undefined;
+}
+
+// The owner's note on where a pinned site task's account keeps its documents
+// and which of them to save, or undefined when the task has none, has no pin
+// or is not a site task. Like the pin, it is read from the initiator only.
+export function siteTaskNoteOfSession(initiator: SessionAuthContext | null) {
+  if (!siteLoginOfSession(initiator)) return undefined;
+  const note = siteTaskNoteSchema.safeParse(initiator?.attributes.siteTaskNote);
+  return note.success ? note.data : undefined;
 }

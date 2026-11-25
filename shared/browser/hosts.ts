@@ -1,6 +1,9 @@
+import { parse } from "tldts";
+
 // Hosts whose policy both the site API and the browser worker apply: Amazon,
 // which no browser opens, Stripe's invoice hosts, which a pinned site task
-// may open, and identity providers, which no site may save a login on.
+// may open, the fence of a task pinned to a login, and identity providers,
+// which no site may save a login on.
 
 // Chrome's URLBlocklist has no TLD wildcard, so each marketplace is listed. An
 // entry also blocks every subdomain, such as sellercentral, advertising and
@@ -76,6 +79,59 @@ export const stripeInvoiceHosts: readonly string[] = [
   "invoice.stripe.com",
   "pay.stripe.com",
 ];
+
+// A site task pinned to one saved login may open only that login's site: the
+// login's host and every host under its registrable domain, plus each host
+// the site saved the login with as one it also uses, and Stripe's invoice
+// hosts, those exact hosts alone. Private suffixes count as public ones, so a
+// portal on shop.myshopify.com does not open every other shop there. An IP
+// address, or a host with no registrable domain such as localhost or a bare
+// public suffix, allows only itself. A login on Amazon opens nothing at all,
+// and an Amazon host is never one its login also uses: a more specific
+// allowlist entry would outrank Chrome's Amazon block.
+export function siteNavigationFence(
+  loginOrigin: string,
+  loginAlsoHosts: readonly string[] = []
+) {
+  const host = normalizedHost(new URL(loginOrigin).hostname);
+  const { domain, isIp } = parse(host, { allowPrivateDomains: true });
+  const site = isIp
+    ? { domain: host, subdomains: false, urlFilter: host }
+    : domain
+      ? { domain, subdomains: true, urlFilter: domain }
+      : { domain: host, subdomains: false, urlFilter: `.${host}` };
+  const alsoHosts = isAmazonHost(site.domain)
+    ? []
+    : loginAlsoHosts.map(normalizedHost).filter((also) => !isAmazonHost(also));
+  return {
+    ...site,
+    alsoHosts,
+    hosts: isAmazonHost(site.domain)
+      ? []
+      : [...alsoHosts, ...stripeInvoiceHosts],
+  };
+}
+
+type SiteNavigationFence = ReturnType<typeof siteNavigationFence>;
+
+// Whether a fenced task may open a host; Amazon is refused before this.
+export function isInsideFence(hostname: string, fence: SiteNavigationFence) {
+  return (
+    isOnLoginSite(hostname, fence) ||
+    fence.hosts.includes(normalizedHost(hostname))
+  );
+}
+
+// Whether a host is the login's own site: under its registrable domain, or
+// one of the hosts the login also uses. Stripe's hosts are not.
+export function isOnLoginSite(hostname: string, fence: SiteNavigationFence) {
+  const host = normalizedHost(hostname);
+  return (
+    host === fence.domain ||
+    (fence.subdomains && host.endsWith(`.${fence.domain}`)) ||
+    fence.alsoHosts.includes(host)
+  );
+}
 
 // A login saved on an identity provider would hand the agent a company's
 // whole identity, so a site saves none there, as its origin or as a host its

@@ -4,6 +4,7 @@ import {
   siteLoginOfSession,
   siteOfSession,
   siteTaskKindOfSession,
+  siteTaskNoteOfSession,
 } from "@agent/lib/site-principal";
 import loginFetch from "./content/site-documents/login-fetch.md?raw";
 import loginLook from "./content/site-documents/login-look.md?raw";
@@ -19,6 +20,10 @@ const documentsOf = {
   look: { login: loginLook, task: taskLook },
 } as const;
 
+// The one line the owner's note becomes, which the coordinator copies word
+// for word into the worker's assignment.
+const noteLead = "Where to look, as the owner noted for this account: ";
+
 export default defineDynamic((context) => {
   const { initiator } = context.session.auth;
   // A site chat has its own role instead.
@@ -30,15 +35,18 @@ export default defineDynamic((context) => {
   const task = siteTask
     .replaceAll("{{site}}", site)
     .replace("{{documents}}", documents.task.trimEnd());
+  if (!login) return defineInstructions({ content: task });
+  const pinned = siteLogin
+    .replace("{{documents}}", documents.login.trimEnd())
+    .replaceAll("{{origin}}", login.origin)
+    .replaceAll(
+      "{{alsoHosts}}",
+      login.alsoHosts.map((host) => `\`${host}\``).join(", ") || "none"
+    );
+  // Added after every substitution, so the note's text stays as it was
+  // saved.
+  const note = siteTaskNoteOfSession(initiator);
   return defineInstructions({
-    content: login
-      ? `${task}\n${siteLogin
-          .replace("{{documents}}", documents.login.trimEnd())
-          .replaceAll("{{origin}}", login.origin)
-          .replaceAll(
-            "{{alsoHosts}}",
-            login.alsoHosts.map((host) => `\`${host}\``).join(", ") || "none"
-          )}`
-      : task,
+    content: `${task}\n${pinned}${note === undefined ? "" : `\n${noteLead}${note}\n`}`,
   });
 });

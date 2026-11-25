@@ -3,8 +3,17 @@ import { ensureScope } from "@db/services/scope";
 import { recordSiteTask } from "@db/services/sites";
 import { readSiteLoginPin } from "@db/services/vault";
 import { closeLeftLoginWriters } from "@web/browser/login-profile";
+import {
+  isAmazonHost,
+  isInsideFence,
+  siteNavigationFence,
+} from "@shared/browser/hosts";
 import type { AccessScope } from "@shared/identity/access-scope";
-import { siteLoginPinSchema } from "@shared/identity/site-credential";
+import {
+  siteLoginPinSchema,
+  siteTaskNoteSchema,
+  type SiteGrant,
+} from "@shared/identity/site-credential";
 import {
   authenticateSiteRequest,
   siteError,
@@ -26,8 +35,13 @@ const taskInputSchema = z.object({
     .min(1)
     .max(8000)
     .refine((message) => message.trim().length > 0),
+  // Read on its own below, since a note that fails has its own answer.
+  note: z.unknown().optional(),
 });
 const loginIdSchema = siteLoginPinSchema.shape.id;
+// The owner's note for the pinned login's account, which a site sends with
+// a task on that login; leaving it out, or null, sends none.
+const noteInputSchema = siteTaskNoteSchema.nullish();
 
 export async function POST(request: Request) {
   const caller = await authenticateSiteRequest(request);
@@ -36,23 +50,36 @@ export async function POST(request: Request) {
     await readSiteJsonBody(request, maxBodyBytes)
   );
   if (!input.success) return siteError(400, "invalid_request");
+  // A note is checked before anything is looked up or started, and only a
+  // pinned task has an account, and a fence, for it to be about.
+  const noteInput = noteInputSchema.safeParse(input.data.note);
+  const note = noteInput.data ?? undefined;
+  if (
+    !noteInput.success ||
+    (note !== undefined && input.data.loginId === undefined)
+  ) {
+    return siteError(400, "invalid_input");
+  }
 
   const { owner, site } = caller;
   const { kind, loginId, message } = input.data;
   if (loginId === undefined) {
     if (kind === "look") return siteError(400, "invalid_request");
-    return startTask(owner.scope, site, message, undefined, kind);
+    return startTask(owner.scope, site, message, undefined, kind, undefined);
   }
   // A login runs one task at a time: its browser profile keeps one sign-in.
   return oneUseOfLoginAtATime(owner.scope, site, loginId, async () => {
     const pin = await resolveLoginPin(owner.scope, site, loginId);
     if (!pin.ok) return pin.response;
+    if (note !== undefined && !isNoteOnFence(note, pin.login)) {
+      return siteError(400, "invalid_input");
+    }
     const open = await openTaskOfLogin(site, owner.scope, loginId);
     if (!open.ok) return open.response;
     if (open.taskId) {
       return siteJson({ error: "login_busy", taskId: open.taskId }, 409);
     }
-    return startTask(owner.scope, site, message, pin.login, kind);
+    return startTask(owner.scope, site, message, pin.login, kind, note);
   });
 }
 
@@ -76,7 +103,8 @@ async function startTask(
   site: string,
   message: string,
   login: z.infer<typeof siteLoginPinSchema> | undefined,
-  kind: z.infer<typeof taskInputSchema>["kind"]
+  kind: z.infer<typeof taskInputSchema>["kind"],
+  note: string | undefined
 ) {
   const start = claimStartSlot(site);
   if (!start.ok) {
@@ -92,11 +120,16 @@ async function startTask(
     // Only a start that goes ahead frees the login's sign-in, still under
     // the login's lock: a refused one leaves its browsers alone.
     if (login) await closeLeftLoginWriters(scope, login.id);
-    const { session } = await siteEveClient(
-      kind === "look"
-        ? { kind, login, op: "create", site }
-        : { login, op: "create", site }
-    ).sessions.create({ message });
+    const grant: Extract<SiteGrant, { op: "create" }> = {
+      login,
+      op: "create",
+      site,
+    };
+    if (kind === "look") grant.kind = kind;
+    if (note !== undefined) grant.note = note;
+    const { session } = await siteEveClient(grant).sessions.create({
+      message,
+    });
     const taskId = await recordStartedTask(() =>
       recordSiteTask(site, scope, session.id, login?.id, kind)
     );
@@ -133,6 +166,28 @@ async function resolveLoginPin(
     return { ok: false as const, response: siteError(400, "invalid_request") };
   }
   return { login, ok: true as const };
+}
+
+// A note may name the account's pages, never a page the task could not open:
+// every https address in it must be on the fence the browser worker keeps
+// for the login, which refuses Amazon before it. An address that does not
+// parse, or carries a user name or password, names no page on it.
+function isNoteOnFence(
+  note: string,
+  login: z.infer<typeof siteLoginPinSchema>
+) {
+  const fence = siteNavigationFence(login.origin, login.alsoHosts);
+  return [...note.matchAll(/https:[/\\]{2}\S*/giu)].every(([address]) => {
+    const text = address.replace(/[.,;:!?'"’”»)\]}>]+$/u, "");
+    if (!URL.canParse(text)) return false;
+    const { hostname, password, username } = new URL(text);
+    return (
+      username === "" &&
+      password === "" &&
+      !isAmazonHost(hostname) &&
+      isInsideFence(hostname, fence)
+    );
+  });
 }
 
 // Every start spends model time and a browser, so a leaked token is capped per

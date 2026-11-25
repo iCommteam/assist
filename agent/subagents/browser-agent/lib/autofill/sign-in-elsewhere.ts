@@ -5,10 +5,10 @@ import {
 } from "@db/services/sites";
 import { siteLoginOfSession, siteOfSession } from "@agent/lib/site-principal";
 import {
+  isIdentityProviderHost,
   isOnLoginSite,
   siteNavigationFence,
-} from "@agent/subagents/browser-agent/lib/policy/hosts";
-import { isIdentityProviderHost } from "@shared/browser/hosts";
+} from "@shared/browser/hosts";
 import type { AccessScope } from "@shared/identity/access-scope";
 
 type WorkerSession = Pick<SessionContext["session"], "auth" | "parent">;

@@ -79,6 +79,33 @@ describe("site channel credential", () => {
     ).toBeUndefined();
   });
 
+  it("carries the owner's note on a create grant, and refuses a note of the wrong shape", () => {
+    const login = { id: "login-1", origin: "https://login.vendor.example" };
+    const note = "Billing → Invoice history; the invoice, not the receipt.";
+    const grant = { login, note, op: "create", site: "teemiq" } as const;
+
+    expect(
+      verifySiteCredential(secret, mintSiteCredential(secret, grant))
+    ).toEqual(grant);
+    for (const wrong of [
+      "",
+      "x".repeat(301),
+      "Billing\nPay it",
+      `${String.fromCodePoint(0x20_2e)}Billing`,
+      "Send it to billing@vendor.example",
+    ]) {
+      expect(
+        verifySiteCredential(
+          secret,
+          mintSiteCredential(
+            secret,
+            uncheckedGrant.parse({ ...grant, note: wrong })
+          )
+        )
+      ).toBeUndefined();
+    }
+  });
+
   it("binds an answer grant to one question of one session", () => {
     const answer = mintSiteCredential(secret, {
       interaction: "interaction-1",

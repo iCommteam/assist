@@ -154,23 +154,25 @@ Every call sends `Authorization: Bearer <token>` and every answer carries
 `cache-control: no-store`. An error is `{"error":"<code>"}` and never echoes
 what the caller sent.
 
-| Call                                          | Answer                                                                                                                                                                                    |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/site/ping`                          | `200 {"ok":true,"site":"teemiq"}`                                                                                                                                                         |
-| `POST /api/site/logins`                       | body `{"origin","label","identifier","password","totp","alsoHosts"}`; `201 {"login":{"loginId","label","origin","alsoHosts","hasTotp","createdAt"}}`; `400 {"error":"identity_provider"}` |
-| `GET /api/site/logins`                        | `200 {"logins":[{"loginId","label","origin","alsoHosts","hasTotp","createdAt"}]}`, the site's own logins, newest first                                                                    |
-| `DELETE /api/site/logins/{loginId}`           | `204`, also deleting the login's browser profile; `409 {"error":"login_busy"}` while a task pinned to it is open                                                                          |
-| `POST /api/site/tasks`                        | body `{"message","loginId","kind"}`, `loginId` and `kind` optional; `202 {"taskId"}`; `409 {"error":"login_busy","taskId"}`; `429 {"error":"rate_limited"}`                               |
-| `GET /api/site/tasks?loginId=...`             | `200 {"tasks":[{"taskId","status","createdAt"}]}`, the site's tasks pinned to that login, newest first, at most 5                                                                         |
-| `GET /api/site/tasks/{taskId}`                | `200 {"taskId","kind","status","question","questionId","outcome","error","signInOrigin","reply"}`                                                                                         |
-| `POST /api/site/tasks/{taskId}/input`         | body `{"text"}`, the one-time code; `202 {"taskId"}`; `409 {"error":"not_waiting"}`                                                                                                       |
-| `POST /api/site/tasks/{taskId}/cancel`        | no body; `202 {"taskId"}`, also for a task that has already ended                                                                                                                         |
-| `GET /api/site/tasks/{taskId}/files`          | `200 {"files":[{"fileId","filename","mediaType","byteSize","sha256","createdAt"}]}`, oldest first                                                                                         |
-| `GET /api/site/tasks/{taskId}/files/{fileId}` | `200` the PDF's bytes, with `content-type: application/pdf`, `content-length` and `x-content-sha256`; `404 {"error":"not_found"}` once it is gone                                         |
+| Call                                          | Answer                                                                                                                                                                                                        |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/site/ping`                          | `200 {"ok":true,"site":"teemiq"}`                                                                                                                                                                             |
+| `POST /api/site/logins`                       | body `{"origin","label","identifier","password","totp","alsoHosts"}`; `201 {"login":{"loginId","label","origin","alsoHosts","hasTotp","createdAt"}}`; `400 {"error":"identity_provider"}`                     |
+| `GET /api/site/logins`                        | `200 {"logins":[{"loginId","label","origin","alsoHosts","hasTotp","createdAt"}]}`, the site's own logins, newest first                                                                                        |
+| `DELETE /api/site/logins/{loginId}`           | `204`, also deleting the login's browser profile; `409 {"error":"login_busy"}` while a task pinned to it is open                                                                                              |
+| `POST /api/site/tasks`                        | body `{"message","loginId","kind","note"}`, all but `message` optional; `202 {"taskId"}`; `400 {"error":"invalid_input"}` for a `note`; `409 {"error":"login_busy","taskId"}`; `429 {"error":"rate_limited"}` |
+| `GET /api/site/tasks?loginId=...`             | `200 {"tasks":[{"taskId","status","createdAt"}]}`, the site's tasks pinned to that login, newest first, at most 5                                                                                             |
+| `GET /api/site/tasks/{taskId}`                | `200 {"taskId","kind","status","question","questionId","outcome","error","signInOrigin","reply"}`                                                                                                             |
+| `POST /api/site/tasks/{taskId}/input`         | body `{"text"}`, the one-time code; `202 {"taskId"}`; `409 {"error":"not_waiting"}`                                                                                                                           |
+| `POST /api/site/tasks/{taskId}/cancel`        | no body; `202 {"taskId"}`, also for a task that has already ended                                                                                                                                             |
+| `GET /api/site/tasks/{taskId}/files`          | `200 {"files":[{"fileId","filename","mediaType","byteSize","sha256","createdAt"}]}`, oldest first                                                                                                             |
+| `GET /api/site/tasks/{taskId}/files/{fileId}` | `200` the PDF's bytes, with `content-type: application/pdf`, `content-length` and `x-content-sha256`; `404 {"error":"not_found"}` once it is gone                                                             |
 
 A missing or wrong token answers `401 {"error":"unauthorized"}`, a site whose
 owner is not ready `403 {"error":"forbidden"}`, an invalid body or query
-`400 {"error":"invalid_request"}`, and a task, login or file that is not the
+`400 {"error":"invalid_request"}`, a task's `note` that fails
+`400 {"error":"invalid_input"}` (see [Owner's note](#owners-note)), and a
+task, login or file that is not the
 site's, or an id of the wrong form, `404 {"error":"not_found"}`. Any call can
 answer `503 {"error":"unavailable"}` while the database or the agent runtime
 cannot be reached; it is transient, so retry later. Times are ISO 8601 UTC
@@ -275,8 +277,8 @@ a site that lost the answer to a start can find the task; an unknown or
 foreign `loginId` lists none, and a missing one, or one over 200 characters,
 answers `invalid_request`. A site may start 10 tasks in any 10 minutes; the
 next start answers `429 {"error":"rate_limited"}` with `Retry-After` in
-seconds, the count resets when the service restarts, and a `login_busy` or
-`invalid_request` start does not count. A start that answered 503 may still
+seconds, the count resets when the service restarts, and a `login_busy`,
+`invalid_request` or `invalid_input` start does not count. A start that answered 503 may still
 run: list the login's tasks before starting it again. A start whose task could
 not be recorded is not listed and may keep running in the agent runtime, but
 its browsers cannot use the login.
@@ -453,6 +455,34 @@ reads `failed` with `failed`, in its status and in its login's list, its
 `reply` kept, since nothing says whether it listed anything. Unlike a
 fetch's files, the list is what the agent read on the supplier's pages and
 wrote down: treat it as untrusted text.
+
+#### Owner's note
+
+A pinned task, a fetch or a look, may carry `note`: the owner's note for the
+login's account, saying where the account keeps its documents and which of
+them to save, such as `Billing → Invoice history; the invoice, not the
+receipt`. It is one line of 1 to 300 characters once trimmed, counted in
+UTF-16 code units: no control character, line or paragraph separator, or
+bidirectional embedding, override or isolate (U+202A to U+202E and U+2066 to
+U+2069; marks such as U+200F are kept), and no email address. Every
+`https://` address in it, whatever its case, must be one the task's browser
+may open: under the origin's registrable domain, one of the login's
+`alsoHosts`, or one of Stripe's four invoice hosts, with no user name or
+password. A note that fails any of this, a note on a task with no `loginId`,
+or a `note` that is not a string answers `400 {"error":"invalid_input"}` and
+starts nothing, before the login is checked for an open task, and the start
+is not counted. Leaving it out, or `null`, sends none. Only the note's shape
+is checked, never its words.
+
+The note never joins the task's message. The agent's instructions for the
+task end with one line, `Where to look, as the owner noted for this account:
+<note>`, which the agent copies word for word into the browser worker's
+assignment. The note only says where the documents are and which to save, or
+for a look to list: it never widens what the task may do or which site its
+browser opens. A note that asks for anything a pinned task may not do, such as
+paying, changing a setting or the account, deleting, sending a message, or
+downloading from outside the login's fence, ends the task `failed`, as such a
+task always has.
 
 #### Lifetimes and cancelling
 
