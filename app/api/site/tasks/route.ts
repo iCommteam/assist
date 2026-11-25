@@ -172,13 +172,16 @@ async function resolveLoginPin(
 // A note may name the account's pages, never a page the task could not open.
 // It is read as it reads, its invisible characters gone, and every address
 // in it is checked from where it starts, so one inside another's query, path
-// or parentheses is checked too. An address is a scheme, a colon and two
-// slashes, backslashes counted as slashes as the URL parser counts them. Its
-// scheme must be https, as TEEMIQ requires, and its host on the fence the
-// browser worker keeps for the login, which refuses Amazon before it. A word
-// a removed mark joined to the scheme, such as "2.https", still checks the
-// host. An address that does not parse, or carries a user name or password,
-// names no page on it.
+// or parentheses is checked too. Only an address written with a colon and
+// two slashes is checked, a backslash counted as a slash: the text before its
+// colon must end in https, whatever its case, and the host after its slashes
+// must be on the fence the browser worker keeps for the login, which refuses
+// Amazon before it. A word a removed mark joined to the scheme, such as
+// "2.https", still checks the host. An address that does not parse, or
+// carries a user name or password, names no page on it. The browser's fence
+// alone decides every other form, such as "https:host", "//host" or a bare
+// host: TEEMIQ sends those, so refusing one here before TEEMIQ does would
+// leave its way unable to start.
 function isNoteOnFence(
   note: string,
   login: z.infer<typeof siteLoginPinSchema>

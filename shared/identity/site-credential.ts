@@ -22,10 +22,14 @@ export const siteLoginPinSchema = z.strictObject({
   origin: loginOriginSchema,
 });
 
-// A control character, a line or paragraph separator, or a bidirectional
-// embedding, override or isolate. Marks such as U+200F stay: Hebrew text
-// carries them.
-const noteBreak = /[\p{Cc}\u2028\u2029\u202A-\u202E\u2066-\u2069]/u;
+// A control character, half of a surrogate pair, a private-use character, a
+// line or paragraph separator, or a format character: the bidirectional
+// controls, U+200B and the tag characters, which spell words no one sees,
+// among them. The two direction marks stay: Hebrew text carries them. TEEMIQ
+// refuses all of this, and unassigned characters too, before it sends a
+// note; those are left to it, since which are unassigned depends on the
+// runtime's Unicode version.
+const noteBreak = /[\p{Cc}\p{Cs}\p{Co}\p{Zl}\p{Zp}]|(?![\u200E\u200F])\p{Cf}/u;
 // Anything shaped like an email address, as TEEMIQ reads one.
 const emailAddress = /[^\s@]+@[^\s@]+\.[^\s@]+/u;
 const invisible = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
@@ -44,9 +48,9 @@ export const siteTaskNoteSchema = z
   .refine((note) => !emailAddress.test(noteAsRead(note)));
 
 // A note as it reads, which is how it is checked: a character that shows
-// nothing, such as U+200B, a direction mark or a variation selector, still
-// leaves an email address or a web address it splits one to read. The note
-// itself keeps them.
+// nothing and that a note may carry, a direction mark, a grapheme joiner, a
+// variation selector or a filler, still leaves an email address or a web
+// address it splits one to read. The note itself keeps them.
 export function noteAsRead(note: string) {
   return note.replaceAll(invisible, "");
 }

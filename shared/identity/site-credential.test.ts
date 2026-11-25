@@ -92,6 +92,16 @@ describe("site channel credential", () => {
       "x".repeat(301),
       "Billing\nPay it",
       `${String.fromCodePoint(0x20_2e)}Billing`,
+      // Every format character but the two direction marks, a lone
+      // surrogate and a private-use character: tag characters spell words
+      // no one sees.
+      `Billing${String.fromCodePoint(0xe0_020, 0xe0_050, 0xe0_061, 0xe0_079)}`,
+      `Billing${String.fromCodePoint(0x20_0b)}Invoices`,
+      `Billing${String.fromCodePoint(0x06_1c)}Invoices`,
+      `Bill${String.fromCodePoint(0xfe_ff)}ing`,
+      `${String.fromCodePoint(0xfe_ff)}Billing`,
+      `Billing${String.fromCodePoint(0xd8_00)}`,
+      `Billing${String.fromCodePoint(0xe0_00)}`,
       "Send it to billing@vendor.example",
       // An email address reads as one with a mark, an invisible space or an
       // accent inside it.

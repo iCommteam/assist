@@ -462,19 +462,28 @@ A pinned task, a fetch or a look, may carry `note`: the owner's note for the
 login's account, saying where the account keeps its documents and which of
 them to save, such as `Billing → Invoice history; the invoice, not the
 receipt`. It is one line of 1 to 300 characters once trimmed, counted in
-UTF-16 code units: no control character, line or paragraph separator, or
-bidirectional embedding, override or isolate (U+202A to U+202E and U+2066 to
-U+2069; marks such as U+200F are kept), and no email address, anything shaped
-`name@host.part`. Every address in it, a scheme, a colon and two slashes
-(backslashes count as slashes, as the URL parser counts them), must be
-`https`, whatever its case, and one the task's browser may open: under the
-origin's registrable domain, one of the login's `alsoHosts`, or one of
-Stripe's four invoice hosts, with no user name or password. Each address is
-checked from where it starts, so one inside another's query, path or
-parentheses is checked too, and the note is checked as it reads: a character
-that shows nothing, such as U+200B or a direction mark, does not hide an email
-address or an address it splits, though the note keeps it. A note that fails
-any of this, a note on a task with no `loginId`,
+UTF-16 code units: no control character, half of a surrogate pair,
+private-use character, line or paragraph separator, or format character, so
+none of the bidirectional embeddings, overrides and isolates (U+202A to
+U+202E and U+2066 to U+2069), U+061C, U+200B, U+2060, U+FEFF or the tag
+characters, which spell words no one sees. The left-to-right and
+right-to-left marks, U+200E and U+200F, are kept, since Hebrew text carries
+them. Unassigned characters are left to the site: TEEMIQ refuses them before
+it sends a note, and which are unassigned depends on the runtime's Unicode
+version. No email address either, anything shaped `name@host.part`. An
+address written with a colon and two slashes (a backslash counts as a slash)
+must have text before its colon that ends in `https`, whatever its case, and
+a host after its slashes that the task's browser may open: under the origin's
+registrable domain, one of the login's `alsoHosts`, or one of Stripe's four
+invoice hosts, with no user name or password. Each such address is checked
+from where it starts, so one inside another's query, path or parentheses is
+checked too, and the note is checked as it reads: a character that shows
+nothing and that a note may carry, a direction mark, a grapheme joiner, a
+variation selector or a filler, does not hide an email address or an address
+it splits, though the note keeps it. Only those addresses are checked: the
+browser's fence alone decides where any other form leads, such as
+`https:host`, `//host` or a bare host. A note that fails any of this, a note
+on a task with no `loginId`,
 or a `note` that is not a string answers `400 {"error":"invalid_input"}` and
 starts nothing, before the login is checked for an open task, and the start
 is not counted. Leaving it out, or `null`, sends none. Only the note's shape

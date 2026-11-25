@@ -252,6 +252,13 @@ describe("site principal", () => {
       },
       {
         ...pinned,
+        attributes: {
+          ...pinned.attributes,
+          siteTaskNote: `Billing${String.fromCodePoint(0xe0_050, 0xe0_061, 0xe0_079)}`,
+        },
+      },
+      {
+        ...pinned,
         attributes: { ...pinned.attributes, siteTaskNote: ["Billing"] },
       },
     ]) {
