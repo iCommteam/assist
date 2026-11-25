@@ -10,8 +10,8 @@ import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 // What a site's chat UI reads: a small, versioned NDJSON of the chat's
 // conversation, folded from eve's events by allow-list. Tool inputs and
 // outputs never leave assist, except the fields a site acts on: the id of a
-// look or fetch it started, the supplier a look or a fetch found no saved
-// account for, and a proposed pairing. Every line carries the version, and
+// look or fetch it started, the supplier (and its line) a look or a fetch
+// found no saved account for, and a proposed pairing. Every line carries the version, and
 // every line but a heartbeat the eve line it came from, so a reader that lost
 // its connection resumes after the last one it read.
 const chatStreamVersion = 1;
@@ -22,6 +22,7 @@ const maxQuestionLength = 1000;
 const maxWhyLength = 500;
 const maxSupplierNameLength = 200;
 const maxGuessedSiteLength = 300;
+const maxAlsoHosts = 3;
 
 // What the site posted as the outcome of a look or a fetch, framed so the
 // agent reads it as a result, never as the person's words. A person's text
@@ -57,12 +58,22 @@ const idSchema = z
   .regex(/^[\w:.-]+$/u);
 const fetchOutputSchema = z.looseObject({ fetchId: idSchema });
 // A look or a fetch TEEMIQ did not start because the supplier has no saved
-// account, so the site shows the person a form to add one. Only these two
-// fields are read, and each leaves as one bounded line.
+// account, so the site shows the person a form to add one. Only these fields
+// are read: the supplier's name and guessed site, each as one bounded line;
+// the line it was for, as an id; and up to three other hosts the guess said
+// its billing uses, each a bare host name.
+const hostSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .max(253)
+  .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/u);
 const needsAccountOutputSchema = z.looseObject({
   needs_account: z.looseObject({
+    alsoHosts: z.array(z.unknown()).optional().catch(undefined),
     guessedSite: z.string().optional().catch(undefined),
     supplierName: z.string(),
+    txnId: idSchema.optional().catch(undefined),
   }),
 });
 const proposalOutputSchema = z.looseObject({
@@ -113,6 +124,15 @@ const turnSettledSchema = z.object({
   type: z.literal("turn.settled"),
 });
 
+// A look or a fetch found no saved account to use; built a field at a time.
+interface AccountLine {
+  alsoHosts?: readonly string[];
+  guessedSite?: string;
+  supplierName: string;
+  txnId?: string;
+  type: "account";
+}
+
 type ChatLine =
   | {
       readonly from: "assistant" | "person" | "result";
@@ -127,11 +147,7 @@ type ChatLine =
       readonly type: "question";
     }
   | { readonly fetchId: string; readonly type: "fetch" }
-  | {
-      readonly guessedSite?: string;
-      readonly supplierName: string;
-      readonly type: "account";
-    }
+  | Readonly<AccountLine>
   | {
       readonly documentId: string;
       readonly txnId: string;
@@ -291,19 +307,27 @@ function settledLines(
 }
 
 // A supplier name that is empty once made one line names nobody, so it
-// yields no line; a guessed site that is not a non-empty string is left out,
-// and the line stays.
+// yields no line; a guessed site, a line id or other hosts that do not parse
+// are left out, and the line stays.
 function accountLines({
-  needs_account: { guessedSite, supplierName },
+  needs_account: { alsoHosts, guessedSite, supplierName, txnId },
 }: z.infer<typeof needsAccountOutputSchema>): ChatLine[] {
   const name = plainLine(supplierName, maxSupplierNameLength);
   if (name === "") return [];
   const site = plainLine(guessedSite ?? "", maxGuessedSiteLength);
-  return [
-    site === ""
-      ? { supplierName: name, type: "account" }
-      : { guessedSite: site, supplierName: name, type: "account" },
-  ];
+  const hosts = [
+    ...new Set(
+      (alsoHosts ?? []).flatMap((host) => {
+        const parsed = hostSchema.safeParse(host);
+        return parsed.success ? [parsed.data] : [];
+      })
+    ),
+  ].slice(0, maxAlsoHosts);
+  const line: AccountLine = { supplierName: name, type: "account" };
+  if (hosts.length > 0) line.alsoHosts = hosts;
+  if (site !== "") line.guessedSite = site;
+  if (txnId !== undefined) line.txnId = txnId;
+  return [line];
 }
 
 // A connection tool's output is its structured content, or its text, which

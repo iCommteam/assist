@@ -571,17 +571,20 @@ then closes: open it again after a short wait.
 | `progress`  | `label`: `Searching the web`, `Starting a look` or `Starting a fetch`                                          |
 | `question`  | `id`, `text`, `options` (`[{"id","label"}]`, empty for a free answer); answer it with `/answers`               |
 | `fetch`     | `fetchId`: a look or a fetch the agent started through TEEMIQ's tools                                          |
-| `account`   | `supplierName`, and `guessedSite` when TEEMIQ guessed one: a look or a fetch found no saved account to use     |
+| `account`   | `supplierName`; `guessedSite`, `txnId` and `alsoHosts` when TEEMIQ gave them: no saved account to use          |
 | `proposal`  | `txnId`, `documentId`, `why`: a pairing the agent proposed, for a person to confirm                            |
 | `done`      | a turn ended                                                                                                   |
 | `error`     | `code`: `usage_limit`, `needs_person` (stopped at an approval or a sign-in), `cancelled`, `failed`, or `ended` |
 | `heartbeat` | none; sent first when the chat has no message yet, and after 15 quiet seconds                                  |
 
 An `account` line comes from a look or a fetch that TEEMIQ answered
-`{"needs_account":{"supplierName":"…","guessedSite":"…"}}` instead of
-starting it; the site shows the person its Add an account form. Each field is
-one line of plain text, at most 200 characters for the name and 300 for the
-site. No tool's input or output leaves assist beyond those fields.
+`{"needs_account":{"supplierName":"…","guessedSite":"…","txnId":"…","alsoHosts":["…"]}}`
+instead of starting it; the site shows the person its Add an account form,
+for that line when `txnId` is given. The name and the site are each one line
+of plain text, at most 200 and 300 characters; `txnId` is an id, and
+`alsoHosts` at most three bare host names, the other sites the guess said the
+supplier's billing uses, which the form shows before saving. No tool's input
+or output leaves assist beyond those fields.
 
 The database also stores `workstreams`: goals, decisions, observations, and
 unfinished steps the agent can recall across conversations. They are scoped to

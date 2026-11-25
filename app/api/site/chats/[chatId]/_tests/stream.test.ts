@@ -210,7 +210,7 @@ describe("site chat stream", () => {
     expect(JSON.stringify(lines)).not.toMatch(/secret|not-a-fetch|p-1/u);
   });
 
-  it("names the supplier a look or a fetch found no saved account for, with its guessed site, and nothing else of the answer", () => {
+  it("names the supplier a look or a fetch found no saved account for, with its guessed site, its line and other hosts, and nothing else of the answer", () => {
     const lines = linesOf([
       [turnStarted, runRequested],
       call(
@@ -220,9 +220,19 @@ describe("site chat stream", () => {
         {
           fetchId: "fetch-not-started",
           needs_account: {
+            alsoHosts: [
+              "chatgpt.com",
+              " CHATGPT.COM ",
+              "secret host!",
+              { host: "secret.example" },
+              "platform.openai.com",
+              "a.example",
+              "b.example",
+            ],
             guessedSite: "https://auth.openai.com",
             loginHint: "secret hint",
             supplierName: "OpenAI",
+            txnId: "txn-7",
           },
           rows: ["secret row"],
         }
@@ -249,7 +259,12 @@ describe("site chat stream", () => {
         "teemiq__finance_site_look",
         {},
         {
-          needs_account: { guessedSite: { host: "x" }, supplierName: "Kernel" },
+          needs_account: {
+            alsoHosts: "secret.example",
+            guessedSite: { host: "x" },
+            supplierName: "Kernel",
+            txnId: "secret txn id!",
+          },
         }
       ),
       call(
@@ -269,8 +284,10 @@ describe("site chat stream", () => {
     const accounts = lines.filter(({ type }) => type === "account");
     expect(accounts.map(({ cursor: _cursor, ...line }) => line)).toEqual([
       {
+        alsoHosts: ["chatgpt.com", "platform.openai.com", "a.example"],
         guessedSite: "https://auth.openai.com",
         supplierName: "OpenAI",
+        txnId: "txn-7",
         type: "account",
         v: 1,
       },
