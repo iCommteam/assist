@@ -102,6 +102,16 @@ describe("site channel credential", () => {
       `${String.fromCodePoint(0xfe_ff)}Billing`,
       `Billing${String.fromCodePoint(0xd8_00)}`,
       `Billing${String.fromCodePoint(0xe0_00)}`,
+      // Every other default-ignorable character too: a variation selector,
+      // an emoji's among them, a grapheme joiner, a filler, a Mongolian
+      // variation selector, one past the BMP, and one not yet assigned.
+      `Billing ✔${String.fromCodePoint(0xfe_0f)}`,
+      `Billing${String.fromCodePoint(0x03_4f)}Invoices`,
+      `Billing ${String.fromCodePoint(0x31_64)}Invoices`,
+      `${String.fromCodePoint(0x11_5f)}Billing`,
+      `Billing${String.fromCodePoint(0x18_0b)}`,
+      `Billing${String.fromCodePoint(0xe0_100)}`,
+      `Billing${String.fromCodePoint(0xff_f0)}`,
       "Send it to billing@vendor.example",
       // An email address reads as one with a mark, an invisible space or an
       // accent inside it.
@@ -128,6 +138,18 @@ describe("site channel credential", () => {
           )
         )
       ).toBeUndefined();
+    }
+    // The two direction marks are the only characters that show nothing a
+    // note keeps: Hebrew text carries them.
+    for (const kept of [
+      `חשבוניות${String.fromCodePoint(0x20_0f)} ← חיוב`,
+      `${String.fromCodePoint(0x20_0e)}Billing${String.fromCodePoint(0x20_0e)}`,
+      String.fromCodePoint(0x20_0e),
+    ]) {
+      const keptGrant = { ...grant, note: kept };
+      expect(
+        verifySiteCredential(secret, mintSiteCredential(secret, keptGrant))
+      ).toEqual(keptGrant);
     }
   });
 

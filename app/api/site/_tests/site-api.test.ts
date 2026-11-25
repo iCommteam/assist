@@ -628,8 +628,8 @@ describe("POST /api/site/tasks owner's note", () => {
   const leftToRightMark = String.fromCodePoint(0x20_0e);
   const zeroWidthSpace = String.fromCodePoint(0x20_0b);
   const combiningAcute = String.fromCodePoint(0x03_01);
-  // Default-ignorable characters that are not format characters, which
-  // TEEMIQ keeps in a note: a note that carries one must start.
+  // Default-ignorable characters that are not format characters, which show
+  // nothing: TEEMIQ refuses them in a note, as assist does.
   const graphemeJoiner = String.fromCodePoint(0x03_4f);
   const variationSelector = String.fromCodePoint(0xfe_0f);
   const hangulFiller = String.fromCodePoint(0x31_64);
@@ -709,10 +709,7 @@ describe("POST /api/site/tasks owner's note", () => {
       "an address on the fence inside another's query",
       "https://openai.com/a?next=https://platform.openai.com/b",
     ],
-    [
-      "a variation selector, a grapheme joiner and a filler",
-      `Billing ✔${variationSelector} Invoices${graphemeJoiner} ${hangulFiller}`,
-    ],
+    ["a left-to-right mark alone", leftToRightMark],
     [
       "a mark between the colon and the slashes of an address on the fence",
       `https:${leftToRightMark}//platform.openai.com/billing`,
@@ -776,6 +773,13 @@ describe("POST /api/site/tasks owner's note", () => {
     [
       "a private-use character",
       `Billing${String.fromCodePoint(0xe0_00)}Invoices`,
+    ],
+    ["a variation selector", `Billing ✔${variationSelector} Invoices`],
+    ["a grapheme joiner", `Billing Invoices${graphemeJoiner}`],
+    ["a filler", `Billing ${hangulFiller}Invoices`],
+    [
+      "a grapheme joiner between an address's colon and slashes",
+      `https:${graphemeJoiner}//platform.openai.com/billing`,
     ],
     ["an email address", "Invoices go to billing@vendor.example"],
     ["a Hebrew email address", "הכתובת: חשבונות@ספק.co.il"],
@@ -883,10 +887,6 @@ describe("POST /api/site/tasks owner's note", () => {
     [
       "a mark between the colon and the slashes",
       `https:${rightToLeftMark}//evil.example/invoices`,
-    ],
-    [
-      "a grapheme joiner between the colon and the slashes",
-      `https:${graphemeJoiner}//evil.example/invoices`,
     ],
     [
       "a mark between a word and an address off the fence",

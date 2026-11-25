@@ -463,25 +463,28 @@ login's account, saying where the account keeps its documents and which of
 them to save, such as `Billing → Invoice history; the invoice, not the
 receipt`. It is one line of 1 to 300 characters once trimmed, counted in
 UTF-16 code units: no control character, half of a surrogate pair,
-private-use character, line or paragraph separator, or format character, so
-none of the bidirectional embeddings, overrides and isolates (U+202A to
-U+202E and U+2066 to U+2069), U+061C, U+200B, U+2060, U+FEFF or the tag
-characters, which spell words no one sees. The left-to-right and
-right-to-left marks, U+200E and U+200F, are kept, since Hebrew text carries
-them. Unassigned characters are left to the site: TEEMIQ refuses them before
-it sends a note, and which are unassigned depends on the runtime's Unicode
-version. No email address either, anything shaped `name@host.part`, as
-typed, as it reads (below) or with its look-alike letters folded as TEEMIQ
-folds them (NFKC, with what shows nothing taken out before and after), so a
-fullwidth or small `@` or dot, as in `billing＠vendor．example`, hides none.
+private-use character, line or paragraph separator, or anything else that
+shows nothing: no format character, so none of the bidirectional
+embeddings, overrides and isolates (U+202A to U+202E and U+2066 to U+2069),
+U+061C, U+200B, U+2060, U+FEFF or the tag characters, which spell words no
+one sees, and no other default-ignorable character, such as a variation
+selector (an emoji's U+FE0F among them), the grapheme joiner U+034F or a
+filler such as U+3164. Each is refused as sent, before the trim. The
+left-to-right and right-to-left marks, U+200E and U+200F, are kept, since
+Hebrew text carries them. Other unassigned characters are left to the site:
+TEEMIQ refuses them before it sends a note, and which are unassigned depends
+on the runtime's Unicode version. No email address either, anything shaped
+`name@host.part`, as typed, as it reads (below) or with its look-alike
+letters folded as TEEMIQ folds them (NFKC, with what shows nothing taken out
+before and after), so a fullwidth or small `@` or dot, as in
+`billing＠vendor．example`, hides none.
 
 Every address in the note is checked wherever a URL parser would start one,
 so one inside another's query, path or parentheses is checked too. The note
-is checked as it reads, with what shows nothing and a note may carry taken
-out (a direction mark, a grapheme joiner, a variation selector or a filler,
-which the note itself keeps), and again with its look-alike letters folded
-as above, so a fullwidth colon or slash hides no address:
-`ｈｔｔｐｓ：／／host` is checked as `https://host`.
+is checked as it reads, with its direction marks taken out (the note itself
+keeps them), and again with its look-alike letters folded as above, so a
+fullwidth colon or slash hides no address: `ｈｔｔｐｓ：／／host` is checked as
+`https://host`.
 
 - Every `http:` or `https:`, in any case of its letters, is `https:` and
   exactly two forward slashes: `https:host`, `https:/host`, `https:\host`
@@ -498,11 +501,11 @@ as above, so a fullwidth colon or slash hides no address:
 A bare host, with no scheme and no slashes, is left to the browser's fence,
 which decides where it leads. TEEMIQ refuses all of this before it sends a
 note, and assist refuses no note TEEMIQ sends. A note that fails any of
-this, a note on a task with no `loginId`,
-or a `note` that is not a string answers `400 {"error":"invalid_input"}` and
-starts nothing, before the login is checked for an open task, and the start
-is not counted. Leaving it out, or `null`, sends none. Only the note's shape
-is checked, never its words.
+this, a note on a task with no `loginId`, or a `note` that is not a string
+answers `400 {"error":"invalid_input"}` and starts nothing, before the
+login is checked for an open task, and the start is not counted. Leaving it
+out, or `null`, sends none. Only the note's shape is checked, never its
+words.
 
 The note never joins the task's message. The agent's instructions for the
 task end with one line, `Where to look, as the owner noted for this account:
