@@ -37,6 +37,7 @@ describe("source layout", () => {
     expect(directories("shared")).toEqual([
       "browser",
       "chat",
+      "connectors",
       "environment",
       "identity",
       "schedules",

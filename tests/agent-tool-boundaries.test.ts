@@ -21,6 +21,9 @@ describe("root and worker capability boundaries", () => {
     expect(rootAgent.defaultTools).toBe(false);
     expect(toolFiles(rootTools)).toEqual([
       "ask_question.ts",
+      "calendar.ts",
+      "drive.ts",
+      "gmail.ts",
       "messaging.ts",
       "run_browser.ts",
       "schedules.ts",

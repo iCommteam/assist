@@ -49,6 +49,7 @@ describe("database migrations", () => {
     await applyMigration(database, "0018_famous_bishop.sql");
     await applyMigration(database, "0019_chemical_paper_doll.sql");
     await applyMigration(database, "0020_calm_toro.sql");
+    await applyMigration(database, "0021_mixed_karen_page.sql");
 
     const tables = await database.query<{ count: number }>(
       `SELECT count(*)::int AS count
@@ -278,6 +279,53 @@ describe("database migrations", () => {
       database.exec(`
         INSERT INTO site_tasks (id, site, workspace_id, session_id, kind)
         VALUES ('00000000-0000-4000-8000-000000000003', 'teemiq', 'workspace-1', 'wrun_3', 'download');
+      `)
+    ).rejects.toThrow(/constraint/u);
+  }, 30_000);
+
+  it("lets encrypted secrets hold connector rows beside vault rows, and nothing else", async () => {
+    const database = createDatabase();
+    const journal = z
+      .object({ entries: z.array(z.object({ tag: z.string() })) })
+      .parse(
+        JSON.parse(
+          await readFile(
+            new URL("../migrations/meta/_journal.json", import.meta.url),
+            "utf8"
+          )
+        )
+      );
+    const tags = journal.entries.map(({ tag }) => tag);
+    /* oxlint-disable eslint/no-await-in-loop -- Migrations must execute in journal order. */
+    for (const tag of tags.slice(0, tags.indexOf("0021_mixed_karen_page"))) {
+      await applyMigration(database, `${tag}.sql`);
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+    await database.exec(`
+      INSERT INTO workspaces (id) VALUES ('workspace-1');
+      INSERT INTO encrypted_secrets (workspace_id, namespace, id, encrypted_value)
+      VALUES ('workspace-1', 'vault', 'login-1', 'v1.sealed');
+    `);
+    const connectorRow = `
+      INSERT INTO encrypted_secrets (workspace_id, namespace, id, encrypted_value)
+      VALUES ('workspace-1', 'connector', 'google', 'c1.sealed');
+    `;
+    await expect(database.exec(connectorRow)).rejects.toThrow(/constraint/u);
+
+    await applyMigration(database, "0021_mixed_karen_page.sql");
+
+    await database.exec(connectorRow);
+    const rows = await database.query(
+      "SELECT namespace, id FROM encrypted_secrets ORDER BY namespace"
+    );
+    expect(rows.rows).toEqual([
+      { id: "google", namespace: "connector" },
+      { id: "login-1", namespace: "vault" },
+    ]);
+    await expect(
+      database.exec(`
+        INSERT INTO encrypted_secrets (workspace_id, namespace, id, encrypted_value)
+        VALUES ('workspace-1', 'settings', 'other', 'x');
       `)
     ).rejects.toThrow(/constraint/u);
   }, 30_000);

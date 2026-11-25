@@ -88,6 +88,12 @@ const whatsappSenderSchema = requiredValue.refine(
   "TWILIO_WHATSAPP_FROM must be whatsapp: and an E.164 number, such as whatsapp:+15551234567."
 );
 
+// A Google Cloud OAuth client of type Web application.
+const googleClientIdSchema = requiredValue.refine(
+  (value) => /^[\w.-]+\.apps\.googleusercontent\.com$/u.test(value.trim()),
+  "GOOGLE_CLIENT_ID must be an OAuth client ID ending in .apps.googleusercontent.com."
+);
+
 const scheduledRunSecretSchema = requiredValue.refine(
   (value) => value.trim().length >= 32,
   "SCHEDULED_RUN_SECRET must contain at least 32 characters."
@@ -148,6 +154,13 @@ export const env = createEnv({
     TWILIO_ACCOUNT_SID: twilioAccountSidSchema.optional(),
     TWILIO_AUTH_TOKEN: requiredValue.optional(),
     TWILIO_WHATSAPP_FROM: whatsappSenderSchema.optional(),
+
+    // The Google Workspace connector's OAuth client, through which each member
+    // connects their own account (shared/connectors/google). Unset, or only
+    // one of the two, means no Google tools, and the Connectors section says
+    // an administrator has not set it up.
+    GOOGLE_CLIENT_ID: googleClientIdSchema.optional(),
+    GOOGLE_CLIENT_SECRET: requiredValue.optional(),
 
     // Optional
     // The co-located eve server's port in production, as `withEve` reads it.

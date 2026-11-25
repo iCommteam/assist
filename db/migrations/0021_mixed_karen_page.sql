@@ -1,0 +1,2 @@
+ALTER TABLE "encrypted_secrets" DROP CONSTRAINT "encrypted_secrets_namespace_check";--> statement-breakpoint
+ALTER TABLE "encrypted_secrets" ADD CONSTRAINT "encrypted_secrets_namespace_check" CHECK ("encrypted_secrets"."namespace" IN ('vault', 'connector'));

@@ -1,6 +1,7 @@
 import { CloudIcon, MessageSquareIcon } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { ConnectorsSection } from "./_components/connectors";
 import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
 import { requireRequestScope } from "@web/auth/request-scope";
@@ -14,6 +15,8 @@ export default async function Page() {
       <h1 className="sr-only">Workspace</h1>
 
       <ChannelsSection browserReady={browserReady} />
+
+      <ConnectorsSection />
 
       <WorkspaceSection headingId="connectors-heading" title="Infrastructure">
         <div className="divide-y divide-border/50 border-y border-border/50">

@@ -28,6 +28,9 @@ vi.mock("eve/connections", async (importOriginal) =>
 );
 
 import teemiq from "@agent/connections/teemiq";
+import calendar from "@agent/tools/calendar";
+import drive from "@agent/tools/drive";
+import gmail from "@agent/tools/gmail";
 import personalInfoMemory from "@agent/memory/personal_info";
 import workstreamMemory from "@agent/memory/workstreams";
 import messaging from "@agent/tools/messaging";
@@ -37,10 +40,23 @@ import vault from "@agent/tools/vault";
 
 const member = accessScopeForUser("better-auth:user-1");
 
-const groupedTools = [messaging, schedules, siteTask, vault];
+// Google is not set up in this file, so its tools are evaluated and offer
+// nothing; tests/agent/google covers them with it set up.
+const groupedTools = [
+  calendar,
+  drive,
+  gmail,
+  messaging,
+  schedules,
+  siteTask,
+  vault,
+];
 // The tool files whose tools depend on the session's mode, which
 // groupedTools evaluates; every other root tool file is static.
 const dynamicToolFiles = new Set([
+  "calendar.ts",
+  "drive.ts",
+  "gmail.ts",
   "messaging.ts",
   "schedules.ts",
   "site_task.ts",

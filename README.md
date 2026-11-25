@@ -82,6 +82,8 @@ only to hand the root-owned volume to the `node` user; both servers run as
 | `TWILIO_AUTH_TOKEN`                     | yes    | that account's auth token                                |
 | `TWILIO_WHATSAPP_FROM`                  | no     | `whatsapp:+<number>`, the number assist answers from     |
 | `ASSIST_WHATSAPP_NUMBERS`               | no     | who may write to it; see [WhatsApp](#whatsapp)           |
+| `GOOGLE_CLIENT_ID`                      | no     | see [Google Workspace](#google-workspace)                |
+| `GOOGLE_CLIENT_SECRET`                  | yes    | that OAuth client's secret                               |
 | `PORT`                                  | no     | `8080`, set explicitly; Teemiq's private address uses it |
 
 Generate each secret locally and paste it straight into Railway as a sealed
@@ -742,6 +744,94 @@ platform since 15 January 2026; an assistant for the company's own business is
 allowed. assist keeps to business work on WhatsApp and declines anything else,
 and WhatsApp allows free-form replies only within 24 hours of the member's last
 message.
+
+### Google Workspace
+
+Each member connects their own Google account in assist's web app, on the
+Workspace page under **Connectors**: **Connect Google**, then Google's consent
+screen. The section then shows the account's address, what Google granted, and
+**Disconnect**. Only that member's own web chats can use the account:
+
+- Gmail: search, read a conversation, save a draft, and send. Every send waits
+  for the member's **Approve** in the chat, which names the recipients and the
+  subject.
+- Calendar: list events, see when people are free, and create an event. Every
+  new event, and the invitations it sends, waits for the member's **Approve**.
+- Drive: search, and read a Doc, a Sheet (its first 10 tabs, 200 rows each),
+  Slides or a plain text file. PDFs and images are listed, not read.
+
+Site chats (TEEMIQ's Assist), site tasks, WhatsApp and scheduled runs never get
+Google tools; the list of modes that do is `googleModes` in
+`agent/lib/google/offer.ts`. With either variable below unset, there are no
+Google tools at all, and the Connectors section says that an administrator has
+not set Google up. Labels, Contacts and Tasks are not part of this connector.
+
+| Variable               | Secret | Value                                                 |
+| ---------------------- | ------ | ----------------------------------------------------- |
+| `GOOGLE_CLIENT_ID`     | no     | the OAuth client's ID, `….apps.googleusercontent.com` |
+| `GOOGLE_CLIENT_SECRET` | yes    | that client's secret                                  |
+
+Set both or neither: the start check refuses one alone. To create the client,
+in a Google Cloud project of the company's Google Workspace organisation:
+
+1. APIs & Services > Library: enable the **Gmail API**, the **Google Calendar
+   API**, the **Google Drive API** and the **Google Sheets API**. Docs and
+   Slides are read through Drive's export, so the Docs and Slides APIs stay
+   off.
+2. Google Auth Platform > Audience: user type **Internal**, so only the
+   company's accounts can connect and Google needs no app verification.
+   Data Access: add the scopes below.
+3. Clients > Create client > **Web application**, with exactly one authorized
+   redirect URI and no JavaScript origin:
+
+```text
+https://assist.icommteam.com/api/connectors/google/callback
+```
+
+That route finishes every connect. eve's own callback for a chat's sign-in,
+`https://assist.icommteam.com/eve/v1/connections/google/callback/<attempt>/<token>`,
+changes with every attempt, so Google never sees it: the route keeps the tokens,
+then sends the browser on to eve's callback with the flow's state alone, and
+eve continues the turn that asked. A local client for `pnpm dev` would
+register `http://localhost:3000/api/connectors/google/callback` instead.
+
+The scopes assist requests, exactly, each the narrowest that Google's API
+reference accepts for the calls it makes:
+
+```text
+openid
+email
+https://www.googleapis.com/auth/gmail.readonly
+https://www.googleapis.com/auth/gmail.compose
+https://www.googleapis.com/auth/calendar.events
+https://www.googleapis.com/auth/calendar.events.freebusy
+https://www.googleapis.com/auth/drive.readonly
+```
+
+- `openid` and `email` name the account in the Connectors section.
+- `gmail.readonly` searches and reads mail; `gmail.compose` saves drafts and
+  sends (it covers sending, so `gmail.send` is not requested as well).
+- `calendar.events` lists and creates events; `calendar.events.freebusy` reads
+  colleagues' free and busy times as well as the member's own.
+- `drive.readonly` searches and reads Drive, and reads Sheets through the
+  Sheets API.
+
+All are asked for in one consent, with `access_type=offline`,
+`prompt=consent`, `include_granted_scopes=true`, PKCE (S256) and a single-use
+state that expires after 10 minutes and belongs to the signed-in member. A
+member may untick some on Google's screen: each tool is offered only while
+Google granted its scope, and the Connectors section shows what is missing.
+
+The tokens are sealed with AES-256-GCM in `encrypted_secrets` (namespace
+`connector`, migration `0021`), under a key derived from
+`SECRET_ENCRYPTION_KEY` and bound to the member's own workspace, so no member's
+turn can open another's. They never reach a log, a tool result, the model's
+instructions or eve's records. An access token is refreshed a minute before it
+expires. When Google refuses the grant, assist drops the tokens, the section
+shows **Reconnect needed**, and the next Google tool call shows **Connect
+Google** in the chat. **Disconnect** revokes the grant at Google and deletes
+the tokens; when Google cannot confirm the revoke, the tokens are deleted
+anyway and the page says to remove assist at myaccount.google.com/permissions.
 
 ## Local development
 
