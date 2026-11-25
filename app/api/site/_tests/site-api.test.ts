@@ -713,12 +713,20 @@ describe("POST /api/site/tasks owner's note", () => {
       "a variation selector, a grapheme joiner and a filler",
       `Billing ✔${variationSelector} Invoices${graphemeJoiner} ${hangulFiller}`,
     ],
-    // Only an address written with a colon and two slashes is checked here:
-    // TEEMIQ sends these, and the browser worker's fence decides where they
-    // lead. Refusing one here first would leave its way unable to start.
-    ["a scheme with no slashes", "https:evil.example/invoices"],
-    ["a scheme with one slash", "https:/evil.example/invoices"],
-    ["two slashes with no scheme", "//evil.example/invoices"],
+    [
+      "a mark between the colon and the slashes of an address on the fence",
+      `https:${leftToRightMark}//platform.openai.com/billing`,
+    ],
+    // Folded, these read as an address on the fence; TEEMIQ sends them. A
+    // long s is not an s to the scheme's check, as it is not to TEEMIQ's.
+    [
+      "an address on the fence in fullwidth letters",
+      "ｈｔｔｐｓ：／／platform.openai.com/billing",
+    ],
+    [
+      "a long s in the scheme of an address on the fence",
+      `http${String.fromCodePoint(0x01_7f)}:／／platform.openai.com/billing`,
+    ],
   ])("starts a task whose note has %s", async (_case, note) => {
     const response = await startWithNote(note);
 
@@ -892,6 +900,36 @@ describe("POST /api/site/tasks owner's note", () => {
     ["plain http, even on the login's own host", "http://openai.com/billing"],
     ["another scheme", "ftp://openai.com/invoices"],
     ["slashes with no scheme", "Billing → ://evil.example"],
+    // A URL parser starts an address at http: or https: with any slashes or
+    // none, and at two slashes with no scheme, as TEEMIQ refuses them.
+    ["a scheme with no slashes", "https:evil.example/invoices"],
+    [
+      "a scheme with no slashes, even on the login's own host",
+      "https:platform.openai.com/billing",
+    ],
+    ["a scheme with one slash", "https:/evil.example/invoices"],
+    ["a scheme with one backslash", String.raw`https:\evil.example/invoices`],
+    ["plain http with no slashes", "http:evil.example/invoices"],
+    [
+      "a scheme with one slash inside another's query",
+      "https://openai.com/login?next=https:/evil.example",
+    ],
+    ["two slashes with no scheme", "//evil.example/invoices"],
+    ["two slashes with no scheme after a word", "See //evil.example"],
+    [
+      "two slashes inside an address's path",
+      "https://platform.openai.com/billing//x",
+    ],
+    ["a scheme with fullwidth slashes", "https:／／evil.example/invoices"],
+    [
+      "a scheme with division slashes",
+      `https:${String.fromCodePoint(0x22_15, 0x22_15)}evil.example`,
+    ],
+    // Folded, this is an address off the fence.
+    [
+      "a scheme of letters, a colon and slashes that only look like https://",
+      "ｈｔｔｐｓ：／／evil.example",
+    ],
   ])(
     "refuses a note naming %s with invalid_input, starting nothing and counting nothing",
     async (_case, note) => {

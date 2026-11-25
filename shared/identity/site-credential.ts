@@ -65,7 +65,7 @@ export function noteAsRead(note: string) {
 // small @, dot, colon or slash, as in "billing＠vendor．example" or
 // "https:／／", reads as the one it looks like. It is checked as well as the
 // note as it reads, never instead.
-function noteFolded(note: string) {
+export function noteFolded(note: string) {
   return noteAsRead(noteAsRead(note).normalize("NFKC"));
 }
 

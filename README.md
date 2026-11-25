@@ -473,20 +473,32 @@ it sends a note, and which are unassigned depends on the runtime's Unicode
 version. No email address either, anything shaped `name@host.part`, as
 typed, as it reads (below) or with its look-alike letters folded as TEEMIQ
 folds them (NFKC, with what shows nothing taken out before and after), so a
-fullwidth or small `@` or dot, as in `billing＠vendor．example`, hides none. An
-address written with a colon and two slashes (a backslash counts as a slash)
-must have text before its colon that ends in `https`, whatever its case, and
-a host after its slashes that the task's browser may open: under the origin's
-registrable domain, one of the login's `alsoHosts`, or one of Stripe's four
-invoice hosts, with no user name or password. Each such address is checked
-from where it starts, so one inside another's query, path or parentheses is
-checked too, and the note is checked as it reads: a character that shows
-nothing and that a note may carry, a direction mark, a grapheme joiner, a
-variation selector or a filler, does not hide an email address or an address
-it splits, though the note keeps it. Only those addresses are checked: the
-browser's fence alone decides where any other form leads, such as
-`https:host`, `//host` or a bare host. A note that fails any of this, a note
-on a task with no `loginId`,
+fullwidth or small `@` or dot, as in `billing＠vendor．example`, hides none.
+
+Every address in the note is checked wherever a URL parser would start one,
+so one inside another's query, path or parentheses is checked too. The note
+is checked as it reads, with what shows nothing and a note may carry taken
+out (a direction mark, a grapheme joiner, a variation selector or a filler,
+which the note itself keeps), and again with its look-alike letters folded
+as above, so a fullwidth colon or slash hides no address:
+`ｈｔｔｐｓ：／／host` is checked as `https://host`.
+
+- Every `http:` or `https:`, in any case of its letters, is `https:` and
+  exactly two forward slashes: `https:host`, `https:/host`, `https:\host`
+  and `http:host` are refused.
+- Two slashes, a backslash counting as a slash, stand only straight after
+  `https:`: `//host`, and two slashes inside a path, are refused.
+- Wherever a colon and two slashes stand, a backslash counting as a slash,
+  the text before the colon ends in `https`, in any case, and the host after
+  them is one the task's browser may open: under the origin's registrable
+  domain, one of the login's `alsoHosts`, or one of Stripe's four invoice
+  hosts, never Amazon, in an address that parses and has no user name or
+  password.
+
+A bare host, with no scheme and no slashes, is left to the browser's fence,
+which decides where it leads. TEEMIQ refuses all of this before it sends a
+note, and assist refuses no note TEEMIQ sends. A note that fails any of
+this, a note on a task with no `loginId`,
 or a `note` that is not a string answers `400 {"error":"invalid_input"}` and
 starts nothing, before the login is checked for an open task, and the start
 is not counted. Leaving it out, or `null`, sends none. Only the note's shape

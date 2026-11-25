@@ -11,6 +11,7 @@ import {
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   noteAsRead,
+  noteFolded,
   siteLoginPinSchema,
   siteTaskNoteSchema,
   type SiteGrant,
@@ -169,39 +170,64 @@ async function resolveLoginPin(
   return { login, ok: true as const };
 }
 
+// "https" in any case of its ASCII letters only, as TEEMIQ matches it: a
+// case-blind Unicode match would also take U+017F for an s, and refuse a note
+// TEEMIQ sends.
+const noteScheme = /[Hh][Tt][Tt][Pp][Ss]?:/gu;
+const noteSlashes = /[/\\]{2}/gu;
+const noteAfterHttps = /[Hh][Tt][Tt][Pp][Ss]:$/u;
+
 // A note may name the account's pages, never a page the task could not open.
-// It is read as it reads, its invisible characters gone, and every address
-// in it is checked from where it starts, so one inside another's query, path
-// or parentheses is checked too. Only an address written with a colon and
-// two slashes is checked, a backslash counted as a slash: the text before its
-// colon must end in https, whatever its case, and the host after its slashes
-// must be on the fence the browser worker keeps for the login, which refuses
-// Amazon before it. A word a removed mark joined to the scheme, such as
-// "2.https", still checks the host. An address that does not parse, or
-// carries a user name or password, names no page on it. The browser's fence
-// alone decides every other form, such as "https:host", "//host" or a bare
-// host: TEEMIQ sends those, so refusing one here before TEEMIQ does would
-// leave its way unable to start.
+// It is checked as it reads, its invisible characters gone, and again with
+// its look-alike letters folded (NFKC: a fullwidth colon or slash, as in
+// "https:／／host"), as TEEMIQ checks it. Each check looks wherever a URL
+// parser would start an address, so one inside another's query, path or
+// parentheses is checked too:
+// - every http: or https:, followed by any slashes or none, is https: and
+//   exactly two forward slashes, so "https:host", "https:/host",
+//   "https:\host" and "http:host" are refused;
+// - two slashes, a backslash counting as a slash, stand only straight after
+//   https:, so "//host" and "a//b" are refused;
+// - wherever a colon and two slashes stand, a backslash counting as a slash,
+//   the text before the colon ends in https, whatever its case, and the host
+//   after them is on the fence the browser worker keeps for the login, which
+//   refuses Amazon before it. A word a removed mark joined to the scheme, as
+//   in "2.https", still has its host checked. An address that does not
+//   parse, or carries a user name or password, names no page on it.
+// A bare host has no scheme or slashes, so the browser's fence alone decides
+// it. TEEMIQ refuses all of this before it sends a note, and nothing here is
+// stricter, so no note TEEMIQ sends leaves its way unable to start.
 function isNoteOnFence(
   note: string,
   login: z.infer<typeof siteLoginPinSchema>
 ) {
   const fence = siteNavigationFence(login.origin, login.alsoHosts);
-  const text = noteAsRead(note);
-  return [...text.matchAll(/:[/\\]{2}/gu)].every(({ index }) => {
-    if (!/https$/iu.test(text.slice(0, index))) return false;
-    const address = (
-      /^\S*/u.exec(text.slice(index - "https".length))?.[0] ?? ""
-    ).replace(/[.,;:!?'"’”»)\]}>]+$/u, "");
-    if (!URL.canParse(address)) return false;
-    const { hostname, password, username } = new URL(address);
-    return (
-      username === "" &&
-      password === "" &&
-      !isAmazonHost(hostname) &&
-      isInsideFence(hostname, fence)
-    );
-  });
+  const isOnFence = (text: string) =>
+    [...text.matchAll(noteScheme)].every(({ 0: scheme, index }) => {
+      const end = index + scheme.length;
+      return (
+        scheme.length === "https:".length && text.slice(end, end + 2) === "//"
+      );
+    }) &&
+    [...text.matchAll(noteSlashes)].every(
+      ({ 0: slashes, index }) =>
+        slashes === "//" && noteAfterHttps.test(text.slice(0, index))
+    ) &&
+    [...text.matchAll(/:[/\\]{2}/gu)].every(({ index }) => {
+      if (!/https$/iu.test(text.slice(0, index))) return false;
+      const address = (
+        /^\S*/u.exec(text.slice(index - "https".length))?.[0] ?? ""
+      ).replace(/[.,;:!?'"’”»)\]}>]+$/u, "");
+      if (!URL.canParse(address)) return false;
+      const { hostname, password, username } = new URL(address);
+      return (
+        username === "" &&
+        password === "" &&
+        !isAmazonHost(hostname) &&
+        isInsideFence(hostname, fence)
+      );
+    });
+  return [noteAsRead(note), noteFolded(note)].every(isOnFence);
 }
 
 // Every start spends model time and a browser, so a leaked token is capped per
