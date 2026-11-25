@@ -6,7 +6,6 @@ import {
   index,
   integer,
   pgTable,
-  primaryKey,
   text,
   timestamp,
   uuid,
@@ -41,7 +40,7 @@ export const whatsappMessages = pgTable(
   ]
 );
 
-// Who has turned WhatsApp's full access and Accounting off: a member's
+// Who has turned WhatsApp's full access off: a member's
 // Better Auth user id, or `*` for everyone, which only an administrator
 // sets and lifts. A row means locked.
 export const whatsappLocks = pgTable(
@@ -62,9 +61,8 @@ export const whatsappLocks = pgTable(
 );
 
 // The full-access WhatsApp chats, one per agent session: who and which
-// number it is for, the id of the member's last message that passed Twilio's
-// record check, and the Accounting state. The token TEEMIQ minted for the
-// chat is encrypted for it, as a site chat's is, and never leaves this row.
+// number it is for, and the id of the member's last message that passed
+// Twilio's record check.
 export const whatsappChats = pgTable(
   "whatsapp_chats",
   {
@@ -79,14 +77,6 @@ export const whatsappChats = pgTable(
     lastSidAt: at("last_sid_at"),
     // When the channel sent the chat's fixed line on what is on.
     announcedAt: at("announced_at"),
-    teemiqToken: text("teemiq_token"),
-    teemiqTokenExpiresAt: at("teemiq_token_expires_at"),
-    // The TEEMIQ user the chat's last vouch named.
-    teemiqUser: text("teemiq_user"),
-    // TEEMIQ's refusal code for the last vouch, and the message id it was
-    // for, so the same message is never offered again.
-    vouchRefusal: text("vouch_refusal"),
-    vouchRefusedSid: text("vouch_refused_sid"),
     createdAt: at("created_at").defaultNow().notNull(),
     endedAt: at("ended_at"),
   },
@@ -96,42 +86,10 @@ export const whatsappChats = pgTable(
       columns: [table.workspaceId],
       foreignColumns: [workspaces.id],
     }).onDelete("cascade"),
-    check(
-      "whatsapp_chats_teemiq_token_check",
-      sql`(${table.teemiqToken} IS NULL) = (${table.teemiqTokenExpiresAt} IS NULL)`
-    ),
     index("whatsapp_chats_member_idx").on(
       table.userId,
       table.phone,
       table.createdAt.desc()
-    ),
-  ]
-);
-
-// The looks and fetches a WhatsApp chat's Accounting started, by TEEMIQ's
-// fetch id, and the status TEEMIQ posted once each one ended.
-export const whatsappChatFetches = pgTable(
-  "whatsapp_chat_fetches",
-  {
-    chatId: uuid("chat_id").notNull(),
-    fetchId: text("fetch_id").notNull(),
-    recordedAt: at("recorded_at").defaultNow().notNull(),
-    status: text("status", { enum: ["done", "failed"] }),
-    statusAt: at("status_at"),
-    // When the agent learnt the status: a result frame in its session, or a
-    // later turn's context.
-    seenAt: at("seen_at"),
-  },
-  (table) => [
-    primaryKey({ columns: [table.chatId, table.fetchId] }),
-    foreignKey({
-      name: "whatsapp_chat_fetches_chat_id_fkey",
-      columns: [table.chatId],
-      foreignColumns: [whatsappChats.id],
-    }).onDelete("cascade"),
-    check(
-      "whatsapp_chat_fetches_status_check",
-      sql`(${table.status} IS NULL OR ${table.status} IN ('done', 'failed')) AND (${table.status} IS NULL) = (${table.statusAt} IS NULL)`
     ),
   ]
 );
@@ -184,23 +142,9 @@ export const whatsappBrowserTasks = pgTable(
   ]
 );
 
-export const whatsappChatsRelations = relations(
-  whatsappChats,
-  ({ many, one }) => ({
-    fetches: many(whatsappChatFetches),
-    workspace: one(workspaces, {
-      fields: [whatsappChats.workspaceId],
-      references: [workspaces.id],
-    }),
-  })
-);
-
-export const whatsappChatFetchesRelations = relations(
-  whatsappChatFetches,
-  ({ one }) => ({
-    chat: one(whatsappChats, {
-      fields: [whatsappChatFetches.chatId],
-      references: [whatsappChats.id],
-    }),
-  })
-);
+export const whatsappChatsRelations = relations(whatsappChats, ({ one }) => ({
+  workspace: one(workspaces, {
+    fields: [whatsappChats.workspaceId],
+    references: [workspaces.id],
+  }),
+}));

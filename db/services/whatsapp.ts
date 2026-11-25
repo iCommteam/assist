@@ -9,7 +9,7 @@ import {
 } from "@db";
 
 // The WhatsApp channel's durable state (db/schema/whatsapp.ts). Nothing here
-// logs a value: numbers, message ids and tokens stay in their rows.
+// logs a value: numbers and message ids stay in their rows.
 
 const messageRetention = sql`interval '2 days'`;
 const heldReplyRetention = sql`interval '7 days'`;
@@ -187,15 +187,11 @@ const chatColumns = {
   lastSidAt: whatsappChats.lastSidAt,
   phone: whatsappChats.phone,
   sessionId: whatsappChats.sessionId,
-  teemiqUser: whatsappChats.teemiqUser,
   userId: whatsappChats.userId,
-  vouchRefusal: whatsappChats.vouchRefusal,
-  vouchRefusedSid: whatsappChats.vouchRefusedSid,
   workspaceId: whatsappChats.workspaceId,
 };
 
-// The full-access chat a session is, never its token; undefined for every
-// other session.
+// The full-access chat a session is; undefined for every other session.
 export async function whatsappChatOfSession(sessionId: string) {
   const [chat] = await db
     .select(chatColumns)
@@ -218,15 +214,11 @@ export async function openWhatsappChats(userId?: string) {
     );
 }
 
-// The chat ended: it keeps no token and takes no result.
+// The chat ended.
 export async function endWhatsappChat(sessionId: string) {
   await db
     .update(whatsappChats)
-    .set({
-      endedAt: sql`coalesce(${whatsappChats.endedAt}, now())`,
-      teemiqToken: null,
-      teemiqTokenExpiresAt: null,
-    })
+    .set({ endedAt: sql`coalesce(${whatsappChats.endedAt}, now())` })
     .where(eq(whatsappChats.sessionId, sessionId));
 }
 

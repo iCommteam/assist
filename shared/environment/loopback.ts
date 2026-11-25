@@ -54,15 +54,10 @@ async function eveLoopbackOrigin() {
 
 interface WhatsappLoopbackBodies {
   "/internal/whatsapp/end": { member: string };
-  "/internal/whatsapp/result": {
-    chatId: string;
-    fetchId: string;
-    status: "done" | "failed";
-  };
 }
 
-// The WhatsApp channel's callbacks (agent/channels/whatsapp.ts): ending the
-// chats a lock covers, and posting a status TEEMIQ sent.
+// The WhatsApp channel's callback (agent/channels/whatsapp.ts): ending the
+// chats a lock covers.
 export async function postWhatsappLoopback<
   Route extends keyof WhatsappLoopbackBodies,
 >(route: Route, body: WhatsappLoopbackBodies[Route]) {

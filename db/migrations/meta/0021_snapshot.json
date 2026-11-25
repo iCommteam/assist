@@ -1,5 +1,5 @@
 {
-  "id": "d9b07092-1928-4429-acc5-e751125adcc7",
+  "id": "d1b50cfa-7459-4172-b00f-a640077e14bb",
   "prevId": "5a2efb69-194b-4c14-81d8-81c9d8c44a54",
   "version": "7",
   "dialect": "postgresql",
@@ -2321,76 +2321,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.whatsapp_chat_fetches": {
-      "name": "whatsapp_chat_fetches",
-      "schema": "",
-      "columns": {
-        "chat_id": {
-          "name": "chat_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "fetch_id": {
-          "name": "fetch_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "recorded_at": {
-          "name": "recorded_at",
-          "type": "timestamp (3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status_at": {
-          "name": "status_at",
-          "type": "timestamp (3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "seen_at": {
-          "name": "seen_at",
-          "type": "timestamp (3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "whatsapp_chat_fetches_chat_id_fkey": {
-          "name": "whatsapp_chat_fetches_chat_id_fkey",
-          "tableFrom": "whatsapp_chat_fetches",
-          "tableTo": "whatsapp_chats",
-          "columnsFrom": ["chat_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "whatsapp_chat_fetches_chat_id_fetch_id_pk": {
-          "name": "whatsapp_chat_fetches_chat_id_fetch_id_pk",
-          "columns": ["chat_id", "fetch_id"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "whatsapp_chat_fetches_status_check": {
-          "name": "whatsapp_chat_fetches_status_check",
-          "value": "(\"whatsapp_chat_fetches\".\"status\" IS NULL OR \"whatsapp_chat_fetches\".\"status\" IN ('done', 'failed')) AND (\"whatsapp_chat_fetches\".\"status\" IS NULL) = (\"whatsapp_chat_fetches\".\"status_at\" IS NULL)"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.whatsapp_chats": {
       "name": "whatsapp_chats",
       "schema": "",
@@ -2447,36 +2377,6 @@
         "announced_at": {
           "name": "announced_at",
           "type": "timestamp (3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "teemiq_token": {
-          "name": "teemiq_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "teemiq_token_expires_at": {
-          "name": "teemiq_token_expires_at",
-          "type": "timestamp (3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "teemiq_user": {
-          "name": "teemiq_user",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "vouch_refusal": {
-          "name": "vouch_refusal",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "vouch_refused_sid": {
-          "name": "vouch_refused_sid",
-          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -2543,12 +2443,7 @@
         }
       },
       "policies": {},
-      "checkConstraints": {
-        "whatsapp_chats_teemiq_token_check": {
-          "name": "whatsapp_chats_teemiq_token_check",
-          "value": "(\"whatsapp_chats\".\"teemiq_token\" IS NULL) = (\"whatsapp_chats\".\"teemiq_token_expires_at\" IS NULL)"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.whatsapp_held_replies": {

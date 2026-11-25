@@ -66,7 +66,7 @@ export const appRouter = createTRPCRouter({
         return removed;
       }),
   },
-  // WhatsApp's full access and Accounting, off and back on. A member locks
+  // WhatsApp's full access, off and back on. A member locks
   // and unlocks their own; an administrator locks everyone, and only an
   // administrator lifts that. A lock also ends the full chats it covers.
   whatsapp: {

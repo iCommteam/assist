@@ -690,10 +690,13 @@ format; re-run it after the upgrade.
 
 Team members can write to assist on WhatsApp, through Twilio. Each listed
 member's number reaches assist as that member, with full access in a mode
-made for a phone: it replies, asks a question with numbered options, searches
-the web, runs browser tasks, sends vault links and uses the member's Personal
-Info and saved notes. It has no schedules, no reactions, no approvals and no
-connector sign-ins on WhatsApp, and it keeps to the company's business work.
+made for a phone: the same general assistant as the web chat, which replies,
+asks a question with numbered options, searches the web, runs browser tasks,
+sends vault links and uses the member's Personal Info and saved notes. It has
+no schedules, no reactions, no approvals and no connector sign-ins on
+WhatsApp, and it keeps to the company's business work. It has no Accounting
+yet: TEEMIQ is not reachable from WhatsApp, and Accounting stays in TEEMIQ's
+own Assist panel.
 Replies are short text for a phone, split at Twilio's 1,600 characters per
 message, and each attachment goes as a message of its own.
 
@@ -761,8 +764,10 @@ Full access stays on until the member turns it off:
   had, with no record check. Turn back on, one press on the Workspace page
   while signed in to assist, takes effect with the member's next message.
 
-Every full chat opens with one fixed line from the channel, never the model:
-"Full access is on in this chat. Reply /lock to turn it off."
+Every full chat opens with one fixed line from the channel, never the model,
+naming what is on and how to turn it off: "Full access is on in this chat:
+the browser, vault links, Personal Info and saved notes. Reply /lock to turn
+it off."
 
 #### What a WhatsApp chat can do
 

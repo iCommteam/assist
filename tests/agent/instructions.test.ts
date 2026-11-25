@@ -620,13 +620,14 @@ describe("WhatsApp instructions", () => {
 });
 
 describe("WhatsApp full-access instructions", () => {
-  it("makes a full chat the member's business assistant on a phone, with the browser, vault links and memory, and nothing of iMessage", async () => {
+  it("makes a full chat the team's general assistant on a phone, with the browser, vault links and memory, and nothing of iMessage or Accounting", async () => {
     const selected = await evaluateDynamic(
       roleInstructions,
       whatsappFullContext()
     );
     for (const text of [
-      "You are iCommAssist, the company's business assistant on WhatsApp, talking with one member of the company's own team, with their full access",
+      "You are iCommAssist, the team's assistant, the same one as in assist's web app, here on WhatsApp with one member of the company's own team and their full access",
+      "Help with any of the company's work",
       "Delegate every browser task through `run_browser`",
       "on WhatsApp you help with the company's work only",
       "A one-time code is never typed on WhatsApp",
@@ -641,6 +642,7 @@ describe("WhatsApp full-access instructions", () => {
     expect(selected?.content).not.toContain("react_to_message");
     expect(selected?.content).not.toContain("schedules-create");
     expect(selected?.content).not.toContain("iMessage");
+    expect(selected?.content).not.toMatch(/accounting|bookkeeping|teemiq/iu);
   });
 
   it("gives a full chat execution safety and the worker contract, but not the chat app's voice or a site task's rules", async () => {

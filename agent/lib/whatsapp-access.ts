@@ -2,15 +2,14 @@ import type { SessionAuthContext } from "eve/context";
 import { z } from "zod";
 import { enrolledTeamMemberId } from "@db/services/auth/allowlist";
 import { whatsappChatOfSession, whatsappLockOf } from "@db/services/whatsapp";
-import { whatsappAccountingConfig } from "@shared/environment";
 import { memberEmailOf, numbersOfMember } from "@shared/environment/whatsapp";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
 // Who may use assist on WhatsApp, and how much of it, read again wherever it
 // matters: the channel on every message and reply, and the hooks of the root
-// agent, the browser worker and the accounting subagent before every turn,
-// model call and tool call. A listed member who can sign in gets full access
-// and Accounting until they lock it; a locked member keeps the narrow chat.
+// agent and the browser worker before every turn, model call and tool call.
+// A listed member who can sign in gets full access until they lock it; a
+// locked member keeps the narrow chat.
 
 // The authenticator of a WhatsApp session's principal, which decides its
 // mode (agent/lib/mode.ts).
@@ -30,8 +29,7 @@ function emailIsListed(email: string) {
 
 // The principal a listed member's WhatsApp messages run as. The narrow chat's
 // is exactly the one every chat had before full access, so a locked member's
-// chats carry on; the full chat's names its access, its number and whether
-// Accounting was configured when it started.
+// chats carry on; the full chat's names its access and its number.
 export function whatsappPrincipal(
   userId: string,
   email: string,
@@ -48,9 +46,6 @@ export function whatsappPrincipal(
   if (access.level === "full") {
     attributes.set("whatsappAccess", "full");
     attributes.set("whatsappNumber", access.number);
-    if (whatsappAccountingConfig()) {
-      attributes.set("whatsappAccounting", "on");
-    }
   }
   return {
     attributes: Object.fromEntries(attributes),
@@ -106,8 +101,8 @@ export async function whatsappAccessOf(member: {
   return lock.self || lock.everyone ? ("narrow" as const) : ("full" as const);
 }
 
-// For a delegated session, such as a browser worker or the accounting
-// subagent: whether its root session is a full WhatsApp chat, and if so
+// For a delegated session, such as a browser worker: whether its root
+// session is a full WhatsApp chat, and if so
 // whether that chat still has full access. A worker started by a turn the
 // member typed on the web carries the web sign-in, not the WhatsApp
 // principal, so the root's chat decides. "unknown" when the chat could not

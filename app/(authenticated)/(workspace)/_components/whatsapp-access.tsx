@@ -10,13 +10,11 @@ import { api } from "@web/trpc/client";
 // The member's WhatsApp numbers and whether full access is on, with one press
 // to lock it or turn it back on; an administrator can also lock everyone.
 export function WhatsappAccess({
-  accounting,
   admin,
   lockedEveryone,
   lockedSelf,
   numbers,
 }: {
-  readonly accounting: boolean;
   readonly admin: boolean;
   readonly lockedEveryone: boolean;
   readonly lockedSelf: boolean;
@@ -43,7 +41,6 @@ export function WhatsappAccess({
     lockEveryone.isPending ||
     unlockEveryone.isPending;
   const on = !lockedSelf && !lockedEveryone;
-  const what = accounting ? "Full access and Accounting" : "Full access";
 
   return (
     <div className="space-y-3">
@@ -53,7 +50,7 @@ export function WhatsappAccess({
             <div className="flex items-center gap-3 py-3" key={number}>
               <p className="min-w-0 flex-1 truncate type-label">{number}</p>
               <Badge variant={on ? "success" : "warning"}>
-                {on ? `${what} on` : "Locked"}
+                {on ? "Full access on" : "Locked"}
               </Badge>
             </div>
           ))}
@@ -117,8 +114,8 @@ export function WhatsappAccess({
         {lockedEveryone
           ? "An administrator locked WhatsApp for everyone: chats there are narrow until an administrator turns it back on."
           : lockedSelf
-            ? "Your WhatsApp chats are narrow: no browser, vault, Personal Info, saved notes or Accounting. Turning it back on takes effect with your next message."
-            : `${what} work in your WhatsApp chats. Lock ends those chats at once; you can also reply /lock on WhatsApp.`}
+            ? "Your WhatsApp chats are narrow: no browser, vault, Personal Info or saved notes. Turning it back on takes effect with your next message."
+            : "Full access works in your WhatsApp chats. Lock ends those chats at once; you can also reply /lock on WhatsApp."}
       </p>
       {failed && (
         <p className="type-caption text-destructive" role="alert">

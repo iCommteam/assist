@@ -52,16 +52,16 @@ import {
   whatsappSessionOf,
 } from "@agent/lib/whatsapp-access";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
-import { env, whatsappAccountingConfig } from "@shared/environment";
+import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 import { memberEmailOf } from "@shared/environment/whatsapp";
 
 // assist on WhatsApp, through Twilio. The team's members write to the
 // company's WhatsApp number and assist answers each as themselves. A listed
 // member who can sign in gets full access, the "whatsapp-full" mode
-// (agent/lib/mode.ts): the browser, vault links, Personal Info, saved notes
-// and, when TEEMIQ is configured, Accounting. /lock, or Lock on the Workspace
-// page, turns it off: a locked member keeps today's narrow "whatsapp" chat.
+// (agent/lib/mode.ts): the browser, vault links, Personal Info and saved
+// notes. /lock, or Lock on the Workspace page, turns it off: a locked member
+// keeps today's narrow "whatsapp" chat.
 // Twilio posts every incoming message to POST /eve/v1/whatsapp/messages, and
 // eve checks its signature against the public URL. Every message of a full
 // chat must also match Twilio's own record of it. Without
@@ -93,15 +93,13 @@ const failedSessionReply =
   "This chat stopped. Your next message starts a new one.";
 
 function lockReply() {
-  return `Full access and Accounting are off on WhatsApp. Turn them back on in assist: ${new URL("/", applicationOrigin()).toString()}`;
+  return `Full access is off on WhatsApp. Turn it back on in assist: ${new URL("/", applicationOrigin()).toString()}`;
 }
 
 // The one fixed line a full chat opens with, from the channel, never the
-// model.
+// model: what is on, and how to turn it off.
 function announcement() {
-  return whatsappAccountingConfig()
-    ? "Full access and Accounting are on in this chat. Reply /lock to turn them off."
-    : "Full access is on in this chat. Reply /lock to turn it off.";
+  return "Full access is on in this chat: the browser, vault links, Personal Info and saved notes. Reply /lock to turn it off.";
 }
 
 const events = {

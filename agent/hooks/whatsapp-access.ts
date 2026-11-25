@@ -11,9 +11,9 @@ import { claimWhatsappBrowserTask } from "@db/services/whatsapp";
 // call and tool call: a full chat stops as soon as its member's number is
 // unlisted, they can no longer sign in, or WhatsApp is locked for them or for
 // everyone; a narrow chat stops only when its member's number is unlisted.
-// The browser worker and the accounting subagent run the same check in their
-// own hooks, since this one never fires for their turns. A cancel reaches the
-// current turn only; a lock also ends the member's full chats
+// The browser worker runs the same check in its own hook, since this one
+// never fires for its turns. A cancel reaches the current turn only; a lock
+// also ends the member's full chats
 // (agent/channels/whatsapp.ts).
 //
 // A WhatsApp chat can show its member a question and, once per chat, the

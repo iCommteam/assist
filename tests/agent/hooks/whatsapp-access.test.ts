@@ -29,7 +29,6 @@ vi.mock("@db/services/whatsapp", () => ({
 }));
 vi.mock("@shared/environment", () => ({
   env: {},
-  whatsappAccountingConfig: () => undefined,
   whatsappNumbersVariable: () => mocks.numbers,
 }));
 
@@ -296,7 +295,7 @@ describe("the browser cap", () => {
 
   it("counts nothing else", async () => {
     const { cancel, ctx } = context(full);
-    await rootHook.events["task.started"]?.(started("run_accounting"), ctx);
+    await rootHook.events["task.started"]?.(started("web_search"), ctx);
     const webContext = context(web);
     await rootHook.events["task.started"]?.(
       started("run_browser"),
@@ -316,10 +315,7 @@ describe("the browser worker's WhatsApp kill switch", () => {
     lastSidAt: new Date(),
     phone: memberNumber,
     sessionId: "root-session",
-    teemiqUser: null,
     userId: "better-auth:user-1",
-    vouchRefusal: null,
-    vouchRefusedSid: null,
     workspaceId,
   };
 

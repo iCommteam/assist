@@ -78,7 +78,6 @@ describe("database migrations", () => {
            'whatsapp_messages',
            'whatsapp_locks',
            'whatsapp_chats',
-           'whatsapp_chat_fetches',
            'whatsapp_held_replies',
            'whatsapp_browser_tasks',
            'user',
@@ -90,7 +89,7 @@ describe("database migrations", () => {
     );
     const pendingConstraints = await pendingConstraintCount(database);
 
-    expect(tables.rows[0]?.count).toBe(30);
+    expect(tables.rows[0]?.count).toBe(29);
     expect(pendingConstraints).toBe(0);
     await expect(
       database.query("SELECT id FROM vault_items WHERE id = 'contact-1'")

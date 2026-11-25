@@ -77,27 +77,6 @@ const financeMcpUrlSchema = requiredValue.refine((value) => {
   );
 }, "TEEMIQ_FINANCE_MCP_URL must be an https URL.");
 
-// TEEMIQ's origin for Accounting on WhatsApp: its vouch route and its
-// finance-wa MCP route sit under it. An https origin, or plain http on this
-// machine for local development.
-const teemiqWhatsappUrlSchema = requiredValue.refine((value) => {
-  if (!URL.canParse(value)) return false;
-  const url = new URL(value);
-  return (
-    (url.protocol === "https:" ||
-      (url.protocol === "http:" &&
-        ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) &&
-    url.pathname === "/" &&
-    url.search === "" &&
-    url.hash === ""
-  );
-}, "TEEMIQ_WHATSAPP_URL must be an https origin, such as https://team.example.com.");
-
-const whatsappVouchTokenSchema = requiredValue.refine(
-  (value) => value.trim().length >= 32,
-  "ASSIST_WHATSAPP_VOUCH_TOKEN must contain at least 32 characters."
-);
-
 const twilioAccountSidSchema = requiredValue.refine(
   (value) => /^AC[0-9a-f]{32}$/u.test(value),
   "TWILIO_ACCOUNT_SID must be a Twilio account SID: AC and 32 hex digits."
@@ -161,12 +140,6 @@ export const env = createEnv({
     // TEEMIQ's finance MCP route, which a site chat reaches with the token
     // TEEMIQ gave that chat. Unset means site chats have no finance tools.
     TEEMIQ_FINANCE_MCP_URL: financeMcpUrlSchema.optional(),
-
-    // Accounting on WhatsApp (agent/subagents/accounting): TEEMIQ's origin,
-    // and the bearer assist shows TEEMIQ's vouch route. Either one unset
-    // means WhatsApp has no Accounting.
-    TEEMIQ_WHATSAPP_URL: teemiqWhatsappUrlSchema.optional(),
-    ASSIST_WHATSAPP_VOUCH_TOKEN: whatsappVouchTokenSchema.optional(),
 
     // WhatsApp through Twilio (agent/channels/whatsapp.ts): the account that
     // signs every webhook and sends every reply, and the WhatsApp number it
@@ -247,35 +220,6 @@ export function siteVariables() {
 export function whatsappNumbersVariable() {
   return process.env.ASSIST_WHATSAPP_NUMBERS?.trim() ?? "";
 }
-
-// TEEMIQ's origin and the bearer of its vouch route, or undefined while
-// Accounting on WhatsApp is off: either variable unset, or the bearer equal
-// to another secret, so that one leak never opens two doors. Read on every
-// call; the bearer is never logged.
-export function whatsappAccountingConfig() {
-  const url = env.TEEMIQ_WHATSAPP_URL;
-  const token = env.ASSIST_WHATSAPP_VOUCH_TOKEN?.trim();
-  if (url === undefined || token === undefined) return undefined;
-  const otherSecrets = [
-    env.BETTER_AUTH_SECRET,
-    env.SECRET_ENCRYPTION_KEY,
-    env.SCHEDULED_RUN_SECRET,
-    env.TWILIO_AUTH_TOKEN,
-    ...siteVariables().map((site) => site.token),
-  ].map((secret) => secret?.trim());
-  if (otherSecrets.includes(token)) {
-    if (!reportedVouchTokenReuse) {
-      reportedVouchTokenReuse = true;
-      console.warn(
-        "[whatsapp] ASSIST_WHATSAPP_VOUCH_TOKEN equals another secret; Accounting on WhatsApp is off."
-      );
-    }
-    return undefined;
-  }
-  return { origin: new URL(url).origin, token };
-}
-
-let reportedVouchTokenReuse = false;
 
 function hasValue(value: string | undefined) {
   return value !== undefined && value.trim().length > 0;

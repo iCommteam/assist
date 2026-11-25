@@ -57,7 +57,6 @@ const messagesPath = "/eve/v1/whatsapp/messages";
 // What the mocked environment reads; undefined is unset.
 interface TestConfig {
   accountSid: string | undefined;
-  accounting: { origin: string; token: string } | undefined;
   authToken: string | undefined;
   from: string | undefined;
   numbers: string;
@@ -66,7 +65,6 @@ interface TestConfig {
 const mocks = vi.hoisted(() => {
   const config: TestConfig = {
     accountSid: undefined,
-    accounting: undefined,
     authToken: undefined,
     from: undefined,
     numbers: "",
@@ -94,7 +92,6 @@ vi.mock("@shared/environment", () => ({
       return mocks.config.from;
     },
   },
-  whatsappAccountingConfig: () => mocks.config.accounting,
   whatsappNumbersVariable: () => mocks.config.numbers,
 }));
 vi.mock("@shared/environment/origin", () => ({
@@ -158,7 +155,6 @@ beforeEach(async () => {
   );
   Object.assign(mocks.config, {
     accountSid,
-    accounting: undefined,
     authToken,
     from: companyNumber,
     numbers: `${memberNumber}=Member@Example.test, +15550000009=other@example.test`,
@@ -435,7 +431,7 @@ function recordReads() {
 }
 
 const announcement =
-  "Full access is on in this chat. Reply /lock to turn it off.";
+  "Full access is on in this chat: the browser, vault links, Personal Info and saved notes. Reply /lock to turn it off.";
 
 describe("WhatsApp webhook", () => {
   it.each(["accountSid", "authToken", "from"] as const)(
@@ -493,32 +489,6 @@ describe("WhatsApp webhook", () => {
       `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages/${params.MessageSid}.json`
     );
     expect(sentTexts()).toEqual([announcement]);
-  });
-
-  it("names Accounting in the fixed line once TEEMIQ is configured, and marks the principal", async () => {
-    mocks.config.accounting = {
-      origin: "https://team.example.test",
-      token: "vouch-token-0123456789abcdefghijklmnop",
-    };
-    const harness = routeHarness();
-
-    await harness.post(webhook(messageParams()));
-
-    expect(sentTexts()).toEqual([
-      "Full access and Accounting are on in this chat. Reply /lock to turn them off.",
-    ]);
-    expect(harness.source.send).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        auth: {
-          ...memberPrincipal,
-          attributes: {
-            ...memberPrincipal.attributes,
-            whatsappAccounting: "on",
-          },
-        },
-      })
-    );
   });
 
   it.each([
@@ -1103,7 +1073,7 @@ describe("/lock", () => {
     ]);
     expect(harness.source.send).not.toHaveBeenCalled();
     expect(sentTexts()).toEqual([
-      `Full access and Accounting are off on WhatsApp. Turn them back on in assist: ${publicOrigin}/`,
+      `Full access is off on WhatsApp. Turn it back on in assist: ${publicOrigin}/`,
     ]);
     const chats = await client.query<{ ended: boolean }>(
       "SELECT ended_at IS NOT NULL AS ended FROM whatsapp_chats"

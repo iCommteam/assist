@@ -1,7 +1,12 @@
+import {
+  createCipheriv,
+  createDecipheriv,
+  hkdfSync,
+  randomBytes,
+} from "node:crypto";
 import { and, desc, eq, gt, isNotNull, lte, sql } from "drizzle-orm";
 import { db, siteChats } from "@db";
 import { getInstallationSecrets } from "@db/services/installation-secrets";
-import { openToken, sealToken } from "@db/services/sealed-token";
 import type { AccessScope } from "@shared/identity/access-scope";
 
 // The site's token for its own tools lives only here, encrypted for its chat,
@@ -10,6 +15,9 @@ import type { AccessScope } from "@shared/identity/access-scope";
 // a fresh one.
 const siteChatTokenLifetimeMs = 15 * 60_000;
 const tokenKeyLabel = "icommassist/site-chat-token/v1";
+const tokenPrefix = "v1.";
+const ivBytes = 12;
+const tagBytes = 16;
 
 // Every query names the site, the workspace and the site's person, so a chat
 // of another person, another site or a previous owner reads as unknown.
@@ -137,12 +145,7 @@ export async function storeSiteChatToken(
   const rows = await db
     .update(siteChats)
     .set({
-      teemiqToken: sealToken(
-        secretEncryptionKey,
-        tokenKeyLabel,
-        tokenAad(scope, chatId),
-        token
-      ),
+      teemiqToken: sealToken(secretEncryptionKey, scope, chatId, token),
       teemiqTokenExpiresAt: new Date(Date.now() + siteChatTokenLifetimeMs),
     })
     .where(chatOf(site, scope, siteUser, chatId))
@@ -176,12 +179,7 @@ export async function readSiteChatToken(
     .limit(1);
   if (!chat?.sealed || !chat.expiresAt) return undefined;
   const { secretEncryptionKey } = await getInstallationSecrets();
-  const token = openToken(
-    secretEncryptionKey,
-    tokenKeyLabel,
-    tokenAad(scope, chatId),
-    chat.sealed
-  );
+  const token = openToken(secretEncryptionKey, scope, chatId, chat.sealed);
   return token === undefined
     ? undefined
     : { expiresAt: chat.expiresAt.getTime(), token };
@@ -211,8 +209,69 @@ export async function clearSiteChatToken(sessionId: string, arrivedBy?: Date) {
     );
 }
 
-// Sealed under a key derived for chat tokens alone, bound to the workspace
-// and the chat, so a sealed token copied to another row never opens.
+// AES-256-GCM under a key derived for chat tokens alone, bound to the
+// workspace and the chat, so a sealed token copied to another row never opens.
+function sealToken(
+  secretEncryptionKey: string,
+  scope: AccessScope,
+  chatId: string,
+  token: string
+) {
+  const iv = randomBytes(ivBytes);
+  const cipher = createCipheriv(
+    "aes-256-gcm",
+    tokenKey(secretEncryptionKey),
+    iv,
+    {
+      authTagLength: tagBytes,
+    }
+  );
+  cipher.setAAD(tokenAad(scope, chatId));
+  const sealed = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
+  return `${tokenPrefix}${Buffer.concat([iv, sealed, cipher.getAuthTag()]).toString("base64url")}`;
+}
+
+function openToken(
+  secretEncryptionKey: string,
+  scope: AccessScope,
+  chatId: string,
+  value: string
+) {
+  if (!value.startsWith(tokenPrefix)) return undefined;
+  const bytes = Buffer.from(value.slice(tokenPrefix.length), "base64url");
+  if (bytes.length <= ivBytes + tagBytes) return undefined;
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      tokenKey(secretEncryptionKey),
+      bytes.subarray(0, ivBytes),
+      { authTagLength: tagBytes }
+    );
+    decipher.setAAD(tokenAad(scope, chatId));
+    decipher.setAuthTag(bytes.subarray(bytes.length - tagBytes));
+    return Buffer.concat([
+      decipher.update(bytes.subarray(ivBytes, bytes.length - tagBytes)),
+      decipher.final(),
+    ]).toString("utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+function tokenKey(secretEncryptionKey: string) {
+  return Buffer.from(
+    hkdfSync(
+      "sha256",
+      Buffer.from(secretEncryptionKey, "base64"),
+      "",
+      tokenKeyLabel,
+      32
+    )
+  );
+}
+
 function tokenAad(scope: AccessScope, chatId: string) {
-  return `${scope.workspaceId}\u0000site-chat-token\u0000${chatId}`;
+  return Buffer.from(
+    `${scope.workspaceId}\u0000site-chat-token\u0000${chatId}`
+  );
 }

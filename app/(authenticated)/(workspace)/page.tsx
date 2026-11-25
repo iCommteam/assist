@@ -6,7 +6,7 @@ import { WhatsappAccess } from "./_components/whatsapp-access";
 import { isAdminMember } from "@db/services/auth/allowlist";
 import { getAuthSession } from "@db/services/auth/session";
 import { whatsappLockOf } from "@db/services/whatsapp";
-import { env, whatsappAccountingConfig } from "@shared/environment";
+import { env } from "@shared/environment";
 import { numbersOfMember } from "@shared/environment/whatsapp";
 import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
@@ -60,7 +60,6 @@ async function whatsappSection() {
   if (numbers.length === 0 && !admin) return undefined;
   const lock = await whatsappLockOf(session.user.id);
   return {
-    accounting: whatsappAccountingConfig() !== undefined,
     admin,
     lockedEveryone: lock.everyone,
     lockedSelf: lock.self,
