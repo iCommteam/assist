@@ -180,6 +180,12 @@ interface Reference {
 
 // What a dry run's statistics.query says, as BigQuery's Job resource names it.
 interface DryRunQuery {
+  readonly referencedLogicalViews?: readonly (Reference & {
+    readonly tableId: string;
+  })[];
+  readonly referencedPropertyGraphs?: readonly (Reference & {
+    readonly propertyGraphId: string;
+  })[];
   readonly referencedRoutines?: readonly (Reference & {
     readonly routineId: string;
   })[];
@@ -202,6 +208,20 @@ let dryRun: DryRunAnswer;
 let results: () => Response;
 let refusal: Response | undefined;
 let runAnswer: () => Response;
+// A saved routine as BigQuery's Routine resource describes one.
+interface Routine {
+  readonly language?: string;
+  readonly remoteFunctionOptions?: {
+    readonly connection: string;
+    readonly endpoint: string;
+  };
+  readonly routineType: string;
+  readonly sparkOptions?: { readonly connection: string };
+}
+
+// The saved routines routines.get describes, by "dataset/routine"; any other
+// is not found.
+const routines = new Map<string, Routine>();
 
 function allowedDryRun(overrides: DryRunQuery = {}): DryRunAnswer {
   return {
@@ -257,6 +277,7 @@ function runsPosted() {
 
 beforeEach(() => {
   calls.length = 0;
+  routines.clear();
   signIn.failure = undefined;
   refusal = undefined;
   runAnswer = () => Response.json({ status: { state: "RUNNING" } });
@@ -284,6 +305,18 @@ beforeEach(() => {
         return Response.json({});
       }
       if (method === "GET" && path.startsWith("/queries/")) return results();
+      const routine = /^\/datasets\/([^/]+)\/routines\/([^/]+)$/u.exec(path);
+      if (method === "GET" && routine) {
+        const described = routines.get(
+          `${routine[1] ?? ""}/${routine[2] ?? ""}`
+        );
+        return described
+          ? Response.json(described)
+          : Response.json(
+              { error: { code: 404, message: "Not found: Routine" } },
+              { status: 404 }
+            );
+      }
       if (method === "GET" && /^\/datasets\/[^/]+\/tables$/u.test(path)) {
         return Response.json({
           nextPageToken: "page-2",
@@ -596,6 +629,218 @@ describe("bigquery_query", () => {
     expect(runsPosted()).toEqual([]);
   });
 
+  // Each of these joins one allowed table, so its dry run, faked here as
+  // listing that table alone, would pass: the text itself refuses it.
+  const listings = "`amzbi-418608.icommsync_amazon_data.listings`";
+  it.each([
+    [
+      "job history through INFORMATION_SCHEMA",
+      `SELECT j.query, j.user_email FROM \`region-europe-central2\`.INFORMATION_SCHEMA.JOBS_BY_PROJECT j CROSS JOIN (SELECT 1 FROM ${listings} LIMIT 1) l`,
+      "INFORMATION_SCHEMA",
+    ],
+    [
+      "another dataset's metadata, in lower case",
+      `select ddl from \`amzbi-418608.finance\`.information_schema.tables cross join (select 1 from ${listings} limit 1)`,
+      "INFORMATION_SCHEMA",
+    ],
+    [
+      "a region qualifier",
+      `SELECT * FROM \`region-eu\`.x CROSS JOIN ${listings}`,
+      "a region qualifier",
+    ],
+    [
+      "a federated query",
+      `SELECT * FROM EXTERNAL_QUERY('amzbi-418608.europe-central2.crm', 'SELECT * FROM users') CROSS JOIN (SELECT 1 FROM ${listings} LIMIT 1)`,
+      "EXTERNAL_QUERY",
+    ],
+    [
+      "an ML function",
+      `SELECT * FROM ML.PREDICT(MODEL \`amzbi-418608.icommsync_amazon_data.m\`, TABLE ${listings})`,
+      "an ML, AI or OBJ function",
+    ],
+    [
+      "an ML function, quoted and split by a comment",
+      `SELECT * FROM \`ml\` /* x */ . predict((SELECT 1 FROM ${listings}))`,
+      "an ML, AI or OBJ function",
+    ],
+    [
+      "an AI function",
+      `SELECT AI.GENERATE(title, connection_id => 'c') FROM ${listings}`,
+      "an ML, AI or OBJ function",
+    ],
+    [
+      "an object reference",
+      `SELECT OBJ.GET_ACCESS_URL(OBJ.MAKE_REF('gs://b/o', 'c'), 'r') FROM ${listings}`,
+      "an ML, AI or OBJ function",
+    ],
+    [
+      "a model",
+      `SELECT * FROM APPENDS(MODEL \`amzbi-418608.icommsync_amazon_data.m\`) CROSS JOIN ${listings}`,
+      "a model",
+    ],
+    [
+      "a graph",
+      `SELECT * FROM GRAPH_TABLE(amzbi-418608.icommsync_amazon_data.g MATCH (n) COLUMNS (n.id)) CROSS JOIN ${listings}`,
+      "GRAPH_TABLE",
+    ],
+    [
+      "the account's own address",
+      `SELECT REVERSE(SESSION_USER()) AS who FROM ${listings} LIMIT 1`,
+      "SESSION_USER",
+    ],
+  ])(
+    "refuses a query that reads %s, even beside an allowed table, and runs nothing",
+    async (_case, text, what) => {
+      await expect(
+        run(await tool("bigquery_query"), { sql: text })
+      ).rejects.toThrow(
+        `Refused: the query uses ${what}, which bigquery_query never runs.`
+      );
+      expect(jobsPosted()).toEqual([]);
+      expect(runsPosted()).toEqual([]);
+    }
+  );
+
+  it.each([
+    [
+      "an escaped name, which could spell INFORMATION_SCHEMA",
+      `SELECT * FROM \`amzbi-418608.icommsync_amazon_data.INFORMATION\\x5fSCHEMA.TABLES\` CROSS JOIN ${listings}`,
+    ],
+    ["a comment never closed", `SELECT 1 FROM ${listings} /* x`],
+    ["a string never closed", `SELECT 'x FROM ${listings}`],
+  ])("refuses a query with %s, and runs nothing", async (_case, text) => {
+    await expect(
+      run(await tool("bigquery_query"), { sql: text })
+    ).rejects.toThrow(
+      "Refused: a backquoted name holds a backslash, or a quote or comment is never closed."
+    );
+    expect(jobsPosted()).toEqual([]);
+  });
+
+  it("runs a query whose words only look like a refused name: a model column, an html alias, a regular expression and comment marks in strings", async () => {
+    const text = `SELECT model, html.title, 'a -- b # c' AS note FROM ${listings} AS html WHERE model IS NOT NULL AND REGEXP_CONTAINS(html.sku, r'^B0\\w+') -- the listings
+LIMIT 10`;
+
+    await expect(
+      run(await tool("bigquery_query"), { sql: text })
+    ).resolves.toMatchObject({ totalRows: 2 });
+    expect(runsPosted()).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      "a view",
+      {
+        referencedLogicalViews: [
+          { datasetId: "reporting", projectId: project, tableId: "clients" },
+        ],
+      },
+      `the query reaches ${project}.reporting`,
+    ],
+    [
+      "a property graph",
+      {
+        referencedPropertyGraphs: [
+          {
+            datasetId: "finance",
+            projectId: project,
+            propertyGraphId: "payments",
+          },
+        ],
+      },
+      `the query reaches ${project}.finance`,
+    ],
+  ])(
+    "refuses a query whose dry run lists %s outside the allowed datasets beside an allowed table",
+    async (_case, overrides, message) => {
+      dryRun = allowedDryRun(overrides);
+
+      await expect(run(await tool("bigquery_query"), { sql })).rejects.toThrow(
+        message
+      );
+      expect(runsPosted()).toEqual([]);
+    }
+  );
+
+  const routine = {
+    datasetId: "icommsync_amazon_data",
+    projectId: project,
+    routineId: "notify",
+  };
+
+  it.each([
+    [
+      "a remote function",
+      {
+        remoteFunctionOptions: {
+          connection:
+            "projects/amzbi-418608/locations/europe-central2/connections/c",
+          endpoint: "https://example.test/notify",
+        },
+        routineType: "SCALAR_FUNCTION",
+      },
+    ],
+    [
+      "a Python function",
+      { language: "PYTHON", routineType: "SCALAR_FUNCTION" },
+    ],
+    ["a stored procedure", { language: "SQL", routineType: "PROCEDURE" }],
+    [
+      "a Spark procedure",
+      {
+        language: "PYTHON",
+        routineType: "PROCEDURE",
+        sparkOptions: { connection: "c" },
+      },
+    ],
+  ])(
+    "refuses a query that calls %s of an allowed dataset, and runs nothing",
+    async (_case, described) => {
+      routines.set("icommsync_amazon_data/notify", described);
+      dryRun = allowedDryRun({ referencedRoutines: [routine] });
+
+      await expect(run(await tool("bigquery_query"), { sql })).rejects.toThrow(
+        `Refused: the query calls ${project}.icommsync_amazon_data.notify, which is not a SQL or JavaScript function that runs inside BigQuery.`
+      );
+      expect(runsPosted()).toEqual([]);
+    }
+  );
+
+  it("refuses a query whose routine cannot be read, and runs one that calls a plain SQL or JavaScript function", async () => {
+    dryRun = allowedDryRun({ referencedRoutines: [routine] });
+    await expect(run(await tool("bigquery_query"), { sql })).rejects.toThrow(
+      `Refused: the routine ${project}.icommsync_amazon_data.notify could not be read`
+    );
+    expect(runsPosted()).toEqual([]);
+
+    routines.set("icommsync_amazon_data/notify", {
+      language: "SQL",
+      routineType: "SCALAR_FUNCTION",
+    });
+    routines.set("amazon_source_data/parse", {
+      language: "JAVASCRIPT",
+      routineType: "TABLE_VALUED_FUNCTION",
+    });
+    dryRun = allowedDryRun({
+      referencedRoutines: [
+        routine,
+        routine,
+        {
+          datasetId: "amazon_source_data",
+          projectId: project,
+          routineId: "parse",
+        },
+      ],
+    });
+    await expect(
+      run(await tool("bigquery_query"), { sql })
+    ).resolves.toMatchObject({ totalRows: 2 });
+    expect(
+      calls.filter(({ url }) => url.pathname.includes("/routines/"))
+    ).toHaveLength(3);
+    expect(runsPosted()).toHaveLength(1);
+  });
+
   it("refuses a query its dry run says reads more than the cap, and runs one at the cap", async () => {
     dryRun = allowedDryRun({ totalBytesProcessed: String(cap + 1) });
     await expect(run(await tool("bigquery_query"), { sql })).rejects.toThrow(
@@ -645,6 +890,65 @@ describe("bigquery_query", () => {
       expect.stringContaining("The result was cut to 20000 characters")
     );
     expect(JSON.stringify(output)).not.toContain("x".repeat(501));
+  });
+
+  it("keeps a result of 1,000 long column names within 20,000 characters, showing the first 100 columns and saying so", async () => {
+    const names = Array.from(
+      { length: 1000 },
+      (_, at) => `${"c".repeat(290)}_${String(at).padStart(4, "0")}`
+    );
+    results = () =>
+      Response.json({
+        jobComplete: true,
+        rows: [{ f: names.map(() => ({ v: "1" })) }],
+        schema: { fields: names.map((name) => ({ name, type: "STRING" })) },
+        totalRows: "1",
+      });
+
+    const output = await run(await tool("bigquery_query"), { sql });
+
+    expect(JSON.stringify(output).length).toBeLessThanOrEqual(20_000);
+    expect(output).toHaveProperty("columns.length", 100);
+    expect(output).toHaveProperty(
+      "moreColumns",
+      "Only the first 100 of 1000 columns are shown. Select only the columns you need."
+    );
+    expect(output).toHaveProperty("rows.0.length", 100);
+  });
+
+  it("cleans the account's address and the key's id out of every name and value a query returns", async () => {
+    results = () =>
+      Response.json({
+        jobComplete: true,
+        rows: [
+          {
+            f: [
+              { v: `owner ${fixture.clientEmail}` },
+              { v: { f: [{ v: fixture.privateKeyId }] } },
+              { v: [{ v: fixture.clientEmail }] },
+            ],
+          },
+        ],
+        schema: {
+          fields: [
+            { name: "who", type: "STRING" },
+            {
+              fields: [{ name: fixture.privateKeyId, type: "STRING" }],
+              name: "key",
+              type: "RECORD",
+            },
+            { mode: "REPEATED", name: "also", type: "STRING" },
+          ],
+        },
+        totalRows: "1",
+      });
+
+    const output = await run(await tool("bigquery_query"), { sql });
+
+    expect(output).toMatchObject({
+      rows: [["owner [hidden]", { "[hidden]": "[hidden]" }, ["[hidden]"]]],
+    });
+    expect(secretsIn(JSON.stringify(output))).toEqual([]);
   });
 
   it("decodes records, repeated values and timestamps by the result's columns", async () => {

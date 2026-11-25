@@ -6,11 +6,14 @@ import type { bigqueryConfig } from "@shared/environment";
 // The company's BigQuery over its REST API, read only, for the tools in
 // agent/tools/bigquery.ts. The service account's roles are the real fence
 // (BigQuery Data Viewer on the allowed datasets, BigQuery Job User on the
-// project); this file is the second one. A query runs only after its dry run
-// says it is one SELECT that reads tables of the allowed datasets alone, and
-// at most the byte cap; it then runs with that cap as maximumBytesBilled.
-// Nothing here logs or returns the key, the access token, or an error object:
-// only fixed messages and BigQuery's own error text, cleaned of both.
+// project); this file is the second one, and it fails closed. A query runs
+// only when its text names nothing the dry run's lists can leave out, its dry
+// run says it is one SELECT that reads tables, views, graphs and routines of
+// the allowed datasets alone, at most the byte cap, every routine it calls is
+// a plain SQL or JavaScript function, and it then runs with that cap as
+// maximumBytesBilled. Nothing here logs or returns the key, the account's
+// address, the access token, or an error object: only fixed messages, and
+// BigQuery's own error text and result values, cleaned of all of them.
 
 type BigqueryConfig = NonNullable<ReturnType<typeof bigqueryConfig>>;
 
@@ -25,6 +28,9 @@ export const maxQueryRows = 200;
 export const maxSqlLength = 20_000;
 const maxTables = 1000;
 const maxColumns = 400;
+const maxResultColumns = 100;
+const maxColumnNameLength = 128;
+const maxRoutines = 10;
 const maxOutputLength = 20_000;
 const maxCellLength = 500;
 const maxErrorLength = 600;
@@ -141,6 +147,12 @@ function cleaned(
   config: BigqueryConfig,
   token: string | undefined
 ) {
+  return bounded(hidden(text, config, token), maxErrorLength);
+}
+
+// The text with the key, its id, the account's address and the token taken
+// out: for error text, and for every name and value a query returns.
+function hidden(text: string, config: BigqueryConfig, token?: string) {
   const { clientEmail, privateKey, privateKeyId } = config.credentials;
   const secrets = [
     privateKey,
@@ -151,7 +163,7 @@ function cleaned(
   ].filter((secret): secret is string => secret !== undefined);
   let clean = text;
   for (const secret of secrets) clean = clean.replaceAll(secret, "[hidden]");
-  return bounded(clean, maxErrorLength);
+  return clean;
 }
 
 function bounded(text: string, max: number) {
@@ -331,12 +343,23 @@ const tableReferenceSchema = z.object({
   projectId: z.string(),
 });
 
+const routineReferenceSchema = z.object({
+  datasetId: z.string(),
+  projectId: z.string(),
+  routineId: z.string(),
+});
+
+// The Job resource's statistics.query. A view is listed under
+// referencedLogicalViews, apart from the base tables under referencedTables,
+// and a graph under referencedPropertyGraphs; all four lists are checked.
 const dryRunSchema = z.object({
   statistics: z
     .object({
       query: z
         .object({
-          referencedRoutines: z.array(tableReferenceSchema).optional(),
+          referencedLogicalViews: z.array(tableReferenceSchema).optional(),
+          referencedPropertyGraphs: z.array(tableReferenceSchema).optional(),
+          referencedRoutines: z.array(routineReferenceSchema).optional(),
           referencedTables: z.array(tableReferenceSchema).optional(),
           statementType: z.string().optional(),
           totalBytesProcessed: z.string().optional(),
@@ -345,6 +368,14 @@ const dryRunSchema = z.object({
       totalBytesProcessed: z.string().optional(),
     })
     .optional(),
+});
+
+// A routine as routines.get describes it. Its kind and language are kept;
+// every other field stays too, so a field naming a runtime outside BigQuery
+// (remoteFunctionOptions, sparkOptions and any later one) can be refused.
+const routineSchema = z.looseObject({
+  language: z.string().optional(),
+  routineType: z.string().optional(),
 });
 
 const jobSchema = z.object({
@@ -377,6 +408,7 @@ export async function runQuery(
   },
   signal: AbortSignal
 ) {
+  checkText(input.sql);
   const location = config.location;
   const query = { query: input.sql, useLegacySql: false };
   const dryRun = dryRunSchema.parse(
@@ -391,6 +423,11 @@ export async function runQuery(
     })
   );
   const bytes = checkDryRun(config, dryRun);
+  await checkRoutines(
+    config,
+    dryRun.statistics?.query?.referencedRoutines ?? [],
+    signal
+  );
 
   // The job's id is chosen here, so a job whose start or wait fails, times
   // out or is cancelled can be cancelled by it.
@@ -423,14 +460,28 @@ export async function runQuery(
     throw error;
   }
 
-  const fields = results.schema?.fields ?? [];
+  // At most 100 columns, each name bounded, so the header alone always fits
+  // the output bound; every name and value is cleaned of the key, its id
+  // and the account's address.
+  const allFields = results.schema?.fields ?? [];
+  const fields = allFields.slice(0, maxResultColumns);
+  const clean = (text: string) => hidden(text, config);
   const rows = (results.rows ?? [])
     .slice(0, maxQueryRows)
-    .map((row) => fields.map((field, at) => cellOf(field, row.f[at]?.v)));
+    .map((row) =>
+      fields.map((field, at) => cellOf(field, row.f[at]?.v, clean))
+    );
   const totalRows = Number(results.totalRows ?? rows.length);
   return fitted(
     {
-      columns: fields.map((field) => field.name),
+      columns: fields.map((field) =>
+        bounded(clean(field.name), maxColumnNameLength)
+      ),
+      ...(allFields.length > fields.length
+        ? {
+            moreColumns: `Only the first ${String(fields.length)} of ${String(allFields.length)} columns are shown. Select only the columns you need.`,
+          }
+        : undefined),
       rows,
       totalRows,
       ...(totalRows > rows.length
@@ -443,6 +494,88 @@ export async function runQuery(
     },
     "rows"
   );
+}
+
+// What the dry run's lists can leave out, refused by the statement's own text
+// before anything runs: INFORMATION_SCHEMA and its region qualifier, which
+// read job history and other datasets' metadata; EXTERNAL_QUERY, which reads
+// another database through a connection; ML, AI and OBJ functions and the
+// models they name, which reach models, connections and Cloud Storage;
+// GRAPH_TABLE; and SESSION_USER, the account's own address. The text is read
+// twice, as written and with its comments taken out, each time with its
+// backquotes as spaces and the spaces around dots dropped, so a quoted,
+// split or spaced name is still found. Names in string literals are refused
+// too. A quoted name takes a string's escapes, so one with a backslash, which
+// could spell any of these, is refused whole.
+const refusedNames = [
+  [/INFORMATION_SCHEMA/iu, "INFORMATION_SCHEMA"],
+  [/\bregion-/iu, "a region qualifier"],
+  [/\bEXTERNAL_QUERY\b/iu, "EXTERNAL_QUERY"],
+  [/\b(?:ML|AI|OBJ)\./iu, "an ML, AI or OBJ function"],
+  [/\bMODEL\s+[\w-]+\./iu, "a model"],
+  [/\bGRAPH_TABLE\b/iu, "GRAPH_TABLE"],
+  [/\bSESSION_USER\b/iu, "SESSION_USER"],
+] as const;
+
+function checkText(sql: string) {
+  const code = codeOf(sql);
+  if (code === undefined) {
+    throw new BigqueryError(
+      "Refused: a backquoted name holds a backslash, or a quote or comment is never closed. Write each name plainly."
+    );
+  }
+  const texts = [sql, code].map((text) =>
+    text.replaceAll("`", " ").replaceAll(/\s*\.\s*/gu, ".")
+  );
+  for (const [pattern, what] of refusedNames) {
+    if (texts.some((text) => pattern.test(text))) {
+      throw new BigqueryError(
+        `Refused: the query uses ${what}, which bigquery_query never runs. Read only the allowed datasets' tables; bigquery_list_tables and bigquery_describe_table say what exists.`
+      );
+    }
+  }
+}
+
+// The statement with its comments as spaces, as GoogleSQL reads it: a
+// comment starts at --, # or /* outside a string or a backquoted name, and a
+// backslash in a string keeps the next character in it, raw or not.
+// Undefined for a backquoted name with a backslash, or a string, name or
+// comment left open.
+function codeOf(sql: string) {
+  let code = "";
+  let at = 0;
+  while (at < sql.length) {
+    const char = sql.charAt(at);
+    const pair = sql.slice(at, at + 2);
+    if (pair === "--" || char === "#") {
+      const end = sql.indexOf("\n", at);
+      at = end === -1 ? sql.length : end;
+      code += " ";
+    } else if (pair === "/*") {
+      const end = sql.indexOf("*/", at + 2);
+      if (end === -1) return undefined;
+      at = end + 2;
+      code += " ";
+    } else if (char === "`") {
+      const end = sql.indexOf("`", at + 1);
+      if (end === -1 || sql.slice(at, end).includes("\\")) return undefined;
+      code += sql.slice(at, end + 1);
+      at = end + 1;
+    } else if (char === "'" || char === '"') {
+      const quote = sql.startsWith(char.repeat(3), at) ? char.repeat(3) : char;
+      let end = at + quote.length;
+      while (end < sql.length && !sql.startsWith(quote, end)) {
+        end += sql.charAt(end) === "\\" ? 2 : 1;
+      }
+      if (end >= sql.length) return undefined;
+      code += sql.slice(at, end + quote.length);
+      at = end + quote.length;
+    } else {
+      code += char;
+      at += 1;
+    }
+  }
+  return code;
 }
 
 function checkDryRun(
@@ -464,7 +597,12 @@ function checkDryRun(
       "Refused: the query reads no table of the allowed datasets. Use bigquery_list_tables and bigquery_describe_table for what exists."
     );
   }
-  const outside = [...tables, ...(statistics?.referencedRoutines ?? [])].find(
+  const outside = [
+    ...tables,
+    ...(statistics?.referencedLogicalViews ?? []),
+    ...(statistics?.referencedPropertyGraphs ?? []),
+    ...(statistics?.referencedRoutines ?? []),
+  ].find(
     (reference) =>
       reference.projectId !== config.project ||
       !config.datasets.includes(reference.datasetId)
@@ -494,6 +632,66 @@ function checkDryRun(
 
 function gibibytes(bytes: number) {
   return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+}
+
+// Every saved routine the query calls, read with routines.get, must be a
+// SQL or JavaScript function, scalar, aggregate or table-valued, that runs
+// inside BigQuery: a remote function calls an endpoint with the query's
+// values, and a Python or Spark routine runs code elsewhere. A routine that
+// cannot be read is refused. A temporary function written in the query is
+// not a saved routine and is not listed.
+const plainRoutineTypes = new Set([
+  "AGGREGATE_FUNCTION",
+  "SCALAR_FUNCTION",
+  "TABLE_VALUED_FUNCTION",
+]);
+const plainLanguages = new Set(["JAVASCRIPT", "SQL"]);
+
+async function checkRoutines(
+  config: BigqueryConfig,
+  references: readonly z.infer<typeof routineReferenceSchema>[],
+  signal: AbortSignal
+) {
+  const routines = [
+    ...new Map(
+      references.map((reference) => [
+        `${reference.datasetId}.${reference.routineId}`,
+        reference,
+      ])
+    ).values(),
+  ];
+  if (routines.length > maxRoutines) {
+    throw new BigqueryError(
+      `Refused: the query calls ${String(routines.length)} saved routines, over ${String(maxRoutines)}.`
+    );
+  }
+  for (const { datasetId, routineId } of routines) {
+    const name = `${config.project}.${datasetId}.${routineId}`;
+    let routine: z.infer<typeof routineSchema>;
+    try {
+      routine = routineSchema.parse(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- At most 10 routines, read one at a time.
+        await call(config, {
+          method: "GET",
+          path: `/datasets/${encodeURIComponent(datasetId)}/routines/${encodeURIComponent(routineId)}`,
+          signal,
+        })
+      );
+    } catch {
+      throw new BigqueryError(
+        `Refused: the routine ${name} could not be read, so the query does not run.`
+      );
+    }
+    const plain =
+      plainRoutineTypes.has(routine.routineType ?? "") &&
+      plainLanguages.has(routine.language ?? "SQL") &&
+      !Object.keys(routine).some((key) => key.endsWith("Options"));
+    if (!plain) {
+      throw new BigqueryError(
+        `Refused: the query calls ${name}, which is not a SQL or JavaScript function that runs inside BigQuery.`
+      );
+    }
+  }
 }
 
 // The first page of the job's results, once BigQuery says the job is
@@ -547,15 +745,19 @@ async function cancelJob(config: BigqueryConfig, jobId: string) {
 type Cell = string | null | Cell[] | { readonly [name: string]: Cell };
 
 // One value by its column: a record as an object, a repeated column as a
-// list, a timestamp as an ISO time, every other value as BigQuery's own text.
+// list, a timestamp as an ISO time, every other value as BigQuery's own text,
+// cleaned and bounded.
 function cellOf(
   field: Column,
-  value: z.infer<ReturnType<typeof z.json>> | undefined
+  value: z.infer<ReturnType<typeof z.json>> | undefined,
+  clean: (text: string) => string
 ): Cell {
   if (field.mode === "REPEATED") {
     const items = z.array(cellSchema).safeParse(value);
     return items.success
-      ? items.data.map(({ v }) => cellOf({ ...field, mode: "NULLABLE" }, v))
+      ? items.data.map(({ v }) =>
+          cellOf({ ...field, mode: "NULLABLE" }, v, clean)
+        )
       : null;
   }
   if (field.type === "RECORD" || field.type === "STRUCT") {
@@ -563,15 +765,15 @@ function cellOf(
     if (!record.success) return null;
     return Object.fromEntries(
       (field.fields ?? []).map((child, at) => [
-        child.name,
-        cellOf(child, record.data.f[at]?.v),
+        bounded(clean(child.name), maxColumnNameLength),
+        cellOf(child, record.data.f[at]?.v, clean),
       ])
     );
   }
   const text = z.string().safeParse(value);
   if (!text.success) return null;
   if (field.type === "TIMESTAMP") return isoOfTimestamp(text.data);
-  return bounded(text.data, maxCellLength);
+  return bounded(clean(text.data), maxCellLength);
 }
 
 // The results are asked for with useInt64Timestamp, so a timestamp is whole
@@ -591,7 +793,7 @@ function isoOfMillis(millis: string) {
 
 // A result cut to the output bound: the items of its one list (rows,
 // tables or columns) are dropped from the end until it fits, and the result
-// says so.
+// says so. One that does not fit even with none is refused.
 function fitted<
   const Key extends "columns" | "rows" | "tables",
   T extends Readonly<Record<Key, readonly (string | readonly Cell[])[]>>,
@@ -606,7 +808,13 @@ function fitted<
   while (items.length > 0 && JSON.stringify(cut()).length > maxOutputLength) {
     items.pop();
   }
-  return cut();
+  const shown = cut();
+  if (JSON.stringify(shown).length > maxOutputLength) {
+    throw new BigqueryError(
+      `The result is wider than ${String(maxOutputLength)} characters even without its ${key}. Select fewer columns, with shorter names.`
+    );
+  }
+  return shown;
 }
 
 // The labels every job carries, so the team can find assist's jobs in

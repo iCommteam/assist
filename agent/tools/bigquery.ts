@@ -54,7 +54,7 @@ export default defineDynamic((context) => {
     }),
     bigquery_query: defineTool({
       availableInSubagents: false,
-      description: `Run one read-only GoogleSQL (Standard SQL) SELECT statement on the company's BigQuery (${where}). Name each table in full, as \`${project}.<dataset>.<table>\`. A dry run checks it first: anything but one SELECT, a table outside these datasets, or a query that would read more than ${(maxBytes / 1024 ** 3).toFixed(2)} GiB is refused. At most ${String(maxQueryRows)} rows come back; aggregate in SQL instead of reading raw rows.`,
+      description: `Run one read-only GoogleSQL (Standard SQL) SELECT statement on the company's BigQuery (${where}). Name each table in full, as \`${project}.<dataset>.<table>\`. A dry run checks it first: anything but one SELECT, a table, view or routine outside these datasets, or a query that would read more than ${(maxBytes / 1024 ** 3).toFixed(2)} GiB is refused, and so is any query naming INFORMATION_SCHEMA, EXTERNAL_QUERY, an ML, AI or OBJ function, GRAPH_TABLE or SESSION_USER. At most ${String(maxQueryRows)} rows come back; aggregate in SQL instead of reading raw rows.`,
       inputSchema: z.object({
         sql: z.string().trim().min(1).max(maxSqlLength),
       }),

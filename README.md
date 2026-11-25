@@ -878,13 +878,23 @@ The agent gets three tools:
 - `bigquery_list_tables`: one dataset's tables and views, 1,000 at a time.
 - `bigquery_describe_table`: one table's columns, row count, size,
   partitioning, clustering and, for a view, its SQL.
-- `bigquery_query`: one GoogleSQL statement. A dry run checks it first: it
-  must be one `SELECT`, it must read at least one table, every table and
-  routine it reads must be in an allowed dataset of the project, and it must
-  read at most `ASSIST_BIGQUERY_MAX_BYTES`. Only then does the same text run,
-  with that cap as `maximumBytesBilled` and a 60-second limit; a job still
-  running then is cancelled. At most 200 rows come back, with the total, as
-  compact JSON of at most 20,000 characters.
+- `bigquery_query`: one GoogleSQL statement. Its text is checked first, since
+  a dry run's lists of what a query reads leave some sources out: a query
+  naming `INFORMATION_SCHEMA` or a `region-` qualifier, `EXTERNAL_QUERY`, an
+  `ML.`, `AI.` or `OBJ.` function or a `MODEL`, `GRAPH_TABLE` or
+  `SESSION_USER` is refused, read with its comments taken out and its
+  backquotes and the spaces around dots dropped, and so is a backquoted name
+  with a backslash, which could spell one of them. A dry run then checks it:
+  it must be one `SELECT`, it must read at least one table, every table,
+  view, property graph and routine it reads must be in an allowed dataset of
+  the project, and it must read at most `ASSIST_BIGQUERY_MAX_BYTES`. Every
+  saved routine it calls is read with `routines.get` (BigQuery Data Viewer
+  allows it) and must be a SQL or JavaScript function that runs inside
+  BigQuery, never a remote, Python or Spark one. Only then does the same text
+  run, with that cap as `maximumBytesBilled` and a 60-second limit; a job
+  still running then is cancelled. At most 200 rows and 100 columns come
+  back, with the total, as compact JSON of at most 20,000 characters, every
+  name and value cleaned of the key, its id and the account's address.
 
 Every job's id starts with `assist_`, and it carries the labels
 `app=assist`, `assist_tool=bigquery_query`, `assist_mode` (`interactive` or
