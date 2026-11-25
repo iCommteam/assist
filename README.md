@@ -803,6 +803,11 @@ BigQuery data, read only" too.
   in assist's web app, `/chat/{sessionId}`, and the member types the code
   there for the same parked browser worker. Passwords go only into the vault
   page that `request_vault_setup` links to.
+- When the member wants to save, see, change or delete a saved login, card,
+  address or contact, or asks where their saved details are, the agent sends
+  the vault page itself, `/vault` on `BETTER_AUTH_URL`'s origin, bare on its
+  own line, and tells them to sign in to assist there if it asks. The web chat
+  sends the same link. The narrow chat has no vault.
 - A member may start 10 browser workers a day from WhatsApp; the eleventh
   stops the turn.
 - Meta lets a business send free-form replies only within 24 hours of the

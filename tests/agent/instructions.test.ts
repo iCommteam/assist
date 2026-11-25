@@ -704,6 +704,88 @@ describe("WhatsApp full-access instructions", () => {
   });
 });
 
+describe("the vault page's link", () => {
+  const vaultPage = "https://example.com/vault";
+
+  it.each([
+    ["the web chat", () => dynamicContext("authjs")],
+    ["a full WhatsApp chat", () => whatsappFullContext()],
+  ])(
+    "sends the vault page from the configured origin in %s for every vault need, and keeps the setup and import links for theirs",
+    async (_case, context) => {
+      const selected = await evaluateDynamic(roleInstructions, context());
+      const line = selected?.content
+        .split("\n")
+        .find((text) => text.includes("The vault page is"));
+
+      expect(line).toContain(`The vault page is ${vaultPage}.`);
+      for (const text of [
+        "save, see, change or delete a saved login, card, address or contact",
+        "ask where their passwords or saved details are",
+        "whenever you tell them to save something in the vault",
+        "You cannot see what is saved there",
+        "A missing login the worker reported still gets the `request_vault_setup` link",
+        "an import from Chrome or Google Password Manager the `request_vault_import` link",
+      ]) {
+        expect(line).toContain(text);
+      }
+      expect(selected?.content).not.toContain("{{");
+    }
+  );
+
+  // The web chat still takes a pending challenge's one-time code in the
+  // conversation, so the vault line refuses only what belongs in the vault.
+  it("tells the web chat never to ask for what belongs in the vault, and keeps the one-time code exception", async () => {
+    const selected = await evaluateDynamic(
+      roleInstructions,
+      dynamicContext("authjs")
+    );
+    const line = selected?.content
+      .split("\n")
+      .find((text) => text.includes("The vault page is"));
+
+    expect(line).toContain(
+      "Never ask for what they would save there, such as a password or a card number, in chat."
+    );
+    expect(line).not.toMatch(/secret|code/iu);
+    expect(selected?.content).toContain(
+      "A transient OTP for a currently pending challenge is the exception"
+    );
+  });
+
+  it("tells a full WhatsApp chat to send a vault link bare, with what to do there and to sign in if asked", async () => {
+    const selected = await evaluateDynamic(
+      roleInstructions,
+      whatsappFullContext()
+    );
+
+    for (const text of [
+      "Send each one as a bare link on its own line, with one line saying what to do there.",
+      "With a vault link, add one short line: if the page asks them to sign in, they sign in to assist there and it opens the vault.",
+      "Passwords go only into assist's vault page, through the link `request_vault_setup` or `request_vault_import` returns, or the vault page's own link below.",
+    ]) {
+      expect(selected?.content).toContain(text);
+    }
+  });
+
+  it("names no vault page in the narrow WhatsApp chat, a site chat or a scheduled run, and leaves no placeholder in any role", async () => {
+    const narrow = await evaluateDynamic(roleInstructions, whatsappContext());
+    expect(narrow?.content).not.toContain("/vault");
+
+    for (const context of [
+      whatsappContext(),
+      siteChatContext(),
+      dynamicContext("scheduled-worker"),
+      dynamicContext("scheduled-result"),
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One role at a time keeps the failure readable.
+      const selected = await evaluateDynamic(roleInstructions, context);
+      expect(selected?.content).not.toContain(vaultPage);
+      expect(selected?.content).not.toContain("{{");
+    }
+  });
+});
+
 function whatsappFullContext(sender: "whatsapp" | "web" = "whatsapp") {
   const workspaceId = accessScopeForUser("better-auth:member-1").workspaceId;
   const whatsapp = {
