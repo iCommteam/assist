@@ -625,6 +625,9 @@ describe("POST /api/site/tasks owner's note", () => {
     origin: "https://auth.openai.com",
   };
   const rightToLeftMark = String.fromCodePoint(0x20_0f);
+  const leftToRightMark = String.fromCodePoint(0x20_0e);
+  const zeroWidthSpace = String.fromCodePoint(0x20_0b);
+  const combiningAcute = String.fromCodePoint(0x03_01);
 
   beforeEach(() => {
     services.readSiteLoginPin.mockResolvedValue(openai);
@@ -689,6 +692,14 @@ describe("POST /api/site/tasks owner's note", () => {
     ["a host the login also uses", "https://chatgpt.com/#settings/billing"],
     ["Stripe's billing portal", "HTTPS://billing.stripe.com/p/login/abc"],
     ["an address without a scheme", "evil.example/invoices"],
+    [
+      "Hebrew with a mark on each side of an address on the fence",
+      `חשבוניות${rightToLeftMark}https://platform.openai.com/billing${rightToLeftMark} ← חיוב`,
+    ],
+    [
+      "an address on the fence inside another's query",
+      "https://openai.com/a?next=https://platform.openai.com/b",
+    ],
   ])("starts a task whose note has %s", async (_case, note) => {
     const response = await startWithNote(note);
 
@@ -715,6 +726,22 @@ describe("POST /api/site/tasks owner's note", () => {
     ["a pop directional isolate", `Billing${String.fromCodePoint(0x20_69)}`],
     ["an email address", "Invoices go to billing@vendor.example"],
     ["a Hebrew email address", "הכתובת: חשבונות@ספק.co.il"],
+    [
+      "an email address with a mark after its @",
+      `Sign in as billing@${leftToRightMark}vendor.example`,
+    ],
+    [
+      "an email address with a mark before its dot",
+      `billing@vendor${rightToLeftMark}.example`,
+    ],
+    [
+      "an email address with a zero-width space",
+      `billing@vendor${zeroWidthSpace}.example`,
+    ],
+    [
+      "an email address with a combining accent",
+      `billing@vendo${combiningAcute}r.example`,
+    ],
   ])(
     "refuses %s with invalid_input before any lookup, starting nothing",
     async (_case, note) => {
@@ -758,6 +785,38 @@ describe("POST /api/site/tasks owner's note", () => {
       "https://openai.com then https://evil.example",
     ],
     ["a subdomain of a host the login also uses", "https://www.chatgpt.com/"],
+    [
+      "an address inside another's query",
+      "https://openai.com/login?next=https://evil.example/steal",
+    ],
+    [
+      "an address inside another's path",
+      "https://platform.openai.com/https://evil.example/invoice.pdf",
+    ],
+    [
+      "an address inside another's parentheses",
+      "https://openai.com/x(https://evil.example)",
+    ],
+    [
+      "a mark inside the scheme",
+      `Start at https${leftToRightMark}://evil.example/invoices`,
+    ],
+    [
+      "a zero-width space inside the scheme",
+      `https${zeroWidthSpace}://evil.example/invoices`,
+    ],
+    [
+      "a mark between the colon and the slashes",
+      `https:${rightToLeftMark}//evil.example/invoices`,
+    ],
+    [
+      "a scheme of letters that only look like https",
+      "ｈｔｔｐｓ://evil.example",
+    ],
+    ["a space inside the scheme", "https ://evil.example/invoices"],
+    ["plain http, even on the login's own host", "http://openai.com/billing"],
+    ["another scheme", "ftp://openai.com/invoices"],
+    ["slashes with no scheme", "Billing → ://evil.example"],
   ])(
     "refuses a note naming %s with invalid_input, starting nothing and counting nothing",
     async (_case, note) => {

@@ -26,21 +26,30 @@ export const siteLoginPinSchema = z.strictObject({
 // embedding, override or isolate. Marks such as U+200F stay: Hebrew text
 // carries them.
 const noteBreak = /[\p{Cc}\u2028\u2029\u202A-\u202E\u2066-\u2069]/u;
-const emailAddress =
-  /[^\s@<>()[\]{},;:"/\\]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+/u;
+// Anything shaped like an email address, as TEEMIQ reads one.
+const emailAddress = /[^\s@]+@[^\s@]+\.[^\s@]+/u;
+const invisible = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 
 // The owner's note for a pinned task's account, as the site's people saved
 // it: where the account keeps its documents and which of them to save. One
 // line of 1 to 300 characters once trimmed, with no email address, so no
-// username rides along. Its shape alone: the site API also checks that every
-// https address in it is on the login's fence.
+// username rides along. Its shape alone: the site API also checks every
+// address in it against the login's fence.
 export const siteTaskNoteSchema = z
   .string()
   .refine((note) => !noteBreak.test(note))
   .trim()
   .min(1)
   .max(300)
-  .refine((note) => !emailAddress.test(note));
+  .refine((note) => !emailAddress.test(noteAsRead(note)));
+
+// A note as it reads, which is how it is checked: a character that shows
+// nothing, such as U+200B, a direction mark or a variation selector, still
+// leaves an email address or a web address it splits one to read. The note
+// itself keeps them.
+export function noteAsRead(note: string) {
+  return note.replaceAll(invisible, "");
+}
 
 // The site's own id for the person a chat belongs to, such as a TEEMIQ user
 // id. It is opaque to assist.

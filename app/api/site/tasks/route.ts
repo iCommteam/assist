@@ -10,6 +10,7 @@ import {
 } from "@shared/browser/hosts";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
+  noteAsRead,
   siteLoginPinSchema,
   siteTaskNoteSchema,
   type SiteGrant,
@@ -168,19 +169,29 @@ async function resolveLoginPin(
   return { login, ok: true as const };
 }
 
-// A note may name the account's pages, never a page the task could not open:
-// every https address in it must be on the fence the browser worker keeps
-// for the login, which refuses Amazon before it. An address that does not
-// parse, or carries a user name or password, names no page on it.
+// A note may name the account's pages, never a page the task could not open.
+// It is read as it reads, its invisible characters gone, and every address
+// in it is checked from where it starts, so one inside another's query, path
+// or parentheses is checked too. An address is a scheme, a colon and two
+// slashes, backslashes counted as slashes as the URL parser counts them. Its
+// scheme must be https, as TEEMIQ requires, and its host on the fence the
+// browser worker keeps for the login, which refuses Amazon before it. An
+// address that does not parse, or carries a user name or password, names no
+// page on it.
 function isNoteOnFence(
   note: string,
   login: z.infer<typeof siteLoginPinSchema>
 ) {
   const fence = siteNavigationFence(login.origin, login.alsoHosts);
-  return [...note.matchAll(/https:[/\\]{2}\S*/giu)].every(([address]) => {
-    const text = address.replace(/[.,;:!?'"’”»)\]}>]+$/u, "");
-    if (!URL.canParse(text)) return false;
-    const { hostname, password, username } = new URL(text);
+  const text = noteAsRead(note);
+  return [...text.matchAll(/:[/\\]{2}/gu)].every(({ index }) => {
+    const scheme = /[\d+.a-z-]*$/iu.exec(text.slice(0, index))?.[0] ?? "";
+    if (scheme.toLowerCase() !== "https") return false;
+    const address = (
+      /^\S*/u.exec(text.slice(index - scheme.length))?.[0] ?? ""
+    ).replace(/[.,;:!?'"’”»)\]}>]+$/u, "");
+    if (!URL.canParse(address)) return false;
+    const { hostname, password, username } = new URL(address);
     return (
       username === "" &&
       password === "" &&

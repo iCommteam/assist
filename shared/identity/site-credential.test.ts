@@ -93,6 +93,12 @@ describe("site channel credential", () => {
       "Billing\nPay it",
       `${String.fromCodePoint(0x20_2e)}Billing`,
       "Send it to billing@vendor.example",
+      // An email address reads as one with a mark, an invisible space or an
+      // accent inside it.
+      `Send it to billing@${String.fromCodePoint(0x20_0e)}vendor.example`,
+      `Send it to billing@vendor${String.fromCodePoint(0x20_0f)}.example`,
+      `Send it to billing@vendor${String.fromCodePoint(0x20_0b)}.example`,
+      `Send it to billing@vendo${String.fromCodePoint(0x03_01)}r.example`,
     ]) {
       expect(
         verifySiteCredential(
