@@ -188,10 +188,12 @@ function approvalOf(context: Pick<ApprovalContext, "session">) {
   return "user-approval" as const;
 }
 
+// Every address is named, copies and blind copies included: the member
+// approves exactly who receives the mail.
 function sendPrompt(input: DraftInput) {
-  const copies = [...input.cc, ...input.bcc].length;
-  const to = `${input.to.join(", ")}${copies > 0 ? ` (and ${String(copies)} in copy)` : ""}`;
-  return `Send “${excerpt(input.subject, 120)}” to ${to} from your Gmail? “${excerpt(input.body, 240)}”`;
+  const cc = input.cc.length > 0 ? `, cc ${input.cc.join(", ")}` : "";
+  const bcc = input.bcc.length > 0 ? `, bcc ${input.bcc.join(", ")}` : "";
+  return `Send “${excerpt(input.subject, 120)}” to ${input.to.join(", ")}${cc}${bcc} from your Gmail? “${excerpt(input.body, 240)}”`;
 }
 
 function excerpt(text: string, limit: number) {

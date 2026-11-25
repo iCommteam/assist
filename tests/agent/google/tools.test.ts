@@ -394,7 +394,7 @@ describe("approvals", () => {
       approvalOf(tools.gmail_send).prompt?.({
         callId: "call-1",
         input: {
-          bcc: [],
+          bcc: ["archive@icommteam.com"],
           body: "Hi Dana,\nthe October invoice is attached.",
           cc: ["finance@icommteam.com"],
           subject: "October invoice",
@@ -403,7 +403,7 @@ describe("approvals", () => {
         toolName: "gmail_send",
       })
     ).toBe(
-      "Send “October invoice” to dana@supplier.example (and 1 in copy) from your Gmail? “Hi Dana, the October invoice is attached.”"
+      "Send “October invoice” to dana@supplier.example, cc finance@icommteam.com, bcc archive@icommteam.com from your Gmail? “Hi Dana, the October invoice is attached.”"
     );
     expect(
       approvalOf(tools.calendar_create_event).prompt?.({
