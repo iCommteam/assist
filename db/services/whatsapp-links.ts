@@ -20,9 +20,14 @@ import { getInstallationSecrets } from "@db/services/installation-secrets";
 const codeAlphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const codeLength = 8;
 const codeExpiry = sql`now() + interval '10 minutes'`;
-// Failed attempts allowed in any hour, from one number and from all of them.
+// Failed attempts allowed in any hour from one number. Past 50 in all, a code
+// that matches nothing gets no answer, but a live code still links.
 const failuresPerNumber = 5;
 const failuresInAll = 50;
+
+function inLastHour() {
+  return gt(whatsappLinkFailures.failedAt, sql`now() - interval '1 hour'`);
+}
 
 // An HMAC with a key of its own, derived from BETTER_AUTH_SECRET, so the Next
 // server that makes a code and the eve server that reads it agree, and a
@@ -74,12 +79,23 @@ export async function whatsappLinkCodeLive(userId: string) {
   return row !== undefined;
 }
 
+// Whether this number is over its limit on failed attempts, read before any
+// work is done for its message. linkWhatsappNumber checks it again.
+export async function whatsappLinkLimited(phone: string) {
+  const [fromNumber] = await db
+    .select({ value: count() })
+    .from(whatsappLinkFailures)
+    .where(and(eq(whatsappLinkFailures.phone, phone), inLastHour()));
+  return (fromNumber?.value ?? 0) >= failuresPerNumber;
+}
+
 // One "link <code>" message that passed Twilio's record check, decided in one
-// transaction: within the limits on failed attempts, a live code, a member
-// who may use WhatsApp, and a number that is free. A code that is found is
-// used up, whatever follows. A member who had linked another number gets
-// this one in its place. Every refusal counts against the limits, and is
-// committed with the transaction.
+// transaction: within the number's limit on failed attempts, a live code, a
+// member who may use WhatsApp, and a number that is free. A code that is
+// found is used up, whatever follows. A member who had linked another number
+// gets this one in its place. Every refusal counts against the limits, and is
+// committed with the transaction; lastTry says it was the number's last
+// attempt for the hour.
 export async function linkWhatsappNumber(attempt: {
   readonly code: string;
   // The sender's entry on ASSIST_WHATSAPP_NUMBERS, when it has one.
@@ -98,30 +114,21 @@ export async function linkWhatsappNumber(attempt: {
     await tx
       .delete(whatsappLinkCodes)
       .where(lt(whatsappLinkCodes.expiresAt, sql`now()`));
-    const lastHour = gt(
-      whatsappLinkFailures.failedAt,
-      sql`now() - interval '1 hour'`
-    );
     const [fromNumber] = await tx
       .select({ value: count() })
       .from(whatsappLinkFailures)
-      .where(and(eq(whatsappLinkFailures.phone, attempt.phone), lastHour));
-    const [inAll] = await tx
-      .select({ value: count() })
-      .from(whatsappLinkFailures)
-      .where(lastHour);
-    if (
-      (fromNumber?.value ?? 0) >= failuresPerNumber ||
-      (inAll?.value ?? 0) >= failuresInAll
-    ) {
-      return { outcome: "limited" as const };
-    }
-    const refuse = async (outcome: "failed" | "server" | "taken") => {
+      .where(and(eq(whatsappLinkFailures.phone, attempt.phone), inLastHour()));
+    const failures = fromNumber?.value ?? 0;
+    if (failures >= failuresPerNumber) return { outcome: "limited" as const };
+    const recordFailure = async () => {
       await tx
         .insert(whatsappLinkFailures)
         .values({ phone: attempt.phone, sid: attempt.sid })
         .onConflictDoNothing();
-      return { outcome };
+    };
+    const refuse = async (outcome: "failed" | "server" | "taken") => {
+      await recordFailure();
+      return { lastTry: failures + 1 >= failuresPerNumber, outcome };
     };
     const [code] = await tx
       .delete(whatsappLinkCodes)
@@ -132,7 +139,17 @@ export async function linkWhatsappNumber(attempt: {
         )
       )
       .returning({ userId: whatsappLinkCodes.userId });
-    if (!code) return refuse("failed");
+    if (!code) {
+      const [inAll] = await tx
+        .select({ value: count() })
+        .from(whatsappLinkFailures)
+        .where(inLastHour());
+      if ((inAll?.value ?? 0) < failuresInAll) return refuse("failed");
+      // Counted against the number all the same, so its own limit holds
+      // while nobody is answered.
+      await recordFailure();
+      return { outcome: "limited" as const };
+    }
     const [member] = await tx
       .select({ email: user.email, twoFactorEnabled: user.twoFactorEnabled })
       .from(user)
@@ -195,7 +212,11 @@ export async function whatsappLinkOf(userId: string) {
 // The member a linked number reaches, with their email as stored.
 export async function linkedWhatsappMemberOf(phone: string) {
   const [row] = await db
-    .select({ email: user.email, userId: whatsappLinks.userId })
+    .select({
+      email: user.email,
+      id: whatsappLinks.id,
+      userId: whatsappLinks.userId,
+    })
     .from(whatsappLinks)
     .innerJoin(user, eq(user.id, whatsappLinks.userId))
     .where(eq(whatsappLinks.phone, phone))

@@ -105,7 +105,11 @@ function linkMemberNumber() {
   mocks.numbers = "";
   mocks.linkedWhatsappMemberOf.mockImplementation(async (phone) =>
     phone === memberNumber
-      ? { email: "Member@Example.test", userId: "user-1" }
+      ? {
+          email: "Member@Example.test",
+          id: "00000000-0000-4000-8000-000000000001",
+          userId: "user-1",
+        }
       : undefined
   );
   mocks.linkedWhatsappNumberOf.mockImplementation(async (email) =>

@@ -2075,7 +2075,8 @@ describe("Connecting a number with a link code", () => {
   const linkedChat = (number: string) =>
     `whatsapp:${number}:${companyNumber}|better-auth:user-4|full`;
   const linkedWorkspace = accessScopeForUser("better-auth:user-4").workspaceId;
-  const failedLine = `That code did not work. Get a new one on assist's Workspace page: ${publicOrigin}/`;
+  const failedLine = `That code did not work. Check it and send it again, or get a new one on assist's Workspace page: ${publicOrigin}/`;
+  const lastTryLine = `That code did not work, and that was the last try from this number for an hour. After that, check it and send it again, or get a new one on assist's Workspace page: ${publicOrigin}/`;
   const linkedLine =
     "This number is now connected to linked@example.test. Full access is on; reply /lock to turn it off.";
 
@@ -2228,19 +2229,45 @@ describe("Connecting a number with a link code", () => {
     ]);
   });
 
-  it("goes silent after 5 failed attempts from a number in an hour, and then links nothing", async () => {
+  it("says the fifth failed attempt from a number in an hour was its last, then goes silent, reads no record and links nothing", async () => {
     const harness = routeHarness();
     for (let tried = 0; tried < 5; tried += 1) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- The attempts arrive one after another.
       await harness.post(webhook(linkMessage("ZZZZZZZZ")));
     }
     const { code } = await createWhatsappLinkCode("user-4");
+    const silenced = linkMessage(code);
 
-    await harness.post(webhook(linkMessage(code)));
+    await harness.post(webhook(silenced));
 
-    expect(sentTexts()).toEqual(Array.from({ length: 5 }, () => failedLine));
+    expect(sentTexts()).toEqual([
+      ...Array.from({ length: 4 }, () => failedLine),
+      lastTryLine,
+    ]);
+    expect(recordReads()).toHaveLength(5);
+    const rows = await client.query(
+      "SELECT sid FROM whatsapp_messages WHERE sid = $1",
+      [silenced.MessageSid]
+    );
+    expect(rows.rows).toEqual([]);
     await expect(linkRows()).resolves.toEqual([]);
     await expect(whatsappLinkCodeLive("user-4")).resolves.toBe(true);
+  });
+
+  it("names the last try on a refusal that is the number's fifth failure", async () => {
+    await linkedNumber("user-4", stranger);
+    await client.exec(
+      `INSERT INTO whatsapp_link_failures (sid, phone)
+       SELECT 'SM' || lpad(n::text, 32, 'd'), '${stranger}'
+       FROM generate_series(1, 4) AS n`
+    );
+    const another = await createWhatsappLinkCode("user-1");
+
+    await routeHarness().post(webhook(linkMessage(another.code)));
+
+    expect(sentTexts()).toEqual([
+      "This number is connected to another assist account. Disconnect it there first. That was the last try from this number for an hour.",
+    ]);
   });
 
   it("still ignores every other message from a number that reaches nobody", async () => {
@@ -2275,7 +2302,7 @@ describe("Connecting a number with a link code", () => {
     await expect(linkRows()).resolves.toEqual([]);
   });
 
-  it("lets ASSIST_WHATSAPP_NUMBERS override a link made before the number was listed", async () => {
+  it("lets ASSIST_WHATSAPP_NUMBERS override a link made before the number was listed, and deletes it so it never comes back", async () => {
     await linkedNumber("user-4", stranger);
     mocks.config.numbers = `${stranger}=member@example.test`;
     const harness = routeHarness();
@@ -2290,6 +2317,17 @@ describe("Connecting a number with a link code", () => {
         operation: "send",
       },
     ]);
+    await expect(linkRows()).resolves.toEqual([]);
+
+    // The entry goes: the number reaches nobody, not the member who had
+    // linked it.
+    mocks.config.numbers = "";
+    twilioCalls.length = 0;
+    await harness.post(
+      webhook(messageParams({ Body: "Hello", From: `whatsapp:${stranger}` }))
+    );
+    expect(harness.operations).toHaveLength(1);
+    expect(twilioCalls).toEqual([]);
   });
 
   it("refuses a number linked to someone else, and tells its own member it is already connected", async () => {
@@ -2359,6 +2397,127 @@ describe("Connecting a number with a link code", () => {
     );
     expect(twilioCalls).toEqual([]);
     expect(harness.source.send).not.toHaveBeenCalled();
+  });
+
+  async function recordLinkedChat(sessionId: string, phone: string) {
+    await client.exec(
+      `INSERT INTO workspaces (id) VALUES ('${linkedWorkspace}') ON CONFLICT DO NOTHING`
+    );
+    await recordWhatsappChat({
+      email: "linked@example.test",
+      messageAt: new Date(),
+      messageSid: `SM${"b".repeat(30)}${phone.slice(-2)}`,
+      phone,
+      sessionId,
+      userId: "better-auth:user-4",
+      workspaceId: linkedWorkspace,
+    });
+  }
+
+  async function endedChats() {
+    const rows = await client.query<{ ended: boolean; session_id: string }>(
+      "SELECT session_id, ended_at IS NOT NULL AS ended FROM whatsapp_chats ORDER BY session_id"
+    );
+    return rows.rows;
+  }
+
+  it("ends the old number's full chats even when the connected line cannot be sent", async () => {
+    await linkedNumber("user-4", stranger);
+    await recordLinkedChat("session-old-number", stranger);
+    const answerTwilio = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (init?.method === "POST") return new Response(null, { status: 503 });
+      if (!answerTwilio) throw new Error("Twilio's API must be faked.");
+      return answerTwilio(input, init);
+    });
+    const harness = routeHarness();
+    const { code } = await createWhatsappLinkCode("user-4");
+
+    await harness.post(webhook(linkMessage(code, secondNumber)));
+
+    await expect(linkRows()).resolves.toEqual([
+      { phone: secondNumber, user_id: "user-4" },
+    ]);
+    expect(harness.attached).toEqual(["session-old-number"]);
+    await expect(endedChats()).resolves.toEqual([
+      { ended: true, session_id: "session-old-number" },
+    ]);
+    expect(console.warn).toHaveBeenCalledWith(
+      "[whatsapp] the connected line could not be sent",
+      { error: "Error" }
+    );
+  });
+
+  it("keeps the old number's full chats when ASSIST_WHATSAPP_NUMBERS still gives it to the member", async () => {
+    await linkedNumber("user-4", stranger);
+    await recordLinkedChat("session-listed-number", stranger);
+    mocks.config.numbers = `${stranger}=linked@example.test`;
+    const harness = routeHarness();
+    const { code } = await createWhatsappLinkCode("user-4");
+
+    await harness.post(webhook(linkMessage(code, secondNumber)));
+
+    expect(sentTexts()).toEqual([linkedLine]);
+    await expect(linkRows()).resolves.toEqual([
+      { phone: secondNumber, user_id: "user-4" },
+    ]);
+    expect(harness.attached).toEqual([]);
+    await expect(endedChats()).resolves.toEqual([
+      { ended: false, session_id: "session-listed-number" },
+    ]);
+  });
+
+  it("answers a message sent from a new number right after its link, as the member the link connected", async () => {
+    const { code } = await createWhatsappLinkCode("user-4");
+    const link = linkMessage(code);
+    const recordRead = Promise.withResolvers<undefined>();
+    const linkRecordAsked = Promise.withResolvers<undefined>();
+    const answerTwilio = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      if (url.endsWith(`/Messages/${link.MessageSid}.json`)) {
+        linkRecordAsked.resolve(undefined);
+        await recordRead.promise;
+      }
+      if (!answerTwilio) throw new Error("Twilio's API must be faked.");
+      return answerTwilio(input, init);
+    });
+    const harness = routeHarness();
+
+    const linking = harness.post(webhook(link));
+    await linkRecordAsked.promise;
+    const question = harness.post(
+      webhook(
+        messageParams({
+          Body: "What is on my list?",
+          From: `whatsapp:${stranger}`,
+        })
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    recordRead.resolve(undefined);
+    await Promise.all([linking, question]);
+
+    expect(harness.operations).toEqual([
+      { address: linkedChat(stranger), operation: "send" },
+    ]);
+    expect(harness.source.send).toHaveBeenCalledExactlyOnceWith(
+      "What is on my list?",
+      expect.objectContaining({
+        auth: {
+          attributes: {
+            conversationChannel: "whatsapp",
+            email: "linked@example.test",
+            whatsappAccess: "full",
+            whatsappNumber: stranger,
+            workspaceId: linkedWorkspace,
+          },
+          authenticator: "assist-whatsapp",
+          principalId: "better-auth:user-4",
+          principalType: "user",
+        },
+      })
+    );
   });
 
   it("says full access is off when the member who links had locked WhatsApp", async () => {
@@ -2477,5 +2636,33 @@ describe("Connecting a number with a link code", () => {
     expect(ended.status).toBe(204);
     expect(harness.attached).toEqual(["session-disconnected"]);
     expect(twilioCalls).toEqual([]);
+  });
+
+  it("answers 500, and logs no value, when the chats to end cannot be read", async () => {
+    failDatabase();
+    const harness = routeHarness();
+
+    const ended = await harness.post(
+      new Request(`${loopbackOrigin}/internal/whatsapp/end`, {
+        body: JSON.stringify({
+          member: "better-auth:user-1",
+          phone: memberNumber,
+        }),
+        headers: {
+          authorization: `Bearer ${loopbackSecret}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+      }),
+      "/internal/whatsapp/end"
+    );
+
+    expect(ended.status).toBe(500);
+    expect(harness.attached).toEqual([]);
+    expect(console.warn).toHaveBeenCalledWith(
+      "[whatsapp] the chats to end could not be read",
+      { error: "DrizzleQueryError" }
+    );
+    expect(loggedValues()).toEqual([]);
   });
 });

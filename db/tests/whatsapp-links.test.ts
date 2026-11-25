@@ -28,10 +28,12 @@ const {
   linkWhatsappNumber,
   whatsappLinkById,
   whatsappLinkCodeLive,
+  whatsappLinkLimited,
   whatsappLinkOf,
 } = await import("@db/services/whatsapp-links");
 const {
   connectedWhatsappNumbers,
+  dropOverriddenWhatsappLink,
   whatsappEmailOf,
   whatsappNumbersOf,
   whatsappOwnerOf,
@@ -109,7 +111,10 @@ describe("WhatsApp link codes", () => {
       "SELECT count(*)::int AS count FROM whatsapp_link_codes"
     );
     expect(count.rows[0]?.count).toBe(1);
-    await expect(attempt(first.code)).resolves.toEqual({ outcome: "failed" });
+    await expect(attempt(first.code)).resolves.toEqual({
+      lastTry: false,
+      outcome: "failed",
+    });
     await expect(attempt(second.code)).resolves.toMatchObject({
       outcome: "linked",
     });
@@ -125,6 +130,7 @@ describe("WhatsApp link codes", () => {
       userId: "alice",
     });
     await expect(attempt(code, secondPhone)).resolves.toEqual({
+      lastTry: false,
       outcome: "failed",
     });
     await expect(whatsappLinkOf("alice")).resolves.toMatchObject({
@@ -140,12 +146,14 @@ describe("WhatsApp link codes", () => {
     );
     await expect(whatsappLinkCodeLive("alice")).resolves.toBe(false);
     await expect(attempt(expired.code)).resolves.toEqual({
+      lastTry: false,
       outcome: "failed",
     });
 
     const cancelled = await createWhatsappLinkCode("bob");
     await cancelWhatsappLinkCode("bob");
     await expect(attempt(cancelled.code)).resolves.toEqual({
+      lastTry: false,
       outcome: "failed",
     });
     await expect(whatsappLinkOf("alice")).resolves.toBeUndefined();
@@ -159,7 +167,7 @@ describe("WhatsApp link codes", () => {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each member's code is made and tried in turn.
       await expect(
         attempt(code, `+1555000010${String(userId.length)}`)
-      ).resolves.toEqual({ outcome: "failed" });
+      ).resolves.toEqual({ lastTry: false, outcome: "failed" });
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each member's code is made and tried in turn.
       await expect(whatsappLinkCodeLive(userId)).resolves.toBe(false);
     }
@@ -170,14 +178,24 @@ describe("WhatsApp link codes", () => {
 
 describe("WhatsApp link limits", () => {
   it("stops a number after 5 failed attempts in an hour, keeping the count and the code", async () => {
+    const outcomes = [];
     for (let tried = 0; tried < 5; tried += 1) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- The attempts arrive one after another.
-      await expect(attempt("ZZZZZZZZ")).resolves.toEqual({ outcome: "failed" });
+      outcomes.push(await attempt("ZZZZZZZZ"));
     }
+    expect(outcomes).toEqual([
+      ...Array.from({ length: 4 }, () => ({
+        lastTry: false,
+        outcome: "failed",
+      })),
+      { lastTry: true, outcome: "failed" },
+    ]);
     const failures = await client.query<{ count: number }>(
       "SELECT count(*)::int AS count FROM whatsapp_link_failures"
     );
     expect(failures.rows[0]?.count).toBe(5);
+    await expect(whatsappLinkLimited(firstPhone)).resolves.toBe(true);
+    await expect(whatsappLinkLimited(secondPhone)).resolves.toBe(false);
 
     const { code } = await createWhatsappLinkCode("alice");
     await expect(attempt(code)).resolves.toEqual({ outcome: "limited" });
@@ -195,18 +213,27 @@ describe("WhatsApp link limits", () => {
     );
     const { code } = await createWhatsappLinkCode("alice");
 
+    await expect(whatsappLinkLimited(firstPhone)).resolves.toBe(false);
     await expect(attempt(code)).resolves.toMatchObject({ outcome: "linked" });
   });
 
-  it("stops every number after 50 failed attempts in an hour in all", async () => {
+  it("past 50 failed attempts in an hour in all, answers no code that matches nothing, and still links a live one", async () => {
     await client.exec(
       `INSERT INTO whatsapp_link_failures (sid, phone)
        SELECT 'SM' || lpad(n::text, 32, 'e'), '+1555100' || lpad(n::text, 4, '0')
        FROM generate_series(1, 50) AS n`
     );
-    const { code } = await createWhatsappLinkCode("alice");
 
-    await expect(attempt(code)).resolves.toEqual({ outcome: "limited" });
+    await expect(attempt("ZZZZZZZZ")).resolves.toEqual({ outcome: "limited" });
+    const fromFirst = await client.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM whatsapp_link_failures WHERE phone = '${firstPhone}'`
+    );
+    expect(fromFirst.rows[0]?.count).toBe(1);
+
+    const { code } = await createWhatsappLinkCode("alice");
+    await expect(attempt(code, secondPhone)).resolves.toMatchObject({
+      outcome: "linked",
+    });
   });
 });
 
@@ -233,7 +260,7 @@ describe("WhatsApp links", () => {
 
     await expect(
       attempt((await createWhatsappLinkCode("bob")).code)
-    ).resolves.toEqual({ outcome: "taken" });
+    ).resolves.toEqual({ lastTry: false, outcome: "taken" });
     await expect(
       attempt((await createWhatsappLinkCode("alice")).code)
     ).resolves.toEqual({ email: "alice@example.test", outcome: "already" });
@@ -254,7 +281,7 @@ describe("WhatsApp links", () => {
       attempt((await createWhatsappLinkCode("bob")).code, firstPhone, {
         email: "alice@example.test",
       })
-    ).resolves.toEqual({ outcome: "server" });
+    ).resolves.toEqual({ lastTry: false, outcome: "server" });
     const links = await client.query("SELECT * FROM whatsapp_links");
     expect(links.rows).toEqual([]);
   });
@@ -335,6 +362,63 @@ describe("who a WhatsApp number reaches", () => {
       source: "server",
     });
     await expect(connectedWhatsappNumbers()).resolves.toEqual([]);
+  });
+
+  it.each([
+    [
+      "a message from the number",
+      async () => dropOverriddenWhatsappLink(firstPhone),
+    ],
+    [
+      "the member's Workspace page",
+      async () => whatsappNumbersOf("alice@example.test"),
+    ],
+    [
+      "an administrator's Workspace page",
+      async () => connectedWhatsappNumbers(),
+    ],
+  ])(
+    "deletes a link to a number the list gives to someone else on %s, so it does not come back once the entry goes",
+    async (_case, meet) => {
+      await attempt((await createWhatsappLinkCode("alice")).code);
+      vi.stubEnv("ASSIST_WHATSAPP_NUMBERS", `${firstPhone}=bob@example.test`);
+
+      await meet();
+      vi.stubEnv("ASSIST_WHATSAPP_NUMBERS", "");
+
+      await expect(whatsappOwnerOf(firstPhone)).resolves.toBeUndefined();
+      await expect(whatsappLinkOf("alice")).resolves.toBeUndefined();
+    }
+  );
+
+  it("deletes a link to a number listed for two emails, its member's among them", async () => {
+    await attempt((await createWhatsappLinkCode("alice")).code);
+    vi.stubEnv(
+      "ASSIST_WHATSAPP_NUMBERS",
+      `${firstPhone}=alice@example.test,${firstPhone}=bob@example.test`
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await dropOverriddenWhatsappLink(firstPhone);
+
+    await expect(whatsappLinkOf("alice")).resolves.toBeUndefined();
+  });
+
+  it("keeps a member's own link to a number the list gives them, which counts again once the entry goes", async () => {
+    await attempt((await createWhatsappLinkCode("alice")).code);
+    vi.stubEnv("ASSIST_WHATSAPP_NUMBERS", `${firstPhone}=Alice@example.test`);
+
+    await dropOverriddenWhatsappLink(firstPhone);
+    await expect(whatsappNumbersOf("alice@example.test")).resolves.toEqual([
+      { id: null, linkedAt: null, number: firstPhone, source: "server" },
+    ]);
+    await connectedWhatsappNumbers();
+    vi.stubEnv("ASSIST_WHATSAPP_NUMBERS", "");
+
+    await expect(whatsappOwnerOf(firstPhone)).resolves.toEqual({
+      email: "alice@example.test",
+      source: "linked",
+    });
   });
 
   it("lists a member's listed numbers before the one they linked", async () => {

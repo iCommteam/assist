@@ -40,8 +40,12 @@ import {
   whatsappLockOf,
   whatsappWrittenWithin,
 } from "@db/services/whatsapp";
-import { linkWhatsappNumber } from "@db/services/whatsapp-links";
 import {
+  linkWhatsappNumber,
+  whatsappLinkLimited,
+} from "@db/services/whatsapp-links";
+import {
+  dropOverriddenWhatsappLink,
   whatsappEmailOf,
   whatsappOwnerOf,
 } from "@db/services/whatsapp-numbers";
@@ -108,10 +112,14 @@ function workspaceUrl() {
 }
 
 // The lines a link attempt gets. Every failure gets the same one, which names
-// nothing.
-function linkFailedReply() {
-  return `That code did not work. Get a new one on assist's Workspace page: ${workspaceUrl()}`;
+// nothing, and the number's last try for the hour says so.
+function linkFailedReply(lastTry: boolean) {
+  return lastTry
+    ? `That code did not work, and that was the last try from this number for an hour. After that, check it and send it again, or get a new one on assist's Workspace page: ${workspaceUrl()}`
+    : `That code did not work. Check it and send it again, or get a new one on assist's Workspace page: ${workspaceUrl()}`;
 }
+
+const lastTryLine = "That was the last try from this number for an hour.";
 
 function linkedReply(email: string, locked: boolean) {
   return locked
@@ -308,10 +316,16 @@ const internalRoutes = [
     if (auth instanceof Response) return auth;
     const input = endInputSchema.safeParse(await request.json());
     if (!input.success) return new Response(null, { status: 400 });
-    const chats = await openWhatsappChats(
-      input.data.member === "*" ? undefined : input.data.member,
-      input.data.phone
-    );
+    let chats: Awaited<ReturnType<typeof openWhatsappChats>>;
+    try {
+      chats = await openWhatsappChats(
+        input.data.member === "*" ? undefined : input.data.member,
+        input.data.phone
+      );
+    } catch (error) {
+      warnByName("the chats to end could not be read", error);
+      return new Response(null, { status: 500 });
+    }
     await endRecordedChats(
       attachSession,
       chats,
@@ -395,10 +409,17 @@ async function admit(
   const turn = takeTurn(sender);
   let handedOn = false;
   try {
-    const owner = await whatsappOwnerOf(sender);
+    const code = linkCodeOf(message);
+    let owner = await whatsappOwnerOf(sender);
+    // The sender's earlier message may be a "link" still connecting this
+    // number, so a number that reaches nobody is read once more after it.
+    if (!owner && code === undefined) {
+      await turn.previous;
+      owner = await whatsappOwnerOf(sender);
+    }
+    if (owner?.source === "server") await dropOverriddenWhatsappLink(sender);
     // Listed for two emails: it reaches nobody, and is never linked.
     if (owner && owner.email === undefined) return null;
-    const code = linkCodeOf(message);
     if (code !== undefined) {
       const linked = await linkAttempt(twilio, message, {
         code,
@@ -492,8 +513,9 @@ function linkCodeOf(message: TwilioTextMessage) {
 // chat's message is, once per message id and against Twilio's own record of
 // it, so a forged or replayed webhook links nothing. Every outcome is one
 // fixed line from the channel, except an attempt over the limit on failures,
-// which gets none. A member who linked this number in place of another is
-// handed on, so the other number's full chats end.
+// which gets none; a number already over its own limit costs no record read.
+// A member who linked this number in place of another is handed on, so the
+// other number's full chats end, whether or not the line reaches them.
 async function linkAttempt(
   twilio: TwilioHandle,
   message: TwilioTextMessage,
@@ -504,6 +526,10 @@ async function linkAttempt(
     readonly sid: string;
   }
 ) {
+  if (await whatsappLinkLimited(attempt.sender)) {
+    console.warn("[whatsapp] a link attempt is over the limit; ignored");
+    return undefined;
+  }
   if (!(await claimWhatsappMessage(attempt.sid, attempt.sender))) {
     return undefined;
   }
@@ -529,29 +555,61 @@ async function linkAttempt(
     console.warn("[whatsapp] a link attempt is over the limit; ignored");
     return undefined;
   }
-  if (result.outcome !== "linked") {
+  if (result.outcome === "already") {
     await send(twilio, {
-      Body:
-        result.outcome === "already"
-          ? `This number is already connected to ${result.email}.`
-          : result.outcome === "taken"
-            ? linkTakenReply
-            : result.outcome === "server"
-              ? linkServerReply
-              : linkFailedReply(),
+      Body: `This number is already connected to ${result.email}.`,
     });
     return undefined;
   }
-  const lock = await whatsappLockOf(result.userId);
-  await send(twilio, {
-    Body: linkedReply(result.email, lock.self || lock.everyone),
-  });
-  if (result.previousPhone === undefined) return undefined;
+  if (result.outcome !== "linked") {
+    const refused =
+      result.outcome === "taken"
+        ? linkTakenReply
+        : result.outcome === "server"
+          ? linkServerReply
+          : undefined;
+    await send(twilio, {
+      Body:
+        refused === undefined
+          ? linkFailedReply(result.lastTry)
+          : result.lastTry
+            ? `${refused} ${lastTryLine}`
+            : refused,
+    });
+    return undefined;
+  }
+  const { previousPhone } = result;
+  const endOn =
+    previousPhone !== undefined &&
+    (await numberLeftMember(previousPhone, result.email))
+      ? previousPhone
+      : undefined;
+  try {
+    const lock = await whatsappLockOf(result.userId);
+    await send(twilio, {
+      Body: linkedReply(result.email, lock.self || lock.everyone),
+    });
+  } catch (error) {
+    warnByName("the connected line could not be sent", error);
+  }
+  if (endOn === undefined) return undefined;
   return {
     command: "link" as const,
-    previousPhone: result.previousPhone,
+    previousPhone: endOn,
     userId: result.userId,
   };
+}
+
+// Whether a member's earlier number stopped reaching them when a new one took
+// its place: it still does when ASSIST_WHATSAPP_NUMBERS gives it to them.
+// When that cannot be read, it is taken as gone, so its chats end.
+async function numberLeftMember(phone: string, email: string) {
+  try {
+    return (await whatsappEmailOf(phone)) !== email;
+  } catch (error) {
+    warnByName("the earlier number's owner could not be read", error);
+    return true;
+  }
 }
 
 function commandOf(message: TwilioTextMessage) {

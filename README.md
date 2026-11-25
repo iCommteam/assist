@@ -766,24 +766,33 @@ transaction checks the limits, finds the live code, checks that its member
 may use WhatsApp (the sign-in rules above), uses the code up and saves the
 number. A member has one connected number, and a number one member: a member
 who connects a new number has it in place of the old one, whose full chats
-end, as a lock ends them.
+end, as a lock ends them, unless `ASSIST_WHATSAPP_NUMBERS` still gives the old
+number to that member. Even if the line saying so cannot be sent, the old
+number's chats end.
 
 Every failure, a wrong, expired or used code or a member who cannot use
-WhatsApp, gets the same line, which names nothing: the code did not work, and
-a new one is on the Workspace page, with its link. Five failed attempts from
-one number in an hour, or 50 from all numbers, and further attempts get no
-answer until the hour has passed; the counts live in the database. A `link`
-message from a number that is already connected answers that it is connected
-to the same member, or that it belongs to another account and must be
-disconnected first; from any number, a message that is only `link` and a
-code never reaches the agent.
+WhatsApp, gets the same line, which names nothing: the code did not work, so
+check it and send it again, or get a new one on the Workspace page, with its
+link. Five failed attempts from one number in an hour, and further attempts
+from it get no answer and cost no record read until the hour has passed; the
+fifth failure's line says it was the last try. Past 50 failed attempts in an
+hour from all numbers, an attempt whose code matches no live code gets no
+answer, but a live code still connects, so strangers' guesses cannot shut
+members out. The counts live in the database. A `link` message from a number
+that is already connected answers that it is connected to the same member, or
+that it belongs to another account and must be disconnected first; from any
+number, a message that is only `link` and a code never reaches the agent.
 
 `ASSIST_WHATSAPP_NUMBERS` is the operator's override. A number on it always
 reaches its listed email, is never connected by a code, and its member is told
-it is set by the server; a connection made before the number was listed is
-ignored while it is, and counts again once the entry goes. To give a member a
-number that way, add `+<number>=<email>` to the list; to take it away,
-remove the entry.
+it is set by the server. Another member's connection to a listed number is
+deleted as soon as assist meets it: on a message from that number, or on the
+Workspace page of that member or of an administrator. So it does not come
+back when the entry goes, and that member connects the number again with a
+new code if it is theirs again. The listed member's own earlier connection to
+it is kept, out of sight, and counts again once the entry goes. To give a
+member a number that way, add `+<number>=<email>` to the list; to take it
+away, remove the entry, then Disconnect any connection of theirs that shows.
 
 A connected number shows on the Workspace page in full, with since when, the
 lock and Disconnect, behind a confirm; a number the server sets shows "Set by
@@ -882,7 +891,8 @@ chat at the other level. A chat belongs to its member as well as its number:
 when a number reaches someone else, their messages start a chat of their
 own, and the earlier member's chat no longer sends its replies, its questions
 or its notices to that number. A sender's messages reach their chat one at a
-time, in the order assist receives them. A member may send 30 messages in any
+time, in the order assist receives them; a message sent right after a `link`
+from a new number waits for the link, so it reaches the member it connected. A member may send 30 messages in any
 hour and 200 in any day, `/new` and `/lock` included; past that, messages are
 dropped and assist says so once an hour. Only a member who can sign in is
 recorded, counted or told, except that a `link` message's id is recorded
