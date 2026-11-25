@@ -20,6 +20,7 @@ import {
   FieldLabel,
 } from "@web/components/ui/field";
 import { Input } from "@web/components/ui/input";
+import { useHydrated } from "@web/hooks/use-hydrated";
 
 const twoFactorRedirectSchema = z.looseObject({
   twoFactorRedirect: z.literal(true),
@@ -27,6 +28,7 @@ const twoFactorRedirectSchema = z.looseObject({
 
 export function SignInForm({ callbackUrl }: { readonly callbackUrl: string }) {
   const router = useRouter();
+  const hydrated = useHydrated();
   const [secondFactor, setSecondFactor] = useState(false);
   const signIn = useMutation({
     mutationFn: async (credentials: {
@@ -106,7 +108,11 @@ export function SignInForm({ callbackUrl }: { readonly callbackUrl: string }) {
           />
         </Field>
         <FieldError errors={signIn.error ? [signIn.error] : undefined} />
-        <Button className="w-full" disabled={signIn.isPending} type="submit">
+        <Button
+          className="w-full"
+          disabled={!hydrated || signIn.isPending}
+          type="submit"
+        >
           {signIn.isPending ? "Signing in…" : "Continue"}
         </Button>
         <p className="type-supporting-body text-muted-foreground">

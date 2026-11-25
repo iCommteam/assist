@@ -19,6 +19,7 @@ import {
   FieldLabel,
 } from "@web/components/ui/field";
 import { Input } from "@web/components/ui/input";
+import { useHydrated } from "@web/hooks/use-hydrated";
 
 const minimumPasswordLength = 8;
 const twoFactorRedirectSchema = z.looseObject({
@@ -27,6 +28,7 @@ const twoFactorRedirectSchema = z.looseObject({
 
 export function SignUpForm() {
   const router = useRouter();
+  const hydrated = useHydrated();
   const signUp = useMutation({
     mutationFn: async (input: {
       readonly confirmation: string;
@@ -144,7 +146,11 @@ export function SignUpForm() {
           />
         </Field>
         <FieldError errors={signUp.error ? [signUp.error] : undefined} />
-        <Button className="w-full" disabled={signUp.isPending} type="submit">
+        <Button
+          className="w-full"
+          disabled={!hydrated || signUp.isPending}
+          type="submit"
+        >
           {signUp.isPending ? "Creating account…" : "Create account"}
         </Button>
         <p className="type-supporting-body text-muted-foreground">

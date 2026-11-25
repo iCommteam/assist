@@ -20,6 +20,7 @@ import {
   FieldLabel,
 } from "@web/components/ui/field";
 import { Input } from "@web/components/ui/input";
+import { useHydrated } from "@web/hooks/use-hydrated";
 import { QrCode } from "@app/_components/qr-code";
 
 const enrolmentSchema = z.object({
@@ -33,6 +34,7 @@ export function TwoFactorSetup({
   readonly callbackUrl: string;
 }) {
   const router = useRouter();
+  const hydrated = useHydrated();
   const [verified, setVerified] = useState(false);
   const enable = useMutation({
     mutationFn: async (password: string) => {
@@ -103,7 +105,11 @@ export function TwoFactorSetup({
           </FieldDescription>
         </Field>
         <FieldError errors={enable.error ? [enable.error] : undefined} />
-        <Button className="w-full" disabled={enable.isPending} type="submit">
+        <Button
+          className="w-full"
+          disabled={!hydrated || enable.isPending}
+          type="submit"
+        >
           {enable.isPending ? "Creating key…" : "Continue"}
         </Button>
         <Button
