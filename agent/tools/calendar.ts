@@ -3,14 +3,11 @@ import { calendar, type calendar_v3 } from "@googleapis/calendar";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
 import { approvalResponse } from "@agent/lib/approval-response";
-import {
-  googleApproval,
-  shownLine,
-  shownText,
-} from "@agent/lib/google/approval";
+import { googleApproval } from "@agent/lib/google/approval";
 import { googleApiStatus, withGoogle } from "@agent/lib/google/client";
 import { boundedText, untrustedNotice } from "@agent/lib/google/content";
 import { requireGoogleScope } from "@agent/lib/google/offer";
+import { shownLine, shownText } from "@agent/lib/google/shown-text";
 import { googleToolsFor } from "@agent/lib/google/tools";
 
 const service = "Google Calendar";
@@ -160,7 +157,11 @@ const calendarCreateEvent = defineTool({
   inputSchema: createEventInputSchema,
   approval: {
     prompt: ({ input }) => createPrompt(input),
-    request: (context) => googleApproval(context),
+    request: (context) =>
+      googleApproval(
+        context,
+        shownEvent(createEventInputSchema.safeParse(context.toolInput).data)
+      ),
     response: approvalResponse,
   },
   label: { start: ({ summary }) => `Create “${summary}” in Google Calendar` },
@@ -244,6 +245,16 @@ function createPrompt(input: CreateEventInput) {
       ? []
       : ["Description:", input.description]),
   ].join("\n");
+}
+
+// The approval a new event's input shows, for its request policy.
+function shownEvent(input: CreateEventInput | undefined) {
+  if (input === undefined) return undefined;
+  return {
+    prompt: createPrompt(input),
+    shorter:
+      "Shorten the description, or leave it out for the member to add in Google Calendar.",
+  };
 }
 
 // The start's day and time, and the end's time, or its day as well when it

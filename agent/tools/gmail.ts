@@ -3,15 +3,12 @@ import { gmail, type gmail_v1 } from "@googleapis/gmail";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
 import { approvalResponse } from "@agent/lib/approval-response";
-import {
-  googleApproval,
-  shownLine,
-  shownText,
-} from "@agent/lib/google/approval";
+import { googleApproval } from "@agent/lib/google/approval";
 import { withGoogle } from "@agent/lib/google/client";
 import { boundedText, untrustedNotice } from "@agent/lib/google/content";
 import { googleToolsFor } from "@agent/lib/google/tools";
 import { requireGoogleScope } from "@agent/lib/google/offer";
+import { shownLine, shownText } from "@agent/lib/google/shown-text";
 
 type GmailMessage = gmail_v1.Schema$Message;
 type GmailPart = gmail_v1.Schema$MessagePart;
@@ -183,7 +180,11 @@ const gmailSend = defineTool({
   inputSchema: sendInputSchema,
   approval: {
     prompt: ({ input }) => sendPrompt(input),
-    request: (context) => googleApproval(context),
+    request: (context) =>
+      googleApproval(
+        context,
+        shownSend(sendInputSchema.safeParse(context.toolInput).data)
+      ),
     response: approvalResponse,
   },
   label: { start: ({ subject }) => `Send “${subject}” from Gmail` },
@@ -231,6 +232,16 @@ function sendPrompt(input: SendInput) {
     "",
     input.body,
   ].join("\n");
+}
+
+// The approval a send's input shows, for its request policy.
+function shownSend(input: SendInput | undefined) {
+  if (input === undefined) return undefined;
+  return {
+    prompt: sendPrompt(input),
+    shorter:
+      "Shorten the text, or save the mail with gmail_create_draft for the member to send from Gmail.",
+  };
 }
 
 function withGmail<T>(

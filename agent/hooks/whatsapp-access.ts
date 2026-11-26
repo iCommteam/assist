@@ -1,5 +1,6 @@
 import { interactions, type InteractionRequest } from "eve/events";
 import { defineHook, type HookContext } from "eve/hooks";
+import { whatsappApprovalMessage } from "@agent/lib/approval-response";
 import {
   noteWhatsappCancel,
   whatsappAccessOf,
@@ -20,15 +21,19 @@ import { applicationOrigin } from "@shared/environment/origin";
 //
 // A WhatsApp chat can show its member a question and, once per chat, the
 // usage limit's "continue?"; a full chat also shows an approval, which the
-// channel draws as a numbered message (agent/channels/whatsapp.ts). Every
-// other request stops the turn: a sign-in, which needs a screen, a narrow
-// chat's approval, and a second usage-limit prompt. A full chat starts at
-// most 10 browser workers a day per member.
+// channel draws as one numbered message (agent/channels/whatsapp.ts), and a
+// turn typed on the chat's web page shows its approval there. Every other
+// request stops the turn: a sign-in, which needs a screen, a narrow chat's
+// approval, a full chat's approval that cannot be drawn as one message, and a
+// second usage-limit prompt. A full chat starts at most 10 browser workers a
+// day per member.
 const browserTasksPerDay = 10;
 const budgetNotice =
   "This chat has reached its usage limit again. Reply /new to start a new chat.";
 const screenNotice =
   "That step can't be done on WhatsApp. Continue in assist's web app.";
+const approvalNotice =
+  "That step can't be approved on WhatsApp. Continue in assist's web app.";
 const browserNotice = `That's the limit of ${String(browserTasksPerDay)} browser tasks a day on WhatsApp. Continue in assist's web app.`;
 
 // Google's sign-in in a full chat, when Google stopped accepting the member's
@@ -76,7 +81,18 @@ export default defineHook({
       if (!member) return;
       const { request } = event.data;
       if (request.kind === "question") return;
-      if (request.kind === "approval" && member.level === "full") return;
+      if (request.kind === "approval" && member.level === "full") {
+        const caller = ctx.session.auth.current;
+        const drawn =
+          caller === null || whatsappSessionOf(caller)?.level === "full";
+        if (!drawn || whatsappApprovalMessage(request.prompt) !== undefined) {
+          return;
+        }
+        console.warn("[whatsapp] chat stopped at an approval it cannot draw");
+        noteWhatsappCancel(ctx.session.id, ctx.turn?.id, approvalNotice);
+        ctx.cancel("The approval cannot be drawn as one WhatsApp message.");
+        return;
+      }
       if (request.kind === "budget") {
         const asked = interactions(ctx.view).filter(
           (interaction) => interaction.request.kind === "budget"

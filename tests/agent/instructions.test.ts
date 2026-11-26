@@ -726,6 +726,29 @@ describe("WhatsApp full-access instructions", () => {
     );
     expect(await evaluateDynamic(whatsappTurn, whatsappContext())).toBeNull();
   });
+
+  // The channel draws only an approval asked from WhatsApp; the web page
+  // shows its own turn's.
+  it("tells a turn typed on the chat's web page that its approvals show there, and a WhatsApp turn nothing of it", async () => {
+    const [fromWhatsapp, fromWeb, role] = await Promise.all([
+      evaluateDynamic(whatsappTurn, whatsappFullContext()),
+      evaluateDynamic(whatsappTurn, whatsappFullContext("web")),
+      evaluateDynamic(roleInstructions, whatsappFullContext("web")),
+    ]);
+    const onWeb =
+      "This turn's approvals show on this chat's page in assist's web app, not on WhatsApp: tell the member to answer them there.";
+    expect(fromWeb?.content).toContain(onWeb);
+    expect(fromWhatsapp?.content).not.toContain("approvals");
+    expect(role?.content).toContain(
+      "In a turn sent from WhatsApp, a Gmail send, a new calendar event, or a browser task"
+    );
+    expect(role?.content).toContain(
+      "In a turn typed in this chat's page in assist's web app, the approval shows on that page instead."
+    );
+    expect(role?.content).toContain(
+      "That one message holds at most 1,600 characters, so a longer step is refused before the member sees it"
+    );
+  });
 });
 
 describe("the vault page's link", () => {

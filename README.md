@@ -705,8 +705,8 @@ chat, which replies, asks a question with numbered options, searches the web,
 runs browser tasks, sends vault links and uses the member's Personal Info and
 saved notes, for a member who has [BigQuery](#bigquery) reads the company's
 BigQuery, and for a member who connected [Google](#google-workspace) uses
-their own Gmail, Calendar and Drive. Its approvals arrive as numbered
-messages. It has no schedules, no reactions and no connector sign-ins on
+their own Gmail, Calendar and Drive. Each approval arrives as one numbered
+message. It has no schedules, no reactions and no connector sign-ins on
 WhatsApp, and it keeps to the company's business work.
 It has no Accounting yet: TEEMIQ is not reachable from WhatsApp, and
 Accounting stays in TEEMIQ's own Assist panel.
@@ -868,23 +868,32 @@ BigQuery data, read only" too.
   chat, and the member's 24-hour window open.
 - The $10 usage limit's continue prompt is answered once per chat; a second
   one stops the turn and the member is told to reply `/new`.
-- An approval in a full chat reaches the member as messages: its whole
-  prompt, split at 1,600 characters like a reply, in order and with nothing
-  cut, then "Reply 1 to approve or 2 to decline." The channel draws it
+- An approval in a full chat reaches the member as one message: its whole
+  prompt, then "Reply 1 to approve or 2 to decline." The channel draws it
   through the same check as a question, and only for a turn the member sent
   from WhatsApp; a turn typed in the chat's page on the web shows its
   approval there, since eve takes an answer only from the person whose turn
-  asked. Only a reply of exactly 1 approves, and only while the approval is
-  at most 30 minutes old, the number still reaches the member with full
-  access, and the 24-hour window stayed open until that reply. A 2 declines,
-  and so does a 1 that comes too late; any other message, a photo included,
-  declines the approval and is then read as a new message. A lock, a
-  disconnect or a new number ends the chat, and its approvals with it. The
-  channel answers the approval itself: eve's own reading would also take
-  `approve`, `01` or `1.0`, even sent before the approval was shown, and each
-  approval's response policy (`agent/lib/approval-response.ts`) refuses an
-  approve from WhatsApp that the channel did not give. Memory holds which
-  approvals were drawn, so one open across a restart declines.
+  asked, and the agent is told so for that turn. An approval that would need
+  a second message is never drawn: the text the model wrote ends every
+  prompt, and could fill a last message with a look-alike of another step
+  while the real recipients sat in the first. Nor is one whose text asks for
+  a reply of 1. Gmail, Calendar and the browser refuse such a call before it
+  asks, with a reason the agent reads (`agent/lib/approval-response.ts`), and
+  any other approval that cannot be drawn stops the turn. Only a reply of
+  exactly 1 approves, and only when Twilio received it at least 3 seconds
+  after the approval went out, so a 1 written to an earlier message does not
+  count, while the approval is at most 30 minutes old, the number still
+  reaches the member with full access, and the 24-hour window stayed open
+  until that reply. A 2 declines, and so does a 1 that comes too early or too
+  late; any other message, a photo included, declines the approval and is
+  then read as a new message. A reply that cannot be checked or answered is
+  not passed on: the approval stays open, and the member is told to try
+  again. A lock, a disconnect or a new number ends the chat, and its
+  approvals with it. The channel answers the approval itself: eve's own
+  reading would also take `approve`, `01` or `1.0`, even sent before the
+  approval was shown, and each approval's response policy refuses an approve
+  from WhatsApp that the channel did not give. Memory holds which approvals
+  were drawn, so one open across a restart declines.
 - A narrow chat's approval stops the turn, and so does a connector sign-in
   in any WhatsApp chat: WhatsApp cannot show one. When Google stops accepting
   a member's grant, the agent sends the Workspace page instead, bare on its
@@ -1030,7 +1039,8 @@ screen. The section then shows the account's address, what Google granted, and
 use the account:
 
 - Gmail: search, read a conversation, save a draft, and send. Every send waits
-  for the member's **Approve** in the chat (on WhatsApp, a reply of 1; see
+  for the member's **Approve** in the chat (on WhatsApp, a reply of 1 to one
+  message of at most 1,600 characters; see
   [What a WhatsApp chat can do](#what-a-whatsapp-chat-can-do)), which shows
   all that is sent: every recipient first, copies and blind copies included,
   then the subject and the whole text. A send takes at most 4,000 characters of text, with no
@@ -1044,7 +1054,9 @@ use the account:
   or a plain text file. PDFs and images are listed, not read.
 - Once a Google tool has run in a chat, each browser task in that chat waits
   for the member's **Approve** too, which shows the whole assignment, so text
-  in a mail or a file cannot send what assist read to a website unseen.
+  in a mail or a file cannot send what assist read to a website unseen. The
+  assignment then takes at most 4,000 characters, with no character that
+  shows nothing and at most two blank lines in a row.
 
 Site chats (TEEMIQ's Assist), site tasks, a narrow WhatsApp chat (a locked
 member's) and scheduled runs never get Google tools; the list of modes that do
@@ -1056,8 +1068,8 @@ up. Labels, Contacts and Tasks are not part of this connector.
 On WhatsApp the tools, their instructions and the full chat's fixed line
 follow the member's own account: a member who connected Google, and whose
 grant Google still accepts, sees "your Google account" in that line. Each
-approval arrives as a numbered message, a reply of 1 approves it, and
-anything else declines it. Mail, events and files are untrusted text there
+approval arrives as one numbered message, a reply of 1 approves it, and
+anything else declines it; one too long for a message is refused. Mail, events and files are untrusted text there
 as on the web, never instructions, and what the agent quotes from them is
 stored by WhatsApp and Twilio. Google's own sign-in cannot be shown on
 WhatsApp, so there the agent sends the Workspace page for **Reconnect**

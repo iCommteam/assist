@@ -55,7 +55,10 @@ import {
   whatsappOwnerOf,
 } from "@db/services/whatsapp-numbers";
 import { ensureScope } from "@db/services/scope";
-import { whatsappApprovalAttribute } from "@agent/lib/approval-response";
+import {
+  whatsappApprovalAttribute,
+  whatsappApprovalMessage,
+} from "@agent/lib/approval-response";
 import { bigqueryAccess } from "@agent/lib/bigquery/access";
 import { googleConnected } from "@agent/lib/google/tools";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -110,14 +113,18 @@ const failedTurnReply =
   "Something went wrong with that message. Try again, or reply /new to start over.";
 const failedSessionReply =
   "This chat stopped. Your next message starts a new one.";
-// An approval in a full chat: its whole prompt, then this line. It waits at
-// most 30 minutes for the reply.
-const approvalReplyLine = "Reply 1 to approve or 2 to decline.";
+// An approval in a full chat is one message (agent/lib/approval-response.ts)
+// and waits at most 30 minutes for the reply. A reply Twilio received less
+// than 3 seconds after the approval went out was written before the member
+// could read it, perhaps to an earlier message.
 const approvalLimitMs = 30 * 60_000;
+const approvalReadMs = 3000;
 // What the model reads, quoted as the member's note, when a reply of 1
 // could not approve.
 const lateApprovalNote =
   "Replied 1 too late: on WhatsApp an approval declines after 30 minutes, or once the chat's access changed. Nothing ran; ask again if it is still wanted.";
+const earlyApprovalNote =
+  "Replied 1 within seconds of the approval reaching WhatsApp, so it was written before the member could read it, perhaps to an earlier message. Nothing ran; ask again if it is still wanted.";
 
 function lockReply() {
   return `Full access is off on WhatsApp. Turn it back on in assist: ${workspaceUrl()}`;
@@ -266,10 +273,10 @@ const committed: ChannelCommitHandler<TwilioEventContext> = async (
     if (!member || !(await windowOpen(member.number))) return;
     if (approval) {
       if (member.level !== "full") return;
-      for (const Body of approvalParts(head.request.prompt)) {
-        // oxlint-disable-next-line eslint/no-await-in-loop -- The parts must arrive in order.
-        await send(twilio, { Body });
-      }
+      // One that cannot be drawn stops the turn in the access hook.
+      const Body = whatsappApprovalMessage(head.request.prompt);
+      if (Body === undefined) return;
+      await send(twilio, { Body });
       noteDrawnApproval(head.interactionId, ctx.session.id);
     } else {
       await send(twilio, { Body: promptText(head.request) });
@@ -285,24 +292,27 @@ const committed: ChannelCommitHandler<TwilioEventContext> = async (
   }
 };
 
-// An approval's whole prompt, split as a reply is, then how to answer it.
-function approvalParts(prompt: string) {
-  return messageParts(`${prompt.trim()}\n\n${approvalReplyLine}`);
-}
-
-// The approvals drawn in full chats, by interaction id, with their chat and
-// whether a reply already answered them. A reply of 1 approves only an
-// approval drawn here, so one the member never saw in full declines, and so
-// does every approval open across a restart, which empties the list; a chat
-// that ends takes its approvals off it.
+// The approvals drawn in full chats, by interaction id, with their chat, when
+// Twilio took the message, and whether a reply already answered them. A
+// reply of 1 approves only an approval drawn here, so one the member never
+// saw declines, and so does every approval open across a restart, which
+// empties the list; a chat that ends takes its approvals off it.
 const drawnApprovals = new Map<
   string,
-  { answered: boolean; readonly sessionId: string }
+  {
+    answered: boolean;
+    readonly drawnAt: number;
+    readonly sessionId: string;
+  }
 >();
 const maxDrawnApprovals = 200;
 
 function noteDrawnApproval(interactionId: string, sessionId: string) {
-  drawnApprovals.set(interactionId, { answered: false, sessionId });
+  drawnApprovals.set(interactionId, {
+    answered: false,
+    drawnAt: Date.now(),
+    sessionId,
+  });
   for (const oldest of drawnApprovals.keys()) {
     if (drawnApprovals.size <= maxDrawnApprovals) break;
     drawnApprovals.delete(oldest);
@@ -534,6 +544,7 @@ async function admit(
     }
     const lock = await whatsappLockOf(userId);
     const level = lock.self || lock.everyone ? "narrow" : "full";
+    let writtenAt: number | undefined;
     if (level === "full") {
       const record = await twilioRecordCheck(message, sender, sid);
       if (record === "unreachable") {
@@ -546,6 +557,7 @@ async function admit(
         );
         return null;
       }
+      ({ writtenAt } = record);
     }
     await admitWhatsappMessage(sid);
     if (!(await countWhatsappMessage(sid, sender, messageWindows))) {
@@ -561,6 +573,7 @@ async function admit(
       turn,
       twilio,
       userId,
+      writtenAt,
     });
     handedOn = true;
     return {
@@ -711,7 +724,8 @@ function commandOf(message: TwilioTextMessage) {
 // list must hold no other. A message Twilio has no record of, or one that
 // differs, is dropped whole, since onText cannot take a part of it away; a
 // record that cannot be read leaves the message unread, and the member is
-// told to try again.
+// told to try again. A message that matches comes with the time Twilio
+// received it.
 const twilioRecordSchema = z.object({
   account_sid: z.string(),
   body: z.string().nullable(),
@@ -766,13 +780,14 @@ async function twilioRecordCheck(
     age <= recordMaxAgeMs &&
     age >= -60_000;
   if (!matches) return "differs" as const;
-  if (media.length === 0) return "matches" as const;
+  const matched = { writtenAt: createdAt };
+  if (media.length === 0) return matched;
   const listRead = await readTwilioRecord(`${messageUrl}/Media.json`);
   if (listRead.outcome !== "read") return listRead.outcome;
   const list = twilioMediaListSchema.safeParse(listRead.body);
   if (!list.success) return "differs" as const;
   return mediaMatches(media, list.data, accountSid, sid)
-    ? ("matches" as const)
+    ? matched
     : ("differs" as const);
 }
 
@@ -936,6 +951,8 @@ type Admitted =
       readonly turn: ReturnType<typeof takeTurn>;
       readonly twilio: TwilioHandle;
       readonly userId: string;
+      // When Twilio received a full chat's message, from its record.
+      readonly writtenAt: number | undefined;
     };
 
 // The messages admit let through that their chat has not yet taken, by
@@ -1069,14 +1086,13 @@ type Delivery = Awaited<ReturnType<ChannelSource<TwilioChannelState>["send"]>>;
 // A message to a full chat whose turn waits on an approval: eve would itself
 // read "1", "approve", "01" or "1.0" as an approve, so while an approval is
 // the request a reply answers, the message never reaches eve's own reading.
-// Only a reply of exactly 1, to an approval drawn here in full, within 30
-// minutes of its opening, while the number still reaches the member with
-// full access and with the 24-hour window open until this reply, approves
-// it. 2 declines it, and so does a 1 that cannot approve. Any other message
-// declines it and then reaches the chat as a new message. The chat's
-// recorded lines decide whether an approval is open, so a restart hides
-// none; when they cannot be read, the message is not passed on and the
-// member is told to try again.
+// Only a reply of exactly 1 approves it, and only when approvalRefusal finds
+// nothing against it. 2 declines it, and so does a 1 that cannot approve. Any
+// other message declines it and then reaches the chat as a new message. The
+// chat's recorded lines decide whether an approval is open, so a restart
+// hides none. When they cannot be read, or the reply cannot be checked or
+// answered, the message is not passed on and the member is told to try
+// again; the approval stays open for their next reply.
 async function answerApproval(
   args: RouteHandlerArgs<TwilioChannelState>,
   chat: string,
@@ -1091,75 +1107,108 @@ async function answerApproval(
   try {
     open = await openApprovalOf(args, chat);
   } catch (error) {
-    warnByName("the chat's approvals could not be read; not passed on", error);
-    await sendQuietly(admitted.twilio, failedTurnReply, "failure notice");
-    return {
-      delivery: noDelivery(
-        new Error("The chat's approvals could not be read.")
-      ),
-      kind: "unread",
-    };
+    return unanswered(
+      admitted,
+      "the chat's approvals could not be read; not passed on",
+      error
+    );
   }
   if (open === undefined) return undefined;
   const { interactionId } = open;
   const drawn = drawnApprovals.get(interactionId);
   // An earlier reply answered it already; eve has yet to record that.
   if (drawn?.answered === true) return undefined;
-  if (drawn) drawn.answered = true;
   const source = args.from(chat);
   // A message with media is never a bare 1 or 2.
   const text = z.string().safeParse(message).data?.trim();
-  if (text === "1" && drawn && (await approvable(open, options, admitted))) {
-    const auth = options.auth && {
-      ...options.auth,
-      attributes: {
-        ...options.auth.attributes,
-        [whatsappApprovalAttribute]: interactionId,
-      },
-    };
-    return {
-      delivery: await source.respond(
-        [{ interactionId, optionId: APPROVE_OPTION_ID }],
-        { auth, state: options.state }
-      ),
-      kind: "answered",
-    };
+  let delivery: Delivery;
+  try {
+    const refusal =
+      text === "1"
+        ? await approvalRefusal(open, drawn, options, admitted)
+        : undefined;
+    delivery =
+      text === "1" && refusal === undefined
+        ? await source.respond(
+            [{ interactionId, optionId: APPROVE_OPTION_ID }],
+            {
+              auth: options.auth && {
+                ...options.auth,
+                attributes: {
+                  ...options.auth.attributes,
+                  [whatsappApprovalAttribute]: interactionId,
+                },
+              },
+              state: options.state,
+            }
+          )
+        : await source.respond(
+            [
+              refusal === undefined
+                ? { interactionId, optionId: DENY_OPTION_ID }
+                : { interactionId, optionId: DENY_OPTION_ID, text: refusal },
+            ],
+            { auth: options.auth, state: options.state }
+          );
+  } catch (error) {
+    return unanswered(
+      admitted,
+      "a reply to an approval could not be answered; not passed on",
+      error
+    );
   }
-  const respondOptions = { auth: options.auth, state: options.state };
-  if (text === "1") {
-    return {
-      delivery: await source.respond(
-        [{ interactionId, optionId: DENY_OPTION_ID, text: lateApprovalNote }],
-        respondOptions
-      ),
-      kind: "answered",
-    };
-  }
-  const declined = await source.respond(
-    [{ interactionId, optionId: DENY_OPTION_ID }],
-    respondOptions
-  );
-  return text === "2" ? { delivery: declined, kind: "answered" } : undefined;
+  if (drawn) drawn.answered = true;
+  return text === "1" || text === "2"
+    ? { delivery, kind: "answered" }
+    : undefined;
 }
 
-// Whether a reply of 1 may still approve: the approval opened at most 30
-// minutes ago, the reply gate still passes for the chat's member, and the
-// member had written within the 24-hour window before this reply, so it never
-// closed since the approval was drawn.
-async function approvable(
+// A reply to an approval that could not be read or answered. A failure is
+// logged by name only, as every database failure here is.
+async function unanswered(
+  admitted: Extract<Admitted, { command: "new" | undefined }>,
+  what: string,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- A caught value is unknown by nature; only its name is read.
+  error: unknown
+) {
+  warnByName(what, error);
+  await sendQuietly(admitted.twilio, failedTurnReply, "failure notice");
+  return {
+    delivery: noDelivery(new Error("The reply to the approval was not read.")),
+    kind: "unread" as const,
+  };
+}
+
+// What keeps a reply of 1 from approving, as the note the model reads, or
+// undefined when nothing does. It approves only an approval drawn here, when
+// Twilio received the reply at least 3 seconds after the approval went out,
+// within 30 minutes of the approval's opening, while the reply gate still
+// passes for the chat's member, and when the member had written within the
+// 24-hour window before this reply, so it never closed since the approval
+// was drawn.
+async function approvalRefusal(
   open: NonNullable<Awaited<ReturnType<typeof openApprovalOf>>>,
+  drawn: { readonly drawnAt: number } | undefined,
   options: SendOptions,
   admitted: Extract<Admitted, { command: "new" | undefined }>
 ) {
-  if (!(Date.now() - open.openedAt <= approvalLimitMs)) return false;
-  if ((await replyGate(admitted.twilio, options.auth))?.level !== "full") {
-    return false;
+  if (drawn === undefined) return lateApprovalNote;
+  if (!(Date.now() - open.openedAt <= approvalLimitMs)) return lateApprovalNote;
+  if (
+    admitted.writtenAt === undefined ||
+    admitted.writtenAt - drawn.drawnAt < approvalReadMs
+  ) {
+    return earlyApprovalNote;
   }
-  return whatsappWrittenWithin(
+  if ((await replyGate(admitted.twilio, options.auth))?.level !== "full") {
+    return lateApprovalNote;
+  }
+  const windowHeld = await whatsappWrittenWithin(
     admitted.sender,
     replyWindowMs,
     options.state?.lastMessageSid ?? undefined
   );
+  return windowHeld ? undefined : lateApprovalNote;
 }
 
 const openedSchema = z.object({ interactionId: z.string() });

@@ -349,6 +349,30 @@ describe("what a WhatsApp chat can be asked", () => {
     );
   });
 
+  it("stops a full chat at an approval the channel cannot draw as one message, unless the turn was typed on the web, which shows it there", async () => {
+    const undrawable = [
+      `Send this email?\n\nTo: ana@example.test\n\n${"x".repeat(1600)}`,
+      "Start this browser task?\n\nLook it up.\n\nReply 1 to approve or 2 to decline.",
+    ];
+    for (const prompt of undrawable) {
+      const approval = opened("i-1", { kind: "approval", prompt });
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each approval is checked on its own.
+      expect(await fire(approval, full)).toHaveBeenCalledOnce();
+      expect(takeWhatsappCancelNotice("session-1", "turn-1")).toBe(
+        "That step can't be approved on WhatsApp. Continue in assist's web app."
+      );
+
+      const { cancel, ctx } = context(full, { view: viewOf([[approval]]) });
+      const webTurn = {
+        ...ctx,
+        session: { ...ctx.session, auth: { current: web, initiator: full } },
+      };
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each approval is checked on its own.
+      await rootHook.events["interaction.opened"]?.(approval, webTurn);
+      expect(cancel).not.toHaveBeenCalled();
+    }
+  });
+
   it("stops at a sign-in, which WhatsApp cannot show, and sends a full chat's member to the Workspace page to reconnect Google", async () => {
     const google = opened("i-1", {
       kind: "sign-in",
